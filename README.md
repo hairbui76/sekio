@@ -20,15 +20,15 @@ curl -fsSL https://raw.githubusercontent.com/hairbui76/sekio/main/install.sh | s
 
 Installs to `~/.local/bin`. The script verifies the release's published SHA-256
 before it extracts anything, and installs nothing on a mismatch. Pin a version
-with `| sh -s -- --version v0.2.0`, choose a prefix with `--prefix DIR`, and
+with `| sh -s -- --version v0.3.0`, choose a prefix with `--prefix DIR`, and
 remove it again with `| sh -s -- --uninstall`.
 
 **Debian/Ubuntu and Fedora/RHEL** — download from the
 [releases page](https://github.com/hairbui76/sekio/releases), then:
 
 ```sh
-sudo apt install ./sekio_0.2.0-1_amd64.deb      # Debian/Ubuntu
-sudo dnf install ./sekio-0.2.0-1.x86_64.rpm     # Fedora/RHEL/openSUSE
+sudo apt install ./sekio_0.3.0-1_amd64.deb      # Debian/Ubuntu
+sudo dnf install ./sekio-0.3.0-1.x86_64.rpm     # Fedora/RHEL/openSUSE
 ```
 
 These also install the "Open with" desktop entry and a systemd **user** unit for
