@@ -12,38 +12,38 @@ crates/
 
 ## Install
 
-**Linux — any distro:**
+Releases ship three installers, all x86_64:
+
+**Debian / Ubuntu**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/hairbui76/sekio/main/install.sh | sh
+sudo apt install ./sekio_0.3.0-1_amd64.deb
 ```
 
-Installs to `~/.local/bin`. The script verifies the release's published SHA-256
-before it extracts anything, and installs nothing on a mismatch. Pin a version
-with `| sh -s -- --version v0.3.0`, choose a prefix with `--prefix DIR`, and
-remove it again with `| sh -s -- --uninstall`.
-
-**Debian/Ubuntu and Fedora/RHEL** — download from the
-[releases page](https://github.com/hairbui76/sekio/releases), then:
+**Fedora / RHEL / openSUSE**
 
 ```sh
-sudo apt install ./sekio_0.3.0-1_amd64.deb      # Debian/Ubuntu
-sudo dnf install ./sekio-0.3.0-1.x86_64.rpm     # Fedora/RHEL/openSUSE
+sudo dnf install ./sekio-0.3.0-1.x86_64.rpm
 ```
 
-These also install the "Open with" desktop entry and a systemd **user** unit for
-the GUI daemon. The unit is not enabled for you — turn it on when you want it:
+Both install all three binaries, an "Open with" desktop entry, and a systemd
+**user** unit for the preview daemon. The unit ships disabled; turn it on when
+you want previews to open instantly:
 
 ```sh
 systemctl --user enable --now sekio
 ```
 
-**Windows** — run `sekio-x86_64-pc-windows-msvc.msi` from the releases page (it
-adds sekio to `PATH` and offers a Start Menu shortcut), or `scoop install sekio`.
+**Windows** — run `sekio-x86_64-pc-windows-msvc.msi`. It installs the three
+binaries, adds them to `PATH`, and adds a Start Menu entry.
+
+Download all three from the
+[releases page](https://github.com/hairbui76/sekio/releases), each with a
+`.sha256` beside it.
 
 **Arch** — the AUR `PKGBUILD` in [packaging/](packaging/).
 
-**From source:**
+**Any other platform, or to build from source:**
 
 ```sh
 cargo install --path crates/sekio-cli     # sekio
@@ -51,12 +51,7 @@ cargo install --path crates/sekio-tui     # sekio-tui
 cargo install --path crates/sekio-gui     # sekio-gui
 ```
 
-Releases are x86_64 only. Every release attaches the `.deb`, `.rpm` and `.msi`
-above, plus portable Linux and Windows archives, each with a `.sha256` beside
-it. On any other architecture, build from source with the `cargo install`
-commands above.
-
-See [packaging/README.md](packaging/README.md) for all of this in detail.
+See [packaging/README.md](packaging/README.md) for details.
 
 ## Try it
 

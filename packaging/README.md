@@ -1,62 +1,31 @@
 # Packaging
 
 Release artifacts are produced by `.github/workflows/release.yml` when a `v*`
-tag is pushed. As of v0.3.0 that is:
+tag is pushed. As of v0.3.0 that is exactly three installers, all x86_64:
 
 | Asset | Contents |
 |---|---|
-| `sekio-x86_64-unknown-linux-gnu.tar.gz` | `sekio`, `sekio-tui`, `sekio-gui` |
-| `sekio-x86_64-pc-windows-msvc.zip` | all three `.exe` |
-| `sekio_<version>-1_amd64.deb` | all three + desktop entry + systemd user unit |
+| `sekio_<version>-1_amd64.deb` | all three binaries + desktop entry + systemd user unit |
 | `sekio-<version>-1.x86_64.rpm` | same as the `.deb` |
 | `sekio-x86_64-pc-windows-msvc.msi` | all three `.exe`, PATH entry, Start Menu shortcut |
 
-Every one of them is published with a `.sha256` beside it containing the bare
-hash, which is what `install.sh` verifies against and what Scoop's `autoupdate`
-reads.
+Each is published with a `.sha256` beside it containing the bare hash.
 
-Releases are x86_64 only: the `.deb`, `.rpm` and `.msi` are the supported
-install paths, with the portable archives kept because `install.sh` and the
-Scoop manifest download them. Other architectures build from source.
+Portable archives, the `install.sh` curl-pipe-sh script and the Scoop manifest
+were removed after v0.3.0: the three native installers are the supported paths,
+and everything else builds from source with `cargo install`. That also removed
+the whole cross-platform archive-building job from the release workflow, since
+the `.deb`/`.rpm` and `.msi` jobs each build their own binaries.
 
 ## Which install path to document to a user
 
 | Platform | Command |
 |---|---|
-| Linux, any distro | `curl -fsSL https://raw.githubusercontent.com/hairbui76/sekio/main/install.sh \| sh` |
 | Debian / Ubuntu | `sudo apt install ./sekio_<version>-1_amd64.deb` |
 | Fedora / RHEL / openSUSE | `sudo dnf install ./sekio-<version>-1.x86_64.rpm` |
+| Windows | the `.msi` |
 | Arch | AUR `PKGBUILD` in this directory |
-| Windows | the `.msi`, or `scoop install sekio` |
-| From source | `cargo install --path crates/sekio-cli` (and `-tui`, `-gui`) |
-
-## `install.sh` (curl-pipe-sh, Linux)
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/hairbui76/sekio/main/install.sh | sh
-```
-
-Detects the architecture, resolves the latest release tag from the GitHub API,
-downloads the archive **and its `.sha256`**, verifies the checksum before
-extracting anything, and installs the binaries to `~/.local/bin`.
-
-The checksum step is not optional decoration. It is the only thing standing
-between a curl-pipe-sh installer and executing whatever arrives over the wire,
-so it fails loudly and installs nothing on a mismatch. There is no flag to skip
-it, and the script refuses to continue if it cannot find `sha256sum`, `shasum`,
-or `openssl`.
-
-Options:
-
-```sh
-... | sh -s -- --version v0.3.0        # pin a release (or SEKIO_VERSION=v0.3.0)
-... | sh -s -- --prefix /usr/local/bin # install elsewhere (or SEKIO_PREFIX=...)
-... | sh -s -- --uninstall             # remove the binaries again
-```
-
-It is POSIX `sh`, never reads stdin (so piping it is safe), cleans up its temp
-directory with a `trap`, and warns with a copy-pasteable line if the install
-prefix is not on `$PATH`.
+| Anything else | `cargo install --path crates/sekio-cli` (and `-tui`, `-gui`) |
 
 ## Debian/Ubuntu (`.deb`) and Fedora/RHEL (`.rpm`)
 
@@ -219,25 +188,11 @@ makepkg --printsrcinfo > .SRCINFO
 makepkg -si                      # verify it builds and installs cleanly
 ```
 
-## Windows (Scoop)
-
-`scoop/sekio.json` has `checkver`/`autoupdate` wired to GitHub releases, so it
-tracks new tags on its own. Its `hash.url` reads the `.sha256` published beside
-each archive, which the release workflow produces.
-
-Submit to the `extras` bucket, or host your own:
-
-```sh
-scoop bucket add sekio https://github.com/hairbui76/scoop-sekio
-scoop install sekio
-```
-
 ## Windows (winget)
 
 winget requires a three-file manifest set (version, installer, locale) under
-`manifests/h/hairbui76/sekio/<version>/`. Now that an `.msi` exists, prefer it
-over the zip form — `InstallerType: msi` needs no `NestedInstallerFiles`
-entries and gives winget a real uninstall entry. Generate the skeleton with
+`manifests/h/hairbui76/sekio/<version>/`. `InstallerType: msi` needs no
+`NestedInstallerFiles` entries and gives winget a real uninstall entry. Generate the skeleton with
 `wingetcreate new <release-url>` rather than hand-writing it — it computes the
 installer hash and validates the schema — then submit via `wingetcreate submit`.
 

@@ -9,75 +9,6 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    name: ${{ matrix.target }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-
-      # The GUI needs system libraries; the CLI and TUI do not.
-      - name: Install GUI build deps
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libwayland-dev
-
-      # One line, no continuation: the default shell on windows-latest is
-      # PowerShell, where a trailing backslash is not a line continuation and
-      # the second line would be parsed as its own broken command.
-      - name: Build all three frontends
-        run: cargo build --release --target ${{ matrix.target }} -p sekio-cli -p sekio-tui -p sekio-gui
-
-      - name: Package
-        shell: bash
-        run: |
-          mkdir -p dist
-          EXT=""
-          if [ "${{ runner.os }}" = "Windows" ]; then EXT=".exe"; fi
-          for bin in sekio sekio-tui sekio-gui; do
-            src="target/${{ matrix.target }}/release/$bin$EXT"
-            if [ -f "$src" ]; then cp "$src" dist/; fi
-          done
-          cp README.md LICENSE-MIT dist/ 2>/dev/null || true
-          cd dist
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            7z a "../sekio-${{ matrix.target }}.zip" ./*
-          else
-            tar czf "../sekio-${{ matrix.target }}.tar.gz" ./*
-          fi
-
-      # Scoop's autoupdate reads the checksum from a .sha256 beside the archive.
-      - name: Checksum
-        shell: bash
-        run: |
-          for f in sekio-${{ matrix.target }}.tar.gz sekio-${{ matrix.target }}.zip; do
-            if [ -f "$f" ]; then sha256sum "$f" | awk '{print $1}' > "$f.sha256"; fi
-          done
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: sekio-${{ matrix.target }}
-          path: sekio-${{ matrix.target }}.*
-
-  # Native Linux packages. Separate from the `build` matrix on purpose: these
-  # are x86_64-only, matching the rest of the release, and they are built
-  # with the `video` feature enabled, unlike the portable archives. That
-  # renderer only shells out to ffmpeg/ffmpegthumbnailer at runtime, so
-  # compiling it in costs no build dependency — and it is what makes the
-  # ffmpeg Recommends in the package metadata mean something. A tarball has no
-  # way to express an optional dependency, so the archives stay on defaults.
   linux-packages:
     name: deb + rpm (x86_64)
     runs-on: ubuntu-latest
@@ -189,7 +120,7 @@ jobs:
           path: sekio-x86_64-pc-windows-msvc.msi*
 
   release:
-    needs: [build, linux-packages, msi]
+    needs: [linux-packages, msi]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
@@ -204,8 +135,6 @@ jobs:
           # previous `sekio-*.sha256`, so the archive checksums still publish
           # exactly as before.
           files: |
-            sekio-*.tar.gz
-            sekio-*.zip
             sekio*.deb
             sekio*.rpm
             sekio*.msi
