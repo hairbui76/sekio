@@ -10,6 +10,54 @@ crates/
   sekio-gui    Quick Look-style popup window (Linux + Windows)
 ```
 
+## Install
+
+**Linux — any distro:**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/hairbui76/sekio/main/install.sh | sh
+```
+
+Installs to `~/.local/bin`. The script verifies the release's published SHA-256
+before it extracts anything, and installs nothing on a mismatch. Pin a version
+with `| sh -s -- --version v0.1.0`, choose a prefix with `--prefix DIR`, and
+remove it again with `| sh -s -- --uninstall`.
+
+**Debian/Ubuntu and Fedora/RHEL** — download from the
+[releases page](https://github.com/hairbui76/sekio/releases), then:
+
+```sh
+sudo apt install ./sekio_0.1.0-1_amd64.deb      # Debian/Ubuntu
+sudo dnf install ./sekio-0.1.0-1.x86_64.rpm     # Fedora/RHEL/openSUSE
+```
+
+These also install the "Open with" desktop entry and a systemd **user** unit for
+the GUI daemon. The unit is not enabled for you — turn it on when you want it:
+
+```sh
+systemctl --user enable --now sekio
+```
+
+**Windows** — run `sekio-x86_64-pc-windows-msvc.msi` from the releases page (it
+adds sekio to `PATH` and offers a Start Menu shortcut), or `scoop install sekio`.
+
+**Arch** — the AUR `PKGBUILD` in [packaging/](packaging/).
+
+**From source:**
+
+```sh
+cargo install --path crates/sekio-cli     # sekio
+cargo install --path crates/sekio-tui     # sekio-tui
+cargo install --path crates/sekio-gui     # sekio-gui
+```
+
+Portable archives for x86_64 and aarch64 Linux and for Windows are attached to
+every release, each with a `.sha256` beside it. Note that the aarch64 archive
+ships `sekio` and `sekio-tui` only: it is cross-compiled, and the GUI needs
+system libraries that are not worth cross-building.
+
+See [packaging/README.md](packaging/README.md) for all of this in detail.
+
 ## Try it
 
 ```sh
@@ -35,6 +83,20 @@ sekio-gui photo.jpg         # ~5 ms handoff instead of a fresh process
 If no daemon is running, `sekio-gui <path>` just opens a window as usual — the
 daemon is an optimization, never a requirement.
 
+The daemon also answers a global hotkey (`Ctrl+Shift+Space` by default) and
+previews whatever your file manager has selected:
+
+```sh
+sekio-gui --daemon --hotkey 'Ctrl+Shift+Space' &
+sekio-gui --doctor          # when the hotkey does nothing, run this first
+```
+
+A bare `Space` is deliberately not the default — grabbing it globally would
+steal it from every other application. Selection detection is exact on Windows
+(Explorer answers over COM) and best-effort on Linux, where no file manager
+publishes its selection; `--doctor` reports which strategy is active and what
+it can currently see. See [docs/desktop.md](docs/desktop.md).
+
 `sekio-tui` reads `$XDG_CONFIG_HOME/sekio/config.toml` (`%APPDATA%\sekio\` on
 Windows) for themes and default limits; see
 [crates/sekio-tui/config.example.toml](crates/sekio-tui/config.example.toml).
@@ -48,10 +110,13 @@ Windows) for themes and default limits; see
 | Images | Image | PNG/JPEG/GIF/WebP/BMP/ICO/TIFF, plus EXIF and auto-rotation |
 | SVG | Image | Rasterized with resvg |
 | Archives | Listing | zip, tar, tar.gz, gz |
+| Spreadsheets | Aligned table | xlsx, xlsm, xlsb, xls, ods |
+| Documents | Formatted text | docx, and pptx with slides in order |
 | Audio | Metadata + cover art | Tags, duration, codec, sample rate |
 | Directories | Listing | |
 | PDF | First page | Needs `--features pdf` and the pdfium library |
 | Video | Frame grab | Needs `--features video` and ffmpeg/ffmpegthumbnailer |
+| Legacy `.doc`/`.ppt` | Converted text | Needs `--features office-legacy` and LibreOffice |
 | Anything else | Hexdump | With the detected mime type |
 
 Unsupported or malformed files degrade to a hexdump rather than failing.
@@ -71,6 +136,9 @@ a key in Nautilus, Dolphin, Thunar, or your window manager.
 - **One IR, thin frontends.** `sekio-core` turns a path into
   `PreviewContent::{Text, Image, Listing, Metadata, HexDump}`. Frontends only
   paint. A new filetype added in core lights up everywhere at once.
+- **Detection reads the file, not its name.** An Office document is recognised
+  by the parts inside its zip, so a `.docx` renamed `mystery.bin` still
+  previews as a document.
 - **Cancellation-first.** `preview(path, opts, &CancelToken)` polls the token
   at work boundaries so a frontend can abort stale previews while the user
   flips through files. Both frontends run previews on a worker thread and
@@ -91,9 +159,11 @@ builds work out of the box. The two formats with external dependencies are
 opt-in:
 
 ```sh
-cargo build --release                                  # everything default
-cargo build --release -p sekio-core --features pdf     # + PDF (needs pdfium)
-cargo build --release -p sekio-core --features video   # + video (needs ffmpeg)
+cargo build --release                                # everything default
+# Opt-in formats, each needing an external program at runtime:
+cargo build --release --features sekio-core/pdf            # pdfium
+cargo build --release --features sekio-core/video          # ffmpeg
+cargo build --release --features sekio-core/office-legacy  # LibreOffice
 ```
 
 macOS is not a target for now.

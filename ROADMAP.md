@@ -41,8 +41,18 @@ for now); heavy dependencies are feature-gated.
       `Metadata` fallback when neither is on PATH
 - [x] **Non-UTF-8 text**: `chardetng` + `encoding_rs`, so legacy CJK and
       Latin-1 files decode instead of being mangled or read as binary
-- [x] Tests: 80 tests with `--all-features`, including end-to-end dispatch
-      tests in `crates/sekio-core/tests/preview.rs`
+- [x] **Office documents**: xlsx, xlsm, xlsb, xls and ods as aligned tables
+      via calamine; docx and pptx as text via zip + quick-xml, with slides in
+      numeric order. Detected by reading the zip central directory for
+      `word/document.xml`, `xl/workbook.xml`, `ppt/presentation.xml` or the
+      ODF `mimetype` member — never by extension, so a docx named
+      `mystery.bin` still previews correctly. Legacy binary `.doc`/`.ppt` have
+      no pure-Rust reader; they are handled by the opt-in `office-legacy`
+      feature, which shells out to LibreOffice the way `video` shells out to
+      ffmpeg.
+- [x] Tests: end-to-end dispatch tests in `crates/sekio-core/tests/preview.rs`
+      plus per-renderer unit tests; office fixtures are built programmatically
+      rather than committed as binaries
 
 ## Phase 2 — TUI (`sekio-tui`)
 
@@ -85,10 +95,40 @@ for now); heavy dependencies are feature-gated.
       stale socket left by a killed daemon
 - [x] File-manager keybinding recipes for Nautilus, Dolphin, Thunar, Nemo and
       tiling WMs, plus daemon autostart (`docs/desktop.md`)
-- [ ] Windows: Explorer selection detection for a true QuickLook-style
-      spacebar flow (QL-Win uses a shell hook; investigate from Rust)
+- [x] Global hotkey (`--hotkey`, default `Ctrl+Shift+Space`) that previews
+      whatever the file manager has selected. A bare `Space` is deliberately
+      not the default: grabbing it globally steals it from every other
+      application, so the spacebar flow is served by the socket handoff
+      instead. Registration failure is never fatal — the daemon still serves
+      its socket.
+- [x] Windows: Explorer selection over COM (`IShellWindows` → `IShellBrowser`
+      → `IFolderView2` → `IShellItemArray`), including the desktop, skipping
+      virtual items with no filesystem path
+- [x] Linux: best-effort selection — PRIMARY, then CLIPBOARD, then a bare
+      name resolved against the file manager's open folders. Partial by
+      nature; see the coverage table below.
+- [x] `--doctor`: reports the selection strategy, what it can currently read
+      and from where, whether the hotkey parsed and actually registered, and
+      whether a daemon is running — each failure with a suggested next step
+- [ ] Windows daemon mode (the socket daemon is Unix-only today; Win32 also
+      needs a message pump on the hotkey thread for `WM_HOTKEY`)
 - [ ] Verify Wayland and X11 on a real desktop — this machine is headless, so
-      only the no-display error path has been exercised
+      only the no-display paths have been exercised
+
+### Selection coverage on Linux
+
+No Linux file manager exposes its selection over any public API, so this is
+honestly partial:
+
+| Desktop | What works |
+|---|---|
+| KDE / Dolphin | Selecting files fills PRIMARY, so the hotkey works without copying |
+| GNOME / Nautilus | Nautilus does not publish its selection; press Ctrl+C first, then the hotkey |
+| XFCE, Nemo, Caja, PCManFM | Copy-then-hotkey works; live selection varies by manager |
+| Anywhere | A path or `file://` URI copied from a terminal, editor or browser |
+
+Requires `wl-clipboard`, `xclip`, or `xsel`; `--doctor` says so when none is
+installed. Windows needs none of this — Explorer answers directly.
 
 ## Phase 4 — Integration & distribution
 
