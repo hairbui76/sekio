@@ -253,11 +253,33 @@ pub fn default_config_path(
     };
     let dir = match platform {
         Platform::Unix => var("XDG_CONFIG_HOME")
-            .filter(|p| p.is_absolute())
+            .filter(|p| is_absolute_on(Platform::Unix, p))
             .or_else(|| Some(var("HOME")?.join(".config")))?,
         Platform::Windows => var("APPDATA")?,
     };
     Some(dir.join("sekio").join("config.toml"))
+}
+
+/// Absoluteness judged by the *emulated* platform rather than the host.
+///
+/// `Path::is_absolute` answers for whichever OS the binary is running on, so
+/// using it here would make `default_config_path(Platform::Unix, ..)` behave
+/// like Windows whenever the tests run on Windows — `/xdg` is not absolute
+/// under Windows rules, so an absolute XDG dir would be silently discarded.
+/// That would defeat the point of taking `platform` as a parameter.
+fn is_absolute_on(platform: Platform, path: &Path) -> bool {
+    let bytes = path.as_os_str().as_encoded_bytes();
+    match platform {
+        Platform::Unix => bytes.first() == Some(&b'/'),
+        // A UNC path, or a drive letter followed by a separator.
+        Platform::Windows => {
+            bytes.starts_with(br"\\")
+                || (bytes.len() >= 3
+                    && bytes[0].is_ascii_alphabetic()
+                    && bytes[1] == b':'
+                    && (bytes[2] == b'\\' || bytes[2] == b'/'))
+        }
+    }
 }
 
 /// Which file (if any) to load, and how loudly to complain when it isn't there.
@@ -706,6 +728,25 @@ mod tests {
             default_config_path(Platform::Windows, env_of(&[("APPDATA", "")])),
             None
         );
+    }
+
+    #[test]
+    fn absoluteness_follows_the_emulated_platform_not_the_host() {
+        // These must hold identically on a Linux and a Windows runner: the
+        // whole point of the `platform` parameter is that the answer does not
+        // depend on where the test happens to run.
+        assert!(is_absolute_on(Platform::Unix, Path::new("/xdg")));
+        assert!(!is_absolute_on(Platform::Unix, Path::new("relative/xdg")));
+        assert!(!is_absolute_on(Platform::Unix, Path::new(r"C:\Users")));
+
+        assert!(is_absolute_on(Platform::Windows, Path::new(r"C:\Users")));
+        assert!(is_absolute_on(Platform::Windows, Path::new("C:/Users")));
+        assert!(is_absolute_on(
+            Platform::Windows,
+            Path::new(r"\\server\share")
+        ));
+        assert!(!is_absolute_on(Platform::Windows, Path::new("/xdg")));
+        assert!(!is_absolute_on(Platform::Windows, Path::new("C:")));
     }
 
     #[test]
