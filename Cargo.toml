@@ -4,6 +4,7 @@ members = [
     "crates/sekio-core",
     "crates/sekio-cli",
     "crates/sekio-tui",
+    "crates/sekio-gui",
 ]
 
 [workspace.package]

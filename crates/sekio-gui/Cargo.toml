@@ -1,0 +1,25 @@
+[package]
+name = "sekio-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sekio-gui"
+path = "src/main.rs"
+
+[dependencies]
+sekio-core = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+image = { workspace = true }
+eframe = { workspace = true }
+egui = { workspace = true }
+
+# Unix only, and only for the single-instance daemon: `std` cannot install a
+# signal handler at all, so this is what lets SIGTERM/SIGINT unlink the socket
+# instead of leaving a stale one behind. Pure Rust over `libc` (no C toolchain,
+# so Windows builds are untouched — it is not even in their dependency graph),
+# and already in this workspace's lockfile via crossterm.
+[target.'cfg(unix)'.dependencies]
+signal-hook = "0.3"
