@@ -1,0 +1,8 @@
+/target
+
+# Machine-local: pins the linker to work around a shadowed `cc` on one
+# machine. Hardcoding a gcc path would break other contributors.
+/.cargo/config.toml
+
+# Personal Claude Code settings (permission mode, model, local hooks).
+/.claude/

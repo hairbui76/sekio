@@ -1,0 +1,48 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sekio-core",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/hairbui76/sekio"
+
+[workspace.dependencies]
+sekio-core = { path = "crates/sekio-core" }
+anyhow = "1"
+thiserror = "2"
+infer = "0.19"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
+# fancy-regex backend: pure Rust, no oniguruma C build — keeps Windows builds painless
+syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+clap = { version = "4", features = ["derive"] }
+chardetng = "1"
+encoding_rs = "0.8"
+# No `zstd`: it resolves to zstd-sys, a C dependency, which breaks the
+# no-C-toolchain rule that keeps Windows and cross builds working. (`bzip2`
+# is fine — it resolves to the pure-Rust libbz2-rs-sys.) Listing a zip only
+# reads the central directory, so a zstd-compressed member still appears; we
+# just can't decompress one, which previewing never needs.
+zip = { version = "8", default-features = false, features = ["deflate", "bzip2"] }
+tar = "0.4"
+flate2 = "1"
+comrak = { version = "0.54", default-features = false }
+resvg = "0.48"
+# "all" = all-codecs + all-formats + all-meta. The codec features are what
+# register the MP3/FLAC/AAC *format readers*, and all-meta registers the
+# standalone ID3v1/ID3v2/APE tag readers — without them the two most common
+# audio formats don't probe at all and embedded cover art never surfaces.
+symphonia = { version = "0.6", features = ["all"] }
+kamadak-exif = "0.6"
+pdfium-render = "0.8"
+ratatui = "0.30"
+crossterm = "0.29"
+eframe = { version = "0.35", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+egui = "0.35"
+
+[profile.release]
+lto = "thin"
+strip = true

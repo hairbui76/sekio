@@ -1,0 +1,36 @@
+[package]
+name = "sekio-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+# Pure-Rust formats are on by default: no C toolchain, so Windows builds stay
+# painless (see CLAUDE.md).
+default = ["archive", "markdown", "svg", "audio", "exif"]
+archive = ["dep:zip", "dep:tar", "dep:flate2"]
+markdown = ["dep:comrak"]
+svg = ["dep:resvg"]
+audio = ["dep:symphonia"]
+exif = ["dep:kamadak-exif"]
+# Heavy / external-dependency formats, opt-in.
+pdf = ["dep:pdfium-render"]
+video = []
+
+[dependencies]
+thiserror = { workspace = true }
+infer = { workspace = true }
+image = { workspace = true }
+syntect = { workspace = true }
+chardetng = { workspace = true }
+encoding_rs = { workspace = true }
+
+zip = { workspace = true, optional = true }
+tar = { workspace = true, optional = true }
+flate2 = { workspace = true, optional = true }
+comrak = { workspace = true, optional = true }
+resvg = { workspace = true, optional = true }
+symphonia = { workspace = true, optional = true }
+kamadak-exif = { workspace = true, optional = true }
+pdfium-render = { workspace = true, optional = true }
+two-face = { version = "0.5.2", default-features = false, features = ["syntect-default-fancy"] }
