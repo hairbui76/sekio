@@ -1,19 +1,26 @@
 //! The eframe application: keyboard handling, per-variant painting, and the
 //! UI half of the worker protocol. Nothing here blocks — every frame polls the
-//! worker with `try_recv` and paints whatever state it has.
+//! worker with `try_recv` and paints whatever state it has. The same is true of
+//! everything added for the desktop-app shape: the native dialog runs on its
+//! own thread (`dialog.rs`), the browser's directory listings go through the
+//! same worker as previews (`worker.rs`), and the recent-files file is read and
+//! written on a third thread (`recent.rs`). The UI thread only ever polls.
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
 use egui::{RichText, TextureHandle, TextureOptions, Vec2, ViewportCommand};
 use sekio_core::{ListEntry, MetaField, PreviewContent};
 
-use crate::hotkey::{self, Action};
-use crate::state::{human_size, RequestTracker, Siblings};
+use crate::browser::{self, Activate, Browser};
+use crate::dialog;
+use crate::hotkey::{self, Action as PressAction};
+use crate::recent::{self, Recent};
+use crate::state::{close_action, human_size, Close, Mode, RequestTracker, Siblings};
 use crate::style::{self, MONO_SIZE};
 use crate::timing::Timing;
-use crate::worker::{Loaded, Outcome, Request, Worker};
+use crate::worker::{Kind, Loaded, Outcome, Request, Response, Worker};
 
 const ZOOM_STEP: f32 = 1.25;
 const ZOOM_MIN: f32 = 0.05;
@@ -21,12 +28,22 @@ const ZOOM_MAX: f32 = 20.0;
 
 /// What the central panel is currently showing.
 enum View {
-    /// Daemon mode before the first handoff, and after a popup is dismissed:
-    /// no path, no preview, and (deliberately) no window on screen.
-    Idle,
+    /// Nothing is loaded. For a window launched with no path this is the home
+    /// screen — the app name, the keys, the recent files and an obvious way to
+    /// open something. For a daemon between popups it is the same state with
+    /// the window hidden, so nothing of it is ever seen.
+    Home,
     Loading,
     Ready(Box<Shown>),
     Failed(String),
+}
+
+impl View {
+    /// Is a file (or an attempt at one) on screen, as opposed to the home
+    /// screen? This is what decides what Esc means — see `state::close_action`.
+    fn is_showing(&self) -> bool {
+        !matches!(self, Self::Home)
+    }
 }
 
 /// A preview that is on screen, together with everything derived from it that
@@ -40,15 +57,35 @@ struct Shown {
     elapsed: Duration,
 }
 
-/// Everything the app needs at startup. A struct rather than eight positional
-/// arguments, and the one place where "one-shot window" and "resident daemon"
-/// differ: the daemon starts with no `path` and a `Receiver` of paths.
+/// Something the user asked for by clicking, applied after the frame is laid
+/// out. Painting borrows half the app, so the widgets report intent instead of
+/// mutating state under themselves.
+enum Action {
+    /// Show the native "Open file" dialog (or fall back to the browser).
+    OpenDialog,
+    /// Show or hide the built-in browser pane.
+    ToggleBrowser,
+    CloseBrowser,
+    /// Preview this path, at the user's request.
+    Open(PathBuf),
+    /// List this directory in the browser pane.
+    Descend(PathBuf),
+    /// List the directory above the browser pane's.
+    Parent,
+}
+
+/// Everything the app needs at startup. A struct rather than a fistful of
+/// positional arguments, and the one place where "one-shot popup", "window the
+/// user launched" and "resident daemon" differ.
 pub struct Startup {
     pub worker: Worker,
     pub tracker: RequestTracker,
-    /// The path to show immediately, or `None` for a daemon waiting for its
-    /// first handoff (its window stays hidden until one arrives).
+    /// The path to show immediately, or `None` for a window opened with no
+    /// argument (home screen) or a daemon waiting for its first handoff (which
+    /// keeps its window hidden until one arrives).
     pub path: Option<PathBuf>,
+    /// How this process was started; decides what dismissing does.
+    pub mode: Mode,
     pub wrap: bool,
     pub borderless: bool,
     pub timing: Timing,
@@ -61,7 +98,12 @@ pub struct Startup {
 
 pub struct SekioApp {
     worker: Worker,
+    /// Generation counter for the main preview.
     tracker: RequestTracker,
+    /// A second, independent counter for the browser pane's listings, so
+    /// descending a directory never cancels the preview being read (and a slow
+    /// preview never delays the pane).
+    browse_tracker: RequestTracker,
     siblings: Siblings,
     path: PathBuf,
     view: View,
@@ -73,12 +115,28 @@ pub struct SekioApp {
     sized: bool,
     borderless: bool,
     wrap: bool,
-    /// Daemon mode when `Some`: paths handed over by the socket thread, and
-    /// the reason dismissing the popup hides the window instead of exiting.
+    mode: Mode,
+    /// Daemon mode when `Some`: paths handed over by the socket thread.
     incoming: Option<Receiver<PathBuf>>,
     /// Hotkey presses that already resolved to a file.
     presses: Option<Receiver<PathBuf>>,
     visible: bool,
+    browser: Browser,
+    /// Paths chosen in the native dialog, delivered from its thread. `None`
+    /// means "the dialog closed without a choice" — cancelled, or never shown.
+    picked: Receiver<Option<PathBuf>>,
+    picks: Sender<Option<PathBuf>>,
+    /// A dialog thread is running; the Open button waits rather than stacking
+    /// a second dialog on top of the first.
+    dialog_open: bool,
+    /// Why the last Open fell back to the built-in browser, shown on the home
+    /// screen so "the dialog did nothing" is never what it looks like.
+    dialog_note: Option<&'static str>,
+    recent: Recent,
+    /// `recent` minus the entries that no longer exist, rebuilt when the list
+    /// changes rather than stat-ing ten paths every frame.
+    recent_shown: Vec<PathBuf>,
+    recent_store: recent::Store,
 }
 
 impl SekioApp {
@@ -96,38 +154,62 @@ impl SekioApp {
             worker,
             tracker,
             path,
+            mode,
             wrap,
             borderless,
             timing,
             incoming,
             presses,
         } = startup;
-        let visible = path.is_some();
+        let loaded = path.is_some();
+        // Only a daemon with nothing to show starts hidden. A window the user
+        // launched from a menu must appear, empty or not — that is the whole
+        // point of the home screen.
+        let visible = loaded || mode != Mode::Daemon;
         let path = path.unwrap_or_default();
-        let siblings = if visible {
+        let siblings = if loaded {
             Siblings::scan(&path, wrap)
         } else {
             Siblings::default()
         };
+        let (picks, picked) = mpsc::channel();
         Self {
             worker,
             tracker,
+            browse_tracker: RequestTracker::new(),
             siblings,
             path,
-            view: if visible { View::Loading } else { View::Idle },
+            view: if loaded { View::Loading } else { View::Home },
             zoom: 1.0,
             timing,
             first_paint_logged: false,
             sized: false,
             borderless,
             wrap,
+            mode,
             incoming,
             presses,
             visible,
+            browser: Browser::default(),
+            picked,
+            picks,
+            dialog_open: false,
+            dialog_note: None,
+            recent: Recent::new(),
+            recent_shown: Vec::new(),
+            // Spawns one thread and returns; the list arrives on whichever
+            // frame the read finishes, so the home screen paints immediately.
+            recent_store: recent::Store::spawn(ctx.clone()),
         }
     }
 
-    /// Show a path that arrived over the daemon socket.
+    /// The path on screen, or `None` on the home screen.
+    fn current(&self) -> Option<&Path> {
+        Some(self.path.as_path()).filter(|path| !path.as_os_str().is_empty())
+    }
+
+    /// Show a path that arrived over the daemon socket, from the hotkey, or
+    /// from anything else that already decided what to preview.
     ///
     /// It goes through `request_current`, i.e. `RequestTracker::begin`, like
     /// every other navigation: whatever preview is in flight is cancelled and
@@ -156,21 +238,82 @@ impl SekioApp {
         self.timing.log("handoff shown");
     }
 
-    /// Dismiss the popup. A one-shot process exits; the daemon only hides,
-    /// dropping the preview (and its GPU texture) so a resident process does
-    /// not sit on the last hexdump it was shown.
-    fn dismiss(&mut self, ctx: &egui::Context) {
+    /// Preview something the user opened *through this window* — the dialog,
+    /// the browser, a drop, a recent entry.
+    ///
+    /// The one difference from `show` is the mode promotion: a popup that the
+    /// user has started opening files in is not a popup any more, and Escape
+    /// must stop throwing it away (see `state::Mode::promoted`).
+    fn open(&mut self, ctx: &egui::Context, path: PathBuf) {
+        // Best effort: the recent list and the sibling scan both want a path
+        // that still means this file in the next process. A path that cannot
+        // be canonicalised (it just vanished) is previewed anyway, so the
+        // failure is a message in the window rather than a silent nothing.
+        let path = path.canonicalize().unwrap_or(path);
+        self.mode = self.mode.promoted();
+        self.dialog_note = None;
+        self.show(ctx, path);
+    }
+
+    /// Drop the preview and go back to the home screen, keeping the process
+    /// (and its window) alive.
+    fn go_home(&mut self, ctx: &egui::Context) {
         self.tracker.cancel_all();
-        if self.incoming.is_none() {
-            ctx.send_viewport_cmd(ViewportCommand::Close);
-            return;
-        }
-        self.view = View::Idle;
+        self.view = View::Home;
         self.path = PathBuf::new();
         self.siblings = Siblings::default();
         self.zoom = 1.0;
-        self.visible = false;
-        ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+        self.sized = false;
+        self.refresh_recent();
+        ctx.set_zoom_factor(1.0);
+        ctx.send_viewport_cmd(ViewportCommand::Title("sekio".to_owned()));
+    }
+
+    /// Esc / Space. What it means depends only on how the process was started
+    /// — see `state::close_action`, which is where the rule is written down
+    /// and tested:
+    ///
+    /// * `sekio-gui <path>` closes, exactly as it always has (Quick Look).
+    /// * `--daemon` hides and stays warm.
+    /// * `sekio-gui` with no path goes back to the home screen, and on the
+    ///   home screen does nothing at all. Closing an application the user
+    ///   deliberately launched, before they have opened anything in it, is
+    ///   never what they meant.
+    fn dismiss(&mut self, ctx: &egui::Context) {
+        match close_action(self.mode, self.view.is_showing()) {
+            Close::Window => {
+                self.tracker.cancel_all();
+                self.browse_tracker.cancel_all();
+                ctx.send_viewport_cmd(ViewportCommand::Close);
+            }
+            Close::Hide => {
+                self.tracker.cancel_all();
+                self.browse_tracker.cancel_all();
+                // Dropping the preview (and its GPU texture) so a resident
+                // process does not sit on the last hexdump it was shown.
+                self.view = View::Home;
+                self.path = PathBuf::new();
+                self.siblings = Siblings::default();
+                self.zoom = 1.0;
+                self.browser.close();
+                self.visible = false;
+                ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+            }
+            Close::Home => self.go_home(ctx),
+            Close::Nothing => {}
+        }
+    }
+
+    /// Ctrl+Q and the window's close button mean the same thing: end this
+    /// window. A daemon still only hides — it is meant to outlive its windows.
+    fn quit(&mut self, ctx: &egui::Context) {
+        if self.mode == Mode::Daemon {
+            self.dismiss(ctx);
+            return;
+        }
+        self.tracker.cancel_all();
+        self.browse_tracker.cancel_all();
+        ctx.send_viewport_cmd(ViewportCommand::Close);
     }
 
     /// The window manager's close button must not kill a resident daemon: for
@@ -178,7 +321,7 @@ impl SekioApp {
     /// root viewport unless `CancelClose` is sent during this very frame,
     /// which is why this runs in `logic`.
     fn handle_close_request(&mut self, ctx: &egui::Context) {
-        if self.incoming.is_none() || !ctx.input(|i| i.viewport().close_requested()) {
+        if self.mode != Mode::Daemon || !ctx.input(|i| i.viewport().close_requested()) {
             return;
         }
         ctx.send_viewport_cmd(ViewportCommand::CancelClose);
@@ -217,16 +360,72 @@ impl SekioApp {
         }
         // A press that resolved to nothing never reaches this channel, so
         // `Ignore` here only happens on a frame with no press at all.
-        let showing = if self.visible && !self.path.as_os_str().is_empty() {
-            Some(self.path.as_path())
-        } else {
-            None
-        };
+        let showing = if self.visible { self.current() } else { None };
         match hotkey::action(latest, showing) {
-            Action::Show(path) => self.show(ctx, path),
-            Action::Dismiss => self.dismiss(ctx),
-            Action::Ignore => {}
+            PressAction::Show(path) => self.show(ctx, path),
+            PressAction::Dismiss => self.dismiss(ctx),
+            PressAction::Ignore => {}
         }
+    }
+
+    /// Drain the dialog thread's channel. A message — a path or a cancel —
+    /// always means the dialog is gone, so the flag clears either way; the
+    /// thread reports even if `rfd` panics inside it (see `dialog::spawn`).
+    fn poll_picked(&mut self, ctx: &egui::Context) {
+        let mut chosen = None;
+        let mut closed = false;
+        while let Ok(result) = self.picked.try_recv() {
+            closed = true;
+            if result.is_some() {
+                chosen = result;
+            }
+        }
+        if closed {
+            self.dialog_open = false;
+        }
+        if let Some(path) = chosen {
+            self.open(ctx, path);
+        }
+    }
+
+    /// A file dropped on the window is the most natural way there is to open
+    /// something in a previewer, so it goes through the same path as every
+    /// other user-initiated open.
+    fn poll_drops(&mut self, ctx: &egui::Context) {
+        let dropped = ctx.input(|i| dropped_path(&i.raw.dropped_files));
+        if let Some(path) = dropped {
+            self.open(ctx, path);
+        }
+    }
+
+    /// Pick up the recent list once the store thread has read it.
+    ///
+    /// Anything previewed before it landed stays newest: the file on disk is
+    /// merged *under* what this session has already seen.
+    fn poll_recent(&mut self) {
+        let Some(mut merged) = self.recent_store.poll() else {
+            return;
+        };
+        for path in self.recent.paths().iter().rev() {
+            merged.add(path);
+        }
+        self.recent = merged;
+        self.refresh_recent();
+    }
+
+    /// Remember a path we actually managed to preview, and queue the write.
+    fn remember(&mut self, path: &Path) {
+        if self.recent.add(path) {
+            self.recent_store.remember(&self.recent);
+            self.refresh_recent();
+        }
+    }
+
+    /// Rebuild the home screen's list, dropping anything that has been deleted
+    /// since. Done on change, not per frame — ten `stat`s a frame for a list
+    /// nobody is looking at would be silly.
+    fn refresh_recent(&mut self) {
+        self.recent_shown = self.recent.existing();
     }
 
     /// Cancel whatever is in flight and ask the worker for `self.path`.
@@ -236,7 +435,72 @@ impl SekioApp {
             id,
             path: self.path.clone(),
             cancel,
+            kind: Kind::Preview,
         });
+    }
+
+    /// Ask the worker to list the browser pane's directory. Core does the IO,
+    /// off this thread, exactly as it does for a preview.
+    fn request_listing(&mut self) {
+        let (id, cancel) = self.browse_tracker.begin();
+        self.worker.request(Request {
+            id,
+            path: self.browser.dir().to_path_buf(),
+            cancel,
+            kind: Kind::Browse,
+        });
+    }
+
+    fn browse(&mut self, dir: PathBuf) {
+        self.browser.show(dir);
+        self.request_listing();
+    }
+
+    fn toggle_browser(&mut self) {
+        if self.browser.is_open() {
+            self.browser.close();
+            return;
+        }
+        if self.browser.dir().as_os_str().is_empty() {
+            let dir = browser::start_dir(self.current());
+            self.browse(dir);
+        } else {
+            // Back where we left it, with a refresh in flight in case the
+            // directory changed while the pane was shut.
+            self.browser.reopen();
+            self.request_listing();
+        }
+    }
+
+    /// Ctrl+O and the Open buttons.
+    ///
+    /// The native dialog is preferred, but it is not guaranteed to exist: on
+    /// Linux it is the XDG desktop portal, and plenty of sessions have no
+    /// portal service running. Rather than opening nothing, we say why and
+    /// open the built-in browser, which needs no portal, no GTK and no
+    /// external process at all.
+    fn open_dialog(&mut self, ctx: &egui::Context) {
+        if self.dialog_open {
+            return;
+        }
+        match dialog::availability() {
+            dialog::Availability::Native => {
+                let start = Some(browser::start_dir(self.current()));
+                if dialog::spawn(start, self.picks.clone(), ctx.clone()) {
+                    self.dialog_open = true;
+                    self.dialog_note = None;
+                } else {
+                    self.fall_back("could not start the file dialog — using the built-in browser");
+                }
+            }
+            dialog::Availability::Unavailable(reason) => self.fall_back(reason),
+        }
+    }
+
+    fn fall_back(&mut self, reason: &'static str) {
+        self.dialog_note = Some(reason);
+        let dir = browser::start_dir(self.current());
+        self.browse(dir);
     }
 
     /// Move `delta` files within the directory and re-preview immediately.
@@ -256,60 +520,140 @@ impl SekioApp {
 
     fn poll_worker(&mut self, ctx: &egui::Context) {
         while let Some(response) = self.worker.poll() {
-            // Generation check: anything but the newest request is stale.
-            if !self.tracker.accept(response.id) {
-                continue;
+            match response.kind {
+                Kind::Preview => self.accept_preview(ctx, response),
+                Kind::Browse => self.accept_listing(response),
             }
-            match response.outcome {
-                Outcome::Ready(loaded) => {
-                    // One upload per preview; the handle lives until the next
-                    // preview replaces it (dropping it frees the GPU texture).
-                    let texture = loaded.image.as_ref().map(|img| {
-                        ctx.load_texture("sekio-preview", img.clone(), TextureOptions::LINEAR)
-                    });
-                    if !self.sized {
-                        self.sized = true;
-                        ctx.send_viewport_cmd(ViewportCommand::InnerSize(desired_size(
-                            &loaded.preview.content,
-                        )));
-                    }
-                    self.view = View::Ready(Box::new(Shown {
-                        loaded,
-                        text_job: None,
-                        texture,
-                        elapsed: response.elapsed,
-                    }));
+        }
+    }
+
+    fn accept_preview(&mut self, ctx: &egui::Context, response: Response) {
+        // Generation check: anything but the newest request is stale.
+        if !self.tracker.accept(response.id) {
+            return;
+        }
+        match response.outcome {
+            Outcome::Ready(loaded) => {
+                // One upload per preview; the handle lives until the next
+                // preview replaces it (dropping it frees the GPU texture).
+                let texture = loaded.image.as_ref().map(|img| {
+                    ctx.load_texture("sekio-preview", img.clone(), TextureOptions::LINEAR)
+                });
+                // A window the user launched and sized themselves is theirs;
+                // only a popup refits itself around each file. Nor do we
+                // resize under an open browser pane.
+                if !self.sized && self.mode != Mode::App && !self.browser.is_open() {
+                    self.sized = true;
+                    ctx.send_viewport_cmd(ViewportCommand::InnerSize(desired_size(
+                        &loaded.preview.content,
+                    )));
                 }
-                Outcome::Failed(message) => self.view = View::Failed(message),
-                // Cancelled results are normal control flow: a newer request
-                // is already on its way, so keep showing "loading…".
-                Outcome::Cancelled => self.view = View::Loading,
+                self.remember(&response.path);
+                self.view = View::Ready(Box::new(Shown {
+                    loaded,
+                    text_job: None,
+                    texture,
+                    elapsed: response.elapsed,
+                }));
             }
-            ctx.send_viewport_cmd(ViewportCommand::Title(format!(
-                "sekio — {}",
-                file_name(&response.path)
-            )));
+            Outcome::Failed(message) => self.view = View::Failed(message),
+            // Cancelled results are normal control flow: a newer request
+            // is already on its way, so keep showing "loading…".
+            Outcome::Cancelled => self.view = View::Loading,
+        }
+        ctx.send_viewport_cmd(ViewportCommand::Title(format!(
+            "sekio — {}",
+            file_name(&response.path)
+        )));
+    }
+
+    /// A directory listing for the browser pane. Its own generation counter,
+    /// so a listing that lost the race is dropped rather than painted.
+    fn accept_listing(&mut self, response: Response) {
+        if !self.browse_tracker.accept(response.id) {
+            return;
+        }
+        match response.outcome {
+            Outcome::Ready(loaded) => match loaded.preview.content {
+                PreviewContent::Listing { entries } => {
+                    self.browser.fill(&response.path, entries);
+                }
+                // Not a directory after all (it changed under us): the pane
+                // says so rather than showing something meaningless.
+                _ => {
+                    self.browser.fail(&response.path);
+                }
+            },
+            Outcome::Failed(_) => {
+                self.browser.fail(&response.path);
+            }
+            Outcome::Cancelled => {}
         }
     }
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
         let keys = ctx.input(|i| Keys {
-            close: i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::Space),
-            prev: i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::ArrowUp),
-            next: i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::ArrowDown),
+            escape: i.key_pressed(egui::Key::Escape),
+            space: i.key_pressed(egui::Key::Space),
+            up: i.key_pressed(egui::Key::ArrowUp),
+            down: i.key_pressed(egui::Key::ArrowDown),
+            left: i.key_pressed(egui::Key::ArrowLeft),
+            right: i.key_pressed(egui::Key::ArrowRight),
+            enter: i.key_pressed(egui::Key::Enter),
+            open: i.modifiers.command && i.key_pressed(egui::Key::O),
+            browse: i.modifiers.command && i.key_pressed(egui::Key::B),
+            quit: i.modifiers.command && i.key_pressed(egui::Key::Q),
             zoom_in: i.modifiers.command
                 && (i.key_pressed(egui::Key::Plus) || i.key_pressed(egui::Key::Equals)),
             zoom_out: i.modifiers.command && i.key_pressed(egui::Key::Minus),
             zoom_reset: i.modifiers.command && i.key_pressed(egui::Key::Num0),
         });
 
-        if keys.close {
+        if keys.quit {
+            self.quit(ctx);
+            return;
+        }
+        if keys.open {
+            self.open_dialog(ctx);
+        }
+        if keys.browse {
+            self.toggle_browser();
+        }
+
+        // Escape backs out of the browser pane first — it is the thing the
+        // user most recently opened. Space is the Quick Look dismiss and goes
+        // straight to the rule.
+        if keys.escape && self.browser.is_open() {
+            self.browser.close();
+        } else if keys.escape || keys.space {
             self.dismiss(ctx);
             return;
         }
-        if keys.prev {
+
+        if self.browser.is_open() {
+            // While the pane is up the arrows steer it; sibling navigation is
+            // what they do the rest of the time.
+            if keys.up {
+                self.browser.move_cursor(-1);
+            }
+            if keys.down {
+                self.browser.move_cursor(1);
+            }
+            if keys.left {
+                let parent = self.browser.parent();
+                if let Some(parent) = parent {
+                    self.browse(parent);
+                }
+            }
+            if keys.right || keys.enter {
+                let activated = self.browser.activate(self.browser.cursor());
+                if let Some(activated) = activated {
+                    self.apply(ctx, activated.into());
+                }
+            }
+        } else if keys.left || keys.up {
             self.navigate(-1);
-        } else if keys.next {
+        } else if keys.right || keys.down {
             self.navigate(1);
         }
 
@@ -322,6 +666,22 @@ impl SekioApp {
         if keys.zoom_reset {
             self.zoom = 1.0;
             ctx.set_zoom_factor(1.0);
+        }
+    }
+
+    fn apply(&mut self, ctx: &egui::Context, action: Action) {
+        match action {
+            Action::OpenDialog => self.open_dialog(ctx),
+            Action::ToggleBrowser => self.toggle_browser(),
+            Action::CloseBrowser => self.browser.close(),
+            Action::Open(path) => self.open(ctx, path),
+            Action::Descend(dir) => self.browse(dir),
+            Action::Parent => {
+                let parent = self.browser.parent();
+                if let Some(parent) = parent {
+                    self.browse(parent);
+                }
+            }
         }
     }
 
@@ -356,15 +716,16 @@ impl SekioApp {
         }
     }
 
-    fn header(&self, ui: &mut egui::Ui) {
+    fn header(&self, ui: &mut egui::Ui) -> Option<Action> {
+        let mut action = None;
         let response = egui::Panel::top("sekio-header")
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    // The daemon has no path between popups.
-                    let title = if self.path.as_os_str().is_empty() {
-                        "sekio".to_owned()
-                    } else {
-                        file_name(&self.path)
+                    // There is no path on the home screen, or in a daemon
+                    // between popups.
+                    let title = match self.current() {
+                        Some(path) => file_name(path),
+                        None => "sekio".to_owned(),
                     };
                     ui.label(RichText::new(title).strong());
                     if let (Some(pos), true) = (self.siblings.position(), self.siblings.len() > 1) {
@@ -382,6 +743,22 @@ impl SekioApp {
                                 ui.label(RichText::new("truncated").color(style::DIM));
                             }
                         }
+                        // Always reachable, whatever is on screen: this is the
+                        // "open something" the app was missing.
+                        if ui
+                            .add_enabled(!self.dialog_open, egui::Button::new("Open…"))
+                            .on_hover_text("Open a file (Ctrl+O)")
+                            .clicked()
+                        {
+                            action = Some(Action::OpenDialog);
+                        }
+                        if ui
+                            .selectable_label(self.browser.is_open(), "Browse")
+                            .on_hover_text("Built-in file browser (Ctrl+B)")
+                            .clicked()
+                        {
+                            action = Some(Action::ToggleBrowser);
+                        }
                     });
                 });
             })
@@ -392,6 +769,7 @@ impl SekioApp {
         if self.borderless && response.interact(egui::Sense::drag()).drag_started() {
             ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
         }
+        action
     }
 
     fn footer(&self, ui: &mut egui::Ui) {
@@ -446,42 +824,77 @@ impl SekioApp {
         });
     }
 
-    fn body(&mut self, ui: &mut egui::Ui) {
+    /// The built-in browser, as a resizable pane down the left-hand side.
+    fn browser_pane(&mut self, ui: &mut egui::Ui) -> Option<Action> {
+        if !self.browser.is_open() {
+            return None;
+        }
+        let browser = &mut self.browser;
+        egui::Panel::left("sekio-browser")
+            .default_size(260.0)
+            .min_size(150.0)
+            .show(ui, |ui| paint_browser(ui, browser))
+            .inner
+    }
+
+    fn body(&mut self, ui: &mut egui::Ui) -> Option<Action> {
         let zoom = self.zoom;
+        let home = HomeScreen {
+            recent: &self.recent_shown,
+            note: self.dialog_note,
+            dialog_open: self.dialog_open,
+        };
         let view = &mut self.view;
-        egui::CentralPanel::default().show(ui, |ui| match view {
-            // Only reachable in daemon mode, and only on a frame where the
-            // hide has not been applied yet.
-            View::Idle => {
-                ui.centered_and_justified(|ui| {
-                    ui.label(RichText::new("sekio").color(style::DIM));
-                });
-            }
-            View::Loading => {
-                ui.centered_and_justified(|ui| {
-                    ui.label(RichText::new("loading…").color(style::DIM));
-                });
-            }
-            // A failed preview is a message in the window, never a crash; the
-            // header still names the file it belongs to.
-            View::Failed(message) => {
-                let color = ui.visuals().error_fg_color;
-                ui.centered_and_justified(|ui| {
-                    ui.label(RichText::new(format!("cannot preview: {message}")).color(color));
-                });
-            }
-            View::Ready(shown) => paint_content(ui, shown, zoom),
-        });
+        egui::CentralPanel::default()
+            .show(ui, |ui| match view {
+                View::Home => paint_home(ui, &home),
+                View::Loading => {
+                    ui.centered_and_justified(|ui| {
+                        ui.label(RichText::new("loading…").color(style::DIM));
+                    });
+                    None
+                }
+                // A failed preview is a message in the window, never a crash;
+                // the header still names the file it belongs to.
+                View::Failed(message) => {
+                    let color = ui.visuals().error_fg_color;
+                    ui.centered_and_justified(|ui| {
+                        ui.label(RichText::new(format!("cannot preview: {message}")).color(color));
+                    });
+                    None
+                }
+                View::Ready(shown) => {
+                    paint_content(ui, shown, zoom);
+                    None
+                }
+            })
+            .inner
     }
 }
 
 struct Keys {
-    close: bool,
-    prev: bool,
-    next: bool,
+    escape: bool,
+    space: bool,
+    up: bool,
+    down: bool,
+    left: bool,
+    right: bool,
+    enter: bool,
+    open: bool,
+    browse: bool,
+    quit: bool,
     zoom_in: bool,
     zoom_out: bool,
     zoom_reset: bool,
+}
+
+impl From<Activate> for Action {
+    fn from(activate: Activate) -> Self {
+        match activate {
+            Activate::Descend(dir) => Self::Descend(dir),
+            Activate::Preview(path) => Self::Open(path),
+        }
+    }
 }
 
 impl eframe::App for SekioApp {
@@ -495,6 +908,9 @@ impl eframe::App for SekioApp {
         // Same route as a socket handoff: `show` -> `request_current` ->
         // `RequestTracker::begin`, so a press during a slow render cancels it.
         self.poll_presses(ctx);
+        self.poll_picked(ctx);
+        self.poll_drops(ctx);
+        self.poll_recent();
         self.poll_worker(ctx);
         self.handle_close_request(ctx);
         self.handle_keys(ctx);
@@ -502,9 +918,17 @@ impl eframe::App for SekioApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.header(ui);
+        // Panels first, central panel last — egui lays them out in that order.
+        let mut action = self.header(ui);
         self.footer(ui);
-        self.body(ui);
+        action = action.or_else(|| self.browser_pane(ui));
+        action = action.or_else(|| self.body(ui));
+        paint_drop_hint(ui.ctx());
+
+        if let Some(action) = action {
+            let ctx = ui.ctx().clone();
+            self.apply(&ctx, action);
+        }
 
         if !self.first_paint_logged {
             self.first_paint_logged = true;
@@ -516,7 +940,246 @@ impl eframe::App for SekioApp {
         // Don't let a long-running render keep the process alive after the
         // window closes.
         self.tracker.cancel_all();
+        self.browse_tracker.cancel_all();
     }
+}
+
+/// The first path in a drop. A multi-file drop previews one of them — the
+/// arrow keys reach the rest, since they are siblings by definition.
+fn dropped_path(files: &[egui::DroppedFile]) -> Option<PathBuf> {
+    files.iter().find_map(|file| file.path.clone())
+}
+
+/// While a drag is over the window, say what letting go will do. Painted on a
+/// foreground layer so it covers the panes as well as the preview.
+fn paint_drop_hint(ctx: &egui::Context) {
+    let (hovering, screen) = ctx.input(|i| (!i.raw.hovered_files.is_empty(), i.content_rect()));
+    if !hovering {
+        return;
+    }
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::new("sekio-drop-hint"),
+    ));
+    painter.rect_filled(screen, 0.0, egui::Color32::from_black_alpha(190));
+    painter.rect_stroke(
+        screen.shrink(10.0),
+        8.0,
+        egui::Stroke::new(2.0, style::DIM),
+        egui::StrokeKind::Inside,
+    );
+    painter.text(
+        screen.center(),
+        egui::Align2::CENTER_CENTER,
+        "Drop to preview",
+        egui::FontId::proportional(22.0),
+        egui::Color32::WHITE,
+    );
+}
+
+/// Everything the home screen paints, gathered up so it can borrow the app
+/// immutably while the central panel holds `&mut View`.
+struct HomeScreen<'a> {
+    recent: &'a [PathBuf],
+    note: Option<&'static str>,
+    dialog_open: bool,
+}
+
+/// The "nothing loaded yet" screen: what this is, how to open something, what
+/// was opened last time, and every key that does anything.
+fn paint_home(ui: &mut egui::Ui, home: &HomeScreen<'_>) -> Option<Action> {
+    let mut action = None;
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.add_space(26.0);
+            // A fixed-width column, centred: `ui.horizontal` inside it then
+            // lays out left-to-right the way it looks like it should.
+            let width = ui.available_width().clamp(220.0, 460.0);
+            ui.vertical_centered(|ui| {
+                ui.allocate_ui_with_layout(
+                    Vec2::new(width, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        action = home_column(ui, home);
+                    },
+                );
+            });
+            ui.add_space(24.0);
+        });
+    action
+}
+
+fn home_column(ui: &mut egui::Ui, home: &HomeScreen<'_>) -> Option<Action> {
+    let mut action = None;
+
+    ui.label(RichText::new("sekio").size(34.0).strong());
+    ui.label(
+        RichText::new(format!(
+            "quick preview for any file · v{}",
+            env!("CARGO_PKG_VERSION")
+        ))
+        .color(style::DIM),
+    );
+
+    ui.add_space(18.0);
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(!home.dialog_open, egui::Button::new("Open file…"))
+            .clicked()
+        {
+            action = Some(Action::OpenDialog);
+        }
+        if ui.button("Browse files").clicked() {
+            action = Some(Action::ToggleBrowser);
+        }
+        if home.dialog_open {
+            ui.add(egui::Spinner::new().size(12.0));
+            ui.label(RichText::new("waiting for the dialog…").color(style::DIM));
+        }
+    });
+    ui.add_space(6.0);
+    ui.label(
+        RichText::new("…or drop a file anywhere in this window.")
+            .color(style::DIM)
+            .size(12.0),
+    );
+    if let Some(note) = home.note {
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new(note)
+                .color(ui.visuals().warn_fg_color)
+                .size(12.0),
+        );
+    }
+
+    ui.add_space(20.0);
+    section(ui, "Recent");
+    if home.recent.is_empty() {
+        ui.label(
+            RichText::new("nothing yet — what you preview shows up here.")
+                .color(style::DIM)
+                .size(12.0),
+        );
+    } else {
+        for path in home.recent {
+            ui.horizontal(|ui| {
+                ui.style_mut().wrap_mode = Some(style::NO_WRAP);
+                if ui.link(file_name(path)).clicked() {
+                    action = Some(Action::Open(path.clone()));
+                }
+                if let Some(parent) = path.parent() {
+                    ui.label(
+                        RichText::new(browser::compact(parent))
+                            .color(style::DIM)
+                            .size(11.0),
+                    );
+                }
+            });
+        }
+    }
+
+    ui.add_space(20.0);
+    section(ui, "Keys");
+    egui::Grid::new("sekio-keys")
+        .num_columns(2)
+        .spacing([18.0, 3.0])
+        .show(ui, |ui| {
+            for (key, what) in KEYS {
+                ui.label(RichText::new(*key).monospace().size(11.0));
+                ui.label(RichText::new(*what).color(style::DIM).size(11.0));
+                ui.end_row();
+            }
+        });
+
+    action
+}
+
+/// The key list on the home screen. Kept in one place so it cannot drift from
+/// `SekioApp::handle_keys`.
+const KEYS: &[(&str, &str)] = &[
+    ("Ctrl+O", "open a file"),
+    ("Ctrl+B", "built-in file browser"),
+    ("← → ↑ ↓", "previous / next file in the folder"),
+    ("Ctrl +/-", "zoom, Ctrl+0 to reset"),
+    ("Space", "close the preview"),
+    ("Esc", "back to this screen"),
+    ("Ctrl+Q", "quit"),
+];
+
+fn section(ui: &mut egui::Ui, title: &str) {
+    ui.label(RichText::new(title).color(style::DIM).size(11.0).strong());
+    ui.add_space(2.0);
+}
+
+/// The browser pane: where we are, a way up, and one row per entry.
+fn paint_browser(ui: &mut egui::Ui, browser: &mut Browser) -> Option<Action> {
+    let mut action = None;
+
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(browser.parent().is_some(), egui::Button::new("↑"))
+            .on_hover_text("Parent directory (←)")
+            .clicked()
+        {
+            action = Some(Action::Parent);
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .button("✕")
+                .on_hover_text("Close the pane (Esc)")
+                .clicked()
+            {
+                action = Some(Action::CloseBrowser);
+            }
+            if browser.is_loading() {
+                ui.add(egui::Spinner::new().size(11.0));
+            }
+        });
+    });
+    ui.label(
+        RichText::new(browser::compact(browser.dir()))
+            .color(style::DIM)
+            .size(11.0),
+    );
+    ui.separator();
+
+    if browser.has_failed() {
+        ui.label(
+            RichText::new("cannot list this directory")
+                .color(ui.visuals().error_fg_color)
+                .size(12.0),
+        );
+    } else if browser.is_loading() && browser.entries().is_empty() {
+        ui.label(RichText::new("listing…").color(style::DIM).size(12.0));
+    } else if browser.entries().is_empty() {
+        ui.label(RichText::new("empty").color(style::DIM).size(12.0));
+    }
+
+    let dir_color = ui.visuals().hyperlink_color;
+    let cursor = browser.cursor();
+    let mut clicked = None;
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.style_mut().wrap_mode = Some(style::NO_WRAP);
+            for (i, entry) in browser.entries().iter().enumerate() {
+                let text = if entry.is_dir {
+                    RichText::new(format!("{}/", entry.name)).color(dir_color)
+                } else {
+                    RichText::new(entry.name.clone())
+                };
+                if ui.selectable_label(i == cursor, text.size(12.0)).clicked() {
+                    clicked = Some(i);
+                }
+            }
+        });
+
+    if let Some(i) = clicked {
+        browser.select(i);
+        action = browser.activate(i).map(Action::from);
+    }
+    action
 }
 
 fn dim_label(ui: &mut egui::Ui, text: String) {
@@ -787,5 +1450,58 @@ mod tests {
         let size = desired_size(&content);
         assert!(size.x >= 420.0 && size.x <= 1400.0);
         assert!(size.y >= 300.0 && size.y <= 900.0);
+    }
+
+    #[test]
+    fn the_home_screen_is_the_only_state_that_is_not_showing_a_file() {
+        assert!(!View::Home.is_showing());
+        assert!(View::Loading.is_showing());
+        assert!(View::Failed("boom".to_owned()).is_showing());
+    }
+
+    fn dropped(path: Option<&str>) -> egui::DroppedFile {
+        egui::DroppedFile {
+            path: path.map(PathBuf::from),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_drop_takes_the_first_path_it_can_use() {
+        assert_eq!(dropped_path(&[]), None);
+        // A web-style drop carries bytes and no path: nothing to preview.
+        assert_eq!(dropped_path(&[dropped(None)]), None);
+        assert_eq!(
+            dropped_path(&[
+                dropped(None),
+                dropped(Some("/d/a.txt")),
+                dropped(Some("/d/b.txt"))
+            ]),
+            Some(PathBuf::from("/d/a.txt"))
+        );
+    }
+
+    #[test]
+    fn browser_activation_maps_onto_the_right_action() {
+        assert!(matches!(
+            Action::from(Activate::Descend(PathBuf::from("/d"))),
+            Action::Descend(dir) if dir == Path::new("/d")
+        ));
+        // Activating a file is the same "the user opened this" path as the
+        // dialog and a drop, so it promotes the mode too.
+        assert!(matches!(
+            Action::from(Activate::Preview(PathBuf::from("/d/a.txt"))),
+            Action::Open(path) if path == Path::new("/d/a.txt")
+        ));
+    }
+
+    #[test]
+    fn every_key_the_home_screen_advertises_is_spelled_out() {
+        for (key, what) in KEYS {
+            assert!(!key.is_empty() && !what.is_empty());
+        }
+        let keys: Vec<&str> = KEYS.iter().map(|(key, _)| *key).collect();
+        assert!(keys.contains(&"Ctrl+O"), "the fix for the whole complaint");
+        assert!(keys.contains(&"Ctrl+B"), "the fallback that always works");
     }
 }

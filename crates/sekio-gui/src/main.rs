@@ -5,8 +5,12 @@
 //! polls for results, so arrowing through a directory of huge files never
 //! freezes the window.
 //!
-//! Three entry points, one code path:
+//! Entry points, one code path:
 //!
+//! * `sekio-gui` — open a window on the home screen: the app name, the keys,
+//!   the files previewed last time, and an obvious way to open something. This
+//!   is what a Start Menu entry, a dock icon or a `.desktop` launcher runs, so
+//!   it must never be an error.
 //! * `sekio-gui <path>` — open a window on that path.
 //! * `sekio-gui --daemon` — stay resident with the window hidden, waiting for
 //!   paths on a Unix socket (see `daemon.rs`). Linux/Unix only.
@@ -27,9 +31,12 @@
 //! selection instead.
 
 mod app;
+mod browser;
 #[cfg(unix)]
 mod daemon;
+mod dialog;
 mod hotkey;
+mod recent;
 mod selection;
 mod state;
 mod style;
@@ -43,7 +50,7 @@ use clap::Parser;
 use sekio_core::PreviewOptions;
 
 use crate::app::{SekioApp, Startup};
-use crate::state::RequestTracker;
+use crate::state::{Mode, RequestTracker};
 use crate::timing::Timing;
 use crate::worker::Worker;
 
@@ -51,8 +58,7 @@ use crate::worker::Worker;
 #[derive(Parser)]
 #[command(version, about)]
 struct Args {
-    /// File or directory to preview
-    #[arg(required_unless_present_any = ["daemon", "doctor"])]
+    /// File or directory to preview [default: open the home screen]
     path: Option<PathBuf>,
 
     /// Max lines of text to render
@@ -133,39 +139,56 @@ fn binding(args: &Args) -> Result<Binding> {
     Ok(Some((spec.to_string(), key)))
 }
 
-/// One path, one window (after one attempt to let a warm daemon do it).
+/// One window, with or without a path.
+///
+/// With a path this is the Quick Look popup it has always been (after one
+/// attempt to let a warm daemon do it instead). Without one — a launcher, a
+/// dock icon, a Start Menu entry — it opens on the home screen, which is the
+/// difference between an application and a command that fails when you click
+/// its icon.
 fn run_once(args: Args, timing: Timing) -> Result<()> {
-    let requested = args
-        .path
-        .clone()
-        .ok_or_else(|| anyhow!("a path is required"))?;
     // Canonicalized *here*, in the client: the daemon's cwd is not ours, so a
     // relative path would mean something different on the other side of the
     // socket. It also fails early, with this process's error message, if the
     // path does not exist.
-    let path = requested
-        .canonicalize()
-        .with_context(|| format!("cannot open {}", requested.display()))?;
+    let path = match args.path.clone() {
+        Some(requested) => Some(
+            requested
+                .canonicalize()
+                .with_context(|| format!("cannot open {}", requested.display()))?,
+        ),
+        None => None,
+    };
 
-    // `--probe` measures *this* process, so it never hands off.
-    if !args.no_daemon && !args.probe && hand_off(&path, timing) {
-        return Ok(());
+    // `--probe` measures *this* process, so it never hands off. Neither does a
+    // launch with no path: there is nothing to hand over, and the user asked
+    // for a window here.
+    if let Some(path) = &path {
+        if !args.no_daemon && !args.probe && hand_off(path, timing) {
+            return Ok(());
+        }
     }
 
     let ctx = egui::Context::default();
-    let (worker, tracker) = start_preview(&ctx, &args, timing, Some(&path));
+    let (worker, tracker) = start_preview(&ctx, &args, timing, path.as_deref());
 
     if args.probe {
-        probe(&worker, tracker, timing);
+        probe(&worker, tracker, timing, path.is_some());
         return Ok(());
     }
 
+    let mode = if path.is_some() {
+        Mode::Popup
+    } else {
+        Mode::App
+    };
     open_window(
         ctx,
         Startup {
             worker,
             tracker,
-            path: Some(path),
+            path,
+            mode,
             wrap: args.wrap,
             borderless: args.borderless,
             timing,
@@ -199,22 +222,52 @@ fn start_preview(
             id,
             path: path.to_path_buf(),
             cancel,
+            kind: worker::Kind::Preview,
         });
         timing.log("first request queued");
     }
     (worker, tracker)
 }
 
-/// Wait for the first preview and report it, without ever opening a window.
-fn probe(worker: &Worker, mut tracker: RequestTracker, timing: Timing) {
-    let outcome = match worker.wait() {
-        Some(response) if tracker.accept(response.id) => outcome_label(response.outcome),
-        _ => "worker stopped".to_string(),
+/// Report the startup path without ever opening a window.
+///
+/// With a path that means waiting for the first preview. Without one there is
+/// nothing to wait for — which is the point: the home screen has to be on
+/// screen before any of the optional extras (the recent list, the dialog
+/// probe) have even been looked at, so this reports the time and then the
+/// extras, in that order.
+fn probe(worker: &Worker, mut tracker: RequestTracker, timing: Timing, has_path: bool) {
+    if has_path {
+        let outcome = match worker.wait() {
+            Some(response) if tracker.accept(response.id) => outcome_label(response.outcome),
+            _ => "worker stopped".to_string(),
+        };
+        println!(
+            "first preview available after {:.1} ms ({outcome})",
+            timing.elapsed_ms()
+        );
+    } else {
+        println!(
+            "home screen ready after {:.1} ms (no path given)",
+            timing.elapsed_ms()
+        );
+    }
+    println!("open dialog: {}", dialog::describe(dialog::availability()));
+    println!("recent files: {}", recent_label());
+}
+
+/// What the home screen would list, and where it comes from.
+fn recent_label() -> String {
+    let Some(file) = recent::state_file() else {
+        return "not stored (no state directory in this environment)".to_string();
     };
-    println!(
-        "first preview available after {:.1} ms ({outcome})",
-        timing.elapsed_ms()
-    );
+    let recent = recent::Recent::load(&file);
+    format!(
+        "{} remembered, {} still on disk ({})",
+        recent.paths().len(),
+        recent.existing().len(),
+        file.display()
+    )
 }
 
 fn outcome_label(outcome: worker::Outcome) -> String {
@@ -231,8 +284,9 @@ fn open_window(ctx: egui::Context, startup: Startup) -> Result<()> {
         None => "sekio".to_string(),
     };
     // A daemon with no path yet must not flash an empty window on screen; it
-    // un-hides itself when the first handoff arrives.
-    let visible = startup.path.is_some();
+    // un-hides itself when the first handoff arrives. Every other window
+    // appears immediately, home screen or not.
+    let visible = startup.path.is_some() || startup.mode != Mode::Daemon;
     let borderless = startup.borderless;
     let timing = startup.timing;
 
@@ -343,6 +397,7 @@ fn run_daemon(args: Args, binding: Binding, timing: Timing) -> Result<()> {
         // Nothing drains the channel headlessly; dropping it lets the hotkey
         // thread retire on the first press it can never deliver.
         drop(presses);
+        println!("open dialog: {}", dialog::describe(dialog::availability()));
         return probe_daemon(&listener, &guard, &worker, tracker, timing);
     }
 
@@ -361,6 +416,7 @@ fn run_daemon(args: Args, binding: Binding, timing: Timing) -> Result<()> {
             worker,
             tracker,
             path,
+            mode: Mode::Daemon,
             wrap: args.wrap,
             borderless: args.borderless,
             timing,
@@ -401,6 +457,7 @@ fn probe_daemon(
                     id,
                     path: path.clone(),
                     cancel,
+                    kind: worker::Kind::Preview,
                 });
                 let outcome = match worker.wait() {
                     Some(response) if tracker.accept(response.id) => {
@@ -499,8 +556,31 @@ fn doctor(args: &Args, binding: Option<&(String, hotkey::HotKey)>) -> Result<()>
     let running = daemon_running();
     doctor_hotkey(args, binding, running);
     println!();
+    doctor_dialog();
+    println!();
     doctor_daemon(running);
     Ok(())
+}
+
+/// Whether "Open file…" will show a native dialog here, and what it looked at.
+///
+/// A "no" is not a failure: the built-in browser needs nothing external and is
+/// always there. This row exists so the fallback is never a surprise.
+fn doctor_dialog() {
+    println!("open dialog");
+    let availability = dialog::availability();
+    row("native", dialog::describe(availability));
+    for (label, value) in dialog::evidence() {
+        row(label, value);
+    }
+    if matches!(availability, dialog::Availability::Unavailable(_)) {
+        hint(&[
+            "Ctrl+O still works: it opens the built-in browser pane instead,",
+            "which needs no portal, no GTK and no external process. Install a",
+            "desktop portal (xdg-desktop-portal-gtk/-kde) for the native one.",
+        ]);
+    }
+    row("recent", recent_label());
 }
 
 /// Which strategy is in use, and what it can see right now.

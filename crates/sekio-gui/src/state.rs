@@ -171,6 +171,66 @@ impl Siblings {
     }
 }
 
+// ---------------------------------------------------------------------------
+// What "dismiss" means
+// ---------------------------------------------------------------------------
+
+/// How this process was started, which is the only thing that decides what
+/// closing the preview does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// `sekio-gui <path>` — a Quick Look popup over whatever the user was
+    /// doing. Dismissing it is the whole point, and it exits.
+    Popup,
+    /// `sekio-gui` with no path — a window the user opened deliberately, from
+    /// a launcher, a dock or a Start Menu entry. It is an application: it must
+    /// not vanish when they press Escape.
+    App,
+    /// `--daemon` — resident. Dismissing hides the window and keeps the
+    /// process (and its warm `Previewer`) alive.
+    Daemon,
+}
+
+impl Mode {
+    /// A popup becomes an application the moment the user opens something
+    /// through the app itself — the dialog, the browser, a drop, a recent
+    /// entry. They did not ask for a transient popup at that point; they are
+    /// using sekio as a viewer, and Escape must not throw the window away.
+    /// A daemon stays a daemon, and an app is already there.
+    pub fn promoted(self) -> Self {
+        match self {
+            Self::Popup | Self::App => Self::App,
+            Self::Daemon => Self::Daemon,
+        }
+    }
+}
+
+/// What dismissing should actually do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Close {
+    /// Close the window; for a one-shot process that ends it.
+    Window,
+    /// Hide the window, stay resident.
+    Hide,
+    /// Drop the preview and show the home screen.
+    Home,
+    /// Nothing at all — there is nothing to dismiss.
+    Nothing,
+}
+
+/// The Esc/Space rule, in one pure function.
+///
+/// `showing` is whether anything is loaded (a preview, a "loading…" or an
+/// error) as opposed to the home screen.
+pub fn close_action(mode: Mode, showing: bool) -> Close {
+    match mode {
+        Mode::Daemon => Close::Hide,
+        Mode::Popup => Close::Window,
+        Mode::App if showing => Close::Home,
+        Mode::App => Close::Nothing,
+    }
+}
+
 /// Human-readable byte count, matching the CLI's formatting.
 pub fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
@@ -287,6 +347,32 @@ mod tests {
         assert_eq!(s.step(1), None);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_popup_closes_but_an_app_goes_home() {
+        // The behaviour `sekio-gui <path>` has always had.
+        assert_eq!(close_action(Mode::Popup, true), Close::Window);
+        // A resident daemon only ever hides.
+        assert_eq!(close_action(Mode::Daemon, true), Close::Hide);
+        assert_eq!(close_action(Mode::Daemon, false), Close::Hide);
+        // Launched with no path: Escape backs out of the file, and pressing it
+        // again on the home screen must not close an app the user just opened.
+        assert_eq!(close_action(Mode::App, true), Close::Home);
+        assert_eq!(close_action(Mode::App, false), Close::Nothing);
+    }
+
+    #[test]
+    fn opening_a_file_inside_the_app_makes_it_an_app() {
+        assert_eq!(Mode::Popup.promoted(), Mode::App);
+        assert_eq!(Mode::App.promoted(), Mode::App);
+        assert_eq!(
+            Mode::Daemon.promoted(),
+            Mode::Daemon,
+            "a daemon must stay resident whatever the user opens"
+        );
+        // …and the promoted popup no longer exits on Escape.
+        assert_eq!(close_action(Mode::Popup.promoted(), true), Close::Home);
     }
 
     #[test]

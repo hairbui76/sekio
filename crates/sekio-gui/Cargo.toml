@@ -18,6 +18,7 @@ egui = { workspace = true }
 # Global hotkey registration. Cross-platform (Win32 RegisterHotKey / X11
 # XGrabKey) behind one API, so the daemon can be summoned from anywhere.
 global-hotkey = "0.8"
+rfd = { workspace = true }
 
 # Unix only, and only for the single-instance daemon: `std` cannot install a
 # signal handler at all, so this is what lets SIGTERM/SIGINT unlink the socket

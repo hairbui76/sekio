@@ -19,10 +19,23 @@ use sekio_core::{CancelToken, Preview, PreviewContent, PreviewError, PreviewOpti
 
 use crate::timing::Timing;
 
+/// What a request is *for*. The worker treats both identically — a preview is
+/// a preview — but the UI keeps a separate generation counter per kind, so
+/// listing a directory for the browser pane does not cancel the preview the
+/// user is reading, and vice versa.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// The main pane: the file the user is looking at.
+    Preview,
+    /// The browser pane's directory listing.
+    Browse,
+}
+
 pub struct Request {
     pub id: u64,
     pub path: PathBuf,
     pub cancel: CancelToken,
+    pub kind: Kind,
 }
 
 /// A finished preview plus its image already converted to egui's pixel layout.
@@ -46,6 +59,7 @@ pub struct Response {
     pub path: PathBuf,
     pub outcome: Outcome,
     pub elapsed: Duration,
+    pub kind: Kind,
 }
 
 /// UI-side handle: send requests, poll responses.
@@ -100,48 +114,82 @@ fn run(
     let previewer = Previewer::new();
     timing.log("previewer ready");
 
-    while let Ok(mut req) = rx.recv() {
-        // Coalesce: anything still queued behind this request supersedes it.
-        // Arrowing fast through a directory therefore does at most one render
-        // per settled selection instead of one per keypress.
+    while let Ok(first) = rx.recv() {
+        // Coalesce *within a kind*: anything still queued behind a request of
+        // the same kind supersedes it, so arrowing fast through a directory
+        // does at most one render per settled selection instead of one per
+        // keypress. Across kinds nothing is dropped — a browser listing must
+        // not cancel the preview queued next to it.
+        let mut queue = vec![first];
         while let Ok(newer) = rx.try_recv() {
-            req.cancel.cancel();
-            req = newer;
-        }
-        if req.cancel.is_cancelled() {
-            continue;
-        }
-
-        let started = std::time::Instant::now();
-        let outcome = match previewer.preview(&req.path, &opts, &req.cancel) {
-            Ok(preview) => {
-                let image = egui_image(&preview.content);
-                Outcome::Ready(Box::new(Loaded { preview, image }))
+            match queue.iter_mut().find(|req| req.kind == newer.kind) {
+                Some(slot) => {
+                    let superseded = std::mem::replace(slot, newer);
+                    superseded.cancel.cancel();
+                }
+                None => queue.push(newer),
             }
-            // Cancellation is expected control flow, never an error banner.
-            Err(PreviewError::Cancelled) => Outcome::Cancelled,
-            Err(err) => Outcome::Failed(err.to_string()),
-        };
-        let elapsed = started.elapsed();
-        timing.log(&format!(
-            "preview ready ({}, {:.1} ms of work)",
-            req.path.display(),
-            elapsed.as_secs_f64() * 1000.0
-        ));
-
-        if tx
-            .send(Response {
-                id: req.id,
-                path: req.path,
-                outcome,
-                elapsed,
-            })
-            .is_err()
-        {
-            break; // UI is gone.
         }
-        ctx.request_repaint();
+        // Listings are cheap and are what the user is steering right now, so
+        // they go ahead of a preview that may take a while. Stable, so the
+        // relative order within a kind is untouched.
+        queue.sort_by_key(|req| match req.kind {
+            Kind::Browse => 0,
+            Kind::Preview => 1,
+        });
+
+        for req in queue {
+            if !serve(&previewer, &opts, &tx, &ctx, timing, req) {
+                return; // UI is gone.
+            }
+        }
     }
+}
+
+/// Render one request and send the result. `false` means the UI has hung up.
+fn serve(
+    previewer: &Previewer,
+    opts: &PreviewOptions,
+    tx: &Sender<Response>,
+    ctx: &egui::Context,
+    timing: Timing,
+    req: Request,
+) -> bool {
+    if req.cancel.is_cancelled() {
+        return true;
+    }
+
+    let started = std::time::Instant::now();
+    let outcome = match previewer.preview(&req.path, opts, &req.cancel) {
+        Ok(preview) => {
+            let image = egui_image(&preview.content);
+            Outcome::Ready(Box::new(Loaded { preview, image }))
+        }
+        // Cancellation is expected control flow, never an error banner.
+        Err(PreviewError::Cancelled) => Outcome::Cancelled,
+        Err(err) => Outcome::Failed(err.to_string()),
+    };
+    let elapsed = started.elapsed();
+    timing.log(&format!(
+        "preview ready ({}, {:.1} ms of work)",
+        req.path.display(),
+        elapsed.as_secs_f64() * 1000.0
+    ));
+
+    if tx
+        .send(Response {
+            id: req.id,
+            path: req.path,
+            outcome,
+            elapsed,
+            kind: req.kind,
+        })
+        .is_err()
+    {
+        return false;
+    }
+    ctx.request_repaint();
+    true
 }
 
 /// Pull the bitmap out of a preview (image body or metadata thumbnail) and
