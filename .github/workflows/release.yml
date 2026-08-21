@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            cross: true
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      # The GUI needs system libraries; the CLI and TUI do not.
+      - name: Install GUI build deps
+        if: runner.os == 'Linux' && !matrix.cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libwayland-dev
+
+      - name: Build CLI and TUI
+        shell: bash
+        run: |
+          BUILD="cargo"
+          if [ "${{ matrix.cross }}" = "true" ]; then BUILD="cross"; fi
+          $BUILD build --release --target ${{ matrix.target }} \
+            -p sekio-cli -p sekio-tui
+
+      # Cross-compiled and headless targets skip the GUI: it pulls system
+      # libraries that aren't worth cross-building.
+      - name: Build GUI
+        if: '!matrix.cross'
+        run: cargo build --release --target ${{ matrix.target }} -p sekio-gui
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          EXT=""
+          if [ "${{ runner.os }}" = "Windows" ]; then EXT=".exe"; fi
+          for bin in sekio sekio-tui sekio-gui; do
+            src="target/${{ matrix.target }}/release/$bin$EXT"
+            if [ -f "$src" ]; then cp "$src" dist/; fi
+          done
+          cp README.md LICENSE-MIT dist/ 2>/dev/null || true
+          cd dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a "../sekio-${{ matrix.target }}.zip" ./*
+          else
+            tar czf "../sekio-${{ matrix.target }}.tar.gz" ./*
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sekio-${{ matrix.target }}
+          path: sekio-${{ matrix.target }}.*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            sekio-*.tar.gz
+            sekio-*.zip
+          generate_release_notes: true
