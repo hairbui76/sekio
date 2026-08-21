@@ -8,7 +8,9 @@ use sekio_core::{CancelToken, Preview, PreviewContent, PreviewOptions, Previewer
 /// sekio — quick preview of any file, straight to your terminal.
 /// Also works as a preview backend for fzf / lf / yazi.
 #[derive(Parser)]
-#[command(version, about)]
+// The crate is `sekio-cli` but the binary is `sekio`; without this, `--version`
+// and usage errors would name a crate the user never typed.
+#[command(name = "sekio", version, about)]
 struct Args {
     /// File or directory to preview
     #[arg(required_unless_present = "list_themes")]
