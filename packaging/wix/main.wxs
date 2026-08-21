@@ -154,9 +154,18 @@
               is exactly what a menu entry should do. sekio-gui is reached from
               Explorer's "Open with" instead - see docs/desktop.md.
 
-              HKLM rather than HKCU for the KeyPath: this is a perMachine
-              install writing to the all-users Start Menu, and mixing per-user
-              registry data into a per-machine component trips ICE57.
+              The KeyPath MUST be HKCU, and this is not a preference. A Start
+              Menu shortcut is per-user data, so light's ICE validation rejects
+              an HKLM KeyPath here three times over: ICE38 (component installs
+              to user profile, KeyPath must be under HKCU), ICE43 (non-
+              advertised shortcut, KeyPath should be under HKCU) and ICE57
+              (per-user and per-machine data mixed in one component). HKCU
+              makes the whole component per-user and consistent, which is the
+              shortcut pattern the WiX documentation prescribes.
+
+              Note ICE runs only inside `light` on Windows, so this cannot be
+              caught by schema validation on a Linux box - only by the msi CI
+              job, which is dispatchable without cutting a release.
             -->
             <Component Id='StartMenuShortcut' Guid='49F4BE84-EA94-4F9D-B5E3-31C8304F1CFD'>
                 <Shortcut Id='SekioTuiShortcut'
@@ -167,7 +176,7 @@
                 <RemoveFolder Id='RemoveApplicationProgramsFolder'
                     Directory='ApplicationProgramsFolder'
                     On='uninstall'/>
-                <RegistryValue Root='HKLM'
+                <RegistryValue Root='HKCU'
                     Key='Software\sekio'
                     Name='StartMenuShortcut'
                     Type='integer'
