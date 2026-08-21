@@ -11,10 +11,13 @@
 pub mod archive;
 pub mod audio;
 pub mod dir;
+pub mod document;
 pub mod hex;
 pub mod image;
+pub mod legacy_office;
 pub mod markdown;
 pub mod pdf;
+pub mod spreadsheet;
 pub mod svg;
 pub mod text;
 pub mod video;

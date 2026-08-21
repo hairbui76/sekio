@@ -7,15 +7,24 @@ license.workspace = true
 [features]
 # Pure-Rust formats are on by default: no C toolchain, so Windows builds stay
 # painless (see CLAUDE.md).
-default = ["archive", "markdown", "svg", "audio", "exif"]
+default = ["archive", "markdown", "svg", "audio", "exif", "office"]
 archive = ["dep:zip", "dep:tar", "dep:flate2"]
 markdown = ["dep:comrak"]
 svg = ["dep:resvg"]
 audio = ["dep:symphonia"]
 exif = ["dep:kamadak-exif"]
+# Office documents: OOXML (docx/pptx) and spreadsheets (xls/xlsx/xlsb/ods).
+office = ["dep:calamine", "dep:quick-xml", "dep:zip"]
 # Heavy / external-dependency formats, opt-in.
 pdf = ["dep:pdfium-render"]
 video = []
+# Legacy binary Office (.doc/.ppt) by shelling out to LibreOffice — no Rust
+# dependency of its own, which is why there is no `dep:` here. Off by default
+# because it needs LibreOffice installed, exactly as `video` needs ffmpeg; with
+# it missing at runtime the renderer degrades to a `Metadata` preview.
+# It turns `office` on because a converted `.ppt` is read back through the OOXML
+# reader in `render/document.rs` (Impress has no plain-text export filter).
+office-legacy = ["office"]
 
 [dependencies]
 thiserror = { workspace = true }
@@ -32,5 +41,7 @@ comrak = { workspace = true, optional = true }
 resvg = { workspace = true, optional = true }
 symphonia = { workspace = true, optional = true }
 kamadak-exif = { workspace = true, optional = true }
+calamine = { workspace = true, optional = true }
+quick-xml = { workspace = true, optional = true }
 pdfium-render = { workspace = true, optional = true }
 two-face = { version = "0.5.2", default-features = false, features = ["syntect-default-fancy"] }

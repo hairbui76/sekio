@@ -191,6 +191,21 @@ impl Previewer {
             Detected::Archive { mime, head } => {
                 or_hex!(render::archive::render(path, &mime, head, opts, cancel))
             }
+            Detected::Spreadsheet { format, head } => {
+                or_hex!(render::spreadsheet::render(
+                    path, &format, head, opts, cancel
+                ))
+            }
+            // Legacy binary Word/PowerPoint have no pure-Rust reader, so they
+            // go to the LibreOffice shell-out instead of the OOXML reader.
+            Detected::Document { format, head } if matches!(format.as_str(), "doc" | "ppt") => {
+                or_hex!(render::legacy_office::render(
+                    path, &format, head, opts, cancel
+                ))
+            }
+            Detected::Document { format, head } => {
+                or_hex!(render::document::render(path, &format, head, opts, cancel))
+            }
             Detected::Markdown { head } => {
                 or_hex!(render::markdown::render(path, head, opts, cancel))
             }

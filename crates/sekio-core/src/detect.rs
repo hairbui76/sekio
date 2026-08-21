@@ -20,15 +20,50 @@ pub enum Encoding {
 #[derive(Debug)]
 pub enum Detected {
     Directory,
-    Archive { mime: String, head: Head },
-    Image { mime: String, head: Head },
-    Svg { head: Head },
-    Markdown { head: Head },
-    Audio { mime: String, head: Head },
-    Video { mime: String, head: Head },
-    Pdf { head: Head },
-    Text { head: Head, encoding: Encoding },
-    Binary { mime: Option<String>, head: Head },
+    Archive {
+        mime: String,
+        head: Head,
+    },
+    /// xlsx/xlsm, xlsb, legacy xls, ods. `format` is the container we proved
+    /// by looking inside, not the extension we were handed.
+    Spreadsheet {
+        format: String,
+        head: Head,
+    },
+    /// docx/pptx, plus the legacy binary doc/ppt we decline to parse.
+    Document {
+        format: String,
+        head: Head,
+    },
+    Image {
+        mime: String,
+        head: Head,
+    },
+    Svg {
+        head: Head,
+    },
+    Markdown {
+        head: Head,
+    },
+    Audio {
+        mime: String,
+        head: Head,
+    },
+    Video {
+        mime: String,
+        head: Head,
+    },
+    Pdf {
+        head: Head,
+    },
+    Text {
+        head: Head,
+        encoding: Encoding,
+    },
+    Binary {
+        mime: Option<String>,
+        head: Head,
+    },
 }
 
 /// How much of the file head is sniffed. Large enough for `infer`'s longest
@@ -48,6 +83,107 @@ fn is_archive_mime(mime: &str) -> bool {
             | "application/x-7z-compressed"
             | "application/vnd.rar"
     )
+}
+
+/// OLE2 / Compound File Binary header. Shared by every pre-2007 Office format
+/// *and* by an encrypted OOXML package, so it says "Office-ish" and no more.
+const OLE_MAGIC: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+
+/// Which renderer an office container belongs to, and the format string that
+/// renderer dispatches on.
+#[cfg_attr(not(feature = "office"), allow(dead_code))]
+enum OfficeKind {
+    Spreadsheet(&'static str),
+    Document(&'static str),
+}
+
+/// Cheap gate on the sniff: only files that could plausibly be an office
+/// container are worth opening a second time.
+fn is_office_container(mime: &str, head: &[u8]) -> bool {
+    head.starts_with(&OLE_MAGIC)
+        || mime.starts_with("application/vnd.openxmlformats-officedocument.")
+        || mime.starts_with("application/vnd.oasis.opendocument.")
+        || matches!(
+            mime,
+            "application/zip"
+                | "application/msword"
+                | "application/vnd.ms-excel"
+                | "application/vnd.ms-powerpoint"
+                | "application/vnd.ms-office"
+                | "application/x-cfb"
+        )
+}
+
+/// Identify an office container by its *contents*.
+///
+/// OOXML and ODF are zips, so the answer is in the central directory: the
+/// presence of `word/document.xml`, `xl/workbook.xml(.bin)` or
+/// `ppt/presentation.xml` names the format regardless of what the file is
+/// called. ODF carries its own `mimetype` member, stored uncompressed.
+///
+/// Legacy Office is settled the same way: an OLE compound file's *header* is
+/// identical for Word, Excel and PowerPoint, but its root directory is not —
+/// each application stores its document in a stream of a fixed name, and
+/// `render/legacy_office.rs` reads that in a handful of seeks. The extension is
+/// only the fallback, for a compound file whose directory says nothing.
+#[cfg(feature = "office")]
+fn office_kind(path: &Path, head: &[u8], ext: Option<&str>) -> Option<OfficeKind> {
+    if head.starts_with(&OLE_MAGIC) {
+        let format = crate::render::legacy_office::ole_format(path).or_else(|| ole_ext(ext))?;
+        return Some(match format {
+            "xls" => OfficeKind::Spreadsheet("xls"),
+            other => OfficeKind::Document(other),
+        });
+    }
+    zip_office_kind(path)
+}
+
+#[cfg(feature = "office")]
+fn ole_ext(ext: Option<&str>) -> Option<&'static str> {
+    match ext {
+        Some("xls" | "xlsx" | "xlsm" | "xlsb" | "xlt" | "xla" | "xlw") => Some("xls"),
+        Some("doc" | "docx" | "docm" | "dot" | "dotx") => Some("doc"),
+        Some("ppt" | "pptx" | "pptm" | "pps" | "pot") => Some("ppt"),
+        _ => None,
+    }
+}
+
+#[cfg(not(feature = "office"))]
+fn office_kind(_path: &Path, _head: &[u8], _ext: Option<&str>) -> Option<OfficeKind> {
+    None
+}
+
+/// Read only the central directory — no member is decompressed, so this costs
+/// a seek and a parse even on a 200 MB workbook.
+#[cfg(feature = "office")]
+fn zip_office_kind(path: &Path) -> Option<OfficeKind> {
+    let mut archive = zip::ZipArchive::new(std::io::BufReader::new(File::open(path).ok()?)).ok()?;
+
+    // Zip member names always use `/`, on Windows as much as on Linux.
+    if archive.index_for_name("word/document.xml").is_some() {
+        return Some(OfficeKind::Document("docx"));
+    }
+    if archive.index_for_name("ppt/presentation.xml").is_some() {
+        return Some(OfficeKind::Document("pptx"));
+    }
+    if archive.index_for_name("xl/workbook.xml").is_some() {
+        return Some(OfficeKind::Spreadsheet("xlsx"));
+    }
+    if archive.index_for_name("xl/workbook.bin").is_some() {
+        return Some(OfficeKind::Spreadsheet("xlsb"));
+    }
+
+    // ODF puts its content type in a stored (uncompressed) `mimetype` member.
+    let mut mimetype = String::new();
+    let mut member = archive.by_name("mimetype").ok()?;
+    Read::take(&mut member, 128)
+        .read_to_string(&mut mimetype)
+        .ok()?;
+    if mimetype.trim() == "application/vnd.oasis.opendocument.spreadsheet" {
+        return Some(OfficeKind::Spreadsheet("ods"));
+    }
+    // odt/odp have no reader here; let them fall through to the archive path.
+    None
 }
 
 /// Detect by magic bytes first (`infer`), then text heuristics.
@@ -70,6 +206,30 @@ pub fn detect(path: &Path, opts: &PreviewOptions) -> Result<Detected, PreviewErr
         .map(|e| e.to_ascii_lowercase());
     let ext = ext.as_deref();
 
+    // Legacy Office, before `infer` gets a look in. `infer` can only name an
+    // OLE compound file when its root CLSID is set *and* the whole container
+    // fits in the sniff sample, so a 400 KB .ppt would otherwise fall through
+    // to the hexdump. The magic alone is enough to justify one directory read.
+    if head.starts_with(&OLE_MAGIC) {
+        match office_kind(path, &head, ext) {
+            Some(OfficeKind::Spreadsheet(format)) => {
+                return Ok(Detected::Spreadsheet {
+                    format: format.to_string(),
+                    head,
+                })
+            }
+            Some(OfficeKind::Document(format)) => {
+                return Ok(Detected::Document {
+                    format: format.to_string(),
+                    head,
+                })
+            }
+            // Not an Office container we know (an encrypted OOXML package, an
+            // installer): carry on down the normal path.
+            None => {}
+        }
+    }
+
     if let Some(kind) = infer::get(&head) {
         let mime = kind.mime_type().to_string();
         if mime.starts_with("image/") {
@@ -83,6 +243,28 @@ pub fn detect(path: &Path, opts: &PreviewOptions) -> Result<Detected, PreviewErr
         }
         if mime == "application/pdf" {
             return Ok(Detected::Pdf { head });
+        }
+        // Office documents hide inside generic containers: OOXML and ODF are
+        // zips, legacy Office is an OLE compound file. Magic bytes get us as
+        // far as "some zip" / "some OLE file", so look *inside* before
+        // trusting either the mime or the name. A plain .zip finds nothing in
+        // there and carries on to the archive listing below.
+        if is_office_container(&mime, &head) {
+            match office_kind(path, &head, ext) {
+                Some(OfficeKind::Spreadsheet(format)) => {
+                    return Ok(Detected::Spreadsheet {
+                        format: format.to_string(),
+                        head,
+                    })
+                }
+                Some(OfficeKind::Document(format)) => {
+                    return Ok(Detected::Document {
+                        format: format.to_string(),
+                        head,
+                    })
+                }
+                None => {}
+            }
         }
         if is_archive_mime(&mime) {
             return Ok(Detected::Archive { mime, head });

@@ -41,6 +41,10 @@ resvg = "0.48"
 symphonia = { version = "0.6", features = ["all"] }
 kamadak-exif = "0.6"
 pdfium-render = "0.8"
+# Office: calamine reads xls/xlsx/xlsb/ods, quick-xml pulls text out of the
+# OOXML parts in docx/pptx. Both pure Rust, so the no-C-toolchain rule holds.
+calamine = "0.36"
+quick-xml = "0.41"
 ratatui = "0.30"
 crossterm = "0.29"
 eframe = { version = "0.35", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
