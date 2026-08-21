@@ -73,6 +73,14 @@ jobs:
             tar czf "../sekio-${{ matrix.target }}.tar.gz" ./*
           fi
 
+      # Scoop's autoupdate reads the checksum from a .sha256 beside the archive.
+      - name: Checksum
+        shell: bash
+        run: |
+          for f in sekio-${{ matrix.target }}.tar.gz sekio-${{ matrix.target }}.zip; do
+            if [ -f "$f" ]; then sha256sum "$f" | awk '{print $1}' > "$f.sha256"; fi
+          done
+
       - uses: actions/upload-artifact@v4
         with:
           name: sekio-${{ matrix.target }}
@@ -91,4 +99,5 @@ jobs:
           files: |
             sekio-*.tar.gz
             sekio-*.zip
+            sekio-*.sha256
           generate_release_notes: true
