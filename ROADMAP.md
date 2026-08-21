@@ -142,7 +142,8 @@ installed. Windows needs none of this — Explorer answers directly.
       workspace type-checks for `x86_64-pc-windows-msvc` from Linux, so the
       "Windows is first-class" claim is now actually verified rather than
       asserted.
-- [x] Release workflow: Linux (x86_64, aarch64) and Windows binaries
+- [x] Release workflow: x86_64 Linux and Windows. aarch64 was dropped — it
+      cross-compiled without the GUI, so it shipped two of three binaries
 - [x] Latency benchmark (`cargo run --release -p sekio-core --example bench`)
 - [x] Packaging templates: AUR `PKGBUILD`, `sekio.desktop`, Scoop manifest
       with autoupdate, and the winget process (`packaging/README.md`). All

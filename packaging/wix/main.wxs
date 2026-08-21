@@ -147,12 +147,13 @@
               Fixed Guid for the same reason as the Path component: the KeyPath
               is a registry value, not a file, so Guid='*' is not available.
 
-              The shortcut points at sekio-tui, not sekio-gui. sekio-gui
-              requires a path argument (it previews one file), so a
-              no-argument Start Menu entry for it would open and immediately
-              fail. sekio-tui defaults to browsing the working directory, which
-              is exactly what a menu entry should do. sekio-gui is reached from
-              Explorer's "Open with" instead - see docs/desktop.md.
+              The shortcut points at sekio-gui, the graphical previewer, which
+              is what someone clicking a Start Menu entry expects. It used to
+              point at sekio-tui because sekio-gui required a path argument and
+              a no-argument launch failed immediately; it now opens to a file
+              browser with an Open button, so the natural target is correct.
+              sekio-tui is reached from a terminal, and sekio-gui is also
+              wired into Explorer's "Open with" - see docs/desktop.md.
 
               The KeyPath MUST be HKCU, and this is not a preference. A Start
               Menu shortcut is per-user data, so light's ICE validation rejects
@@ -168,10 +169,10 @@
               job, which is dispatchable without cutting a release.
             -->
             <Component Id='StartMenuShortcut' Guid='49F4BE84-EA94-4F9D-B5E3-31C8304F1CFD'>
-                <Shortcut Id='SekioTuiShortcut'
+                <Shortcut Id='SekioGuiShortcut'
                     Name='sekio'
-                    Description='Browse and preview files in the terminal'
-                    Target='[Bin]sekio-tui.exe'
+                    Description='Quick-view any file'
+                    Target='[Bin]sekio-gui.exe'
                     WorkingDirectory='PersonalFolder'/>
                 <RemoveFolder Id='RemoveApplicationProgramsFolder'
                     Directory='ApplicationProgramsFolder'

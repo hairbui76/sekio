@@ -51,10 +51,10 @@ cargo install --path crates/sekio-tui     # sekio-tui
 cargo install --path crates/sekio-gui     # sekio-gui
 ```
 
-Portable archives for x86_64 and aarch64 Linux and for Windows are attached to
-every release, each with a `.sha256` beside it. Note that the aarch64 archive
-ships `sekio` and `sekio-tui` only: it is cross-compiled, and the GUI needs
-system libraries that are not worth cross-building.
+Releases are x86_64 only. Every release attaches the `.deb`, `.rpm` and `.msi`
+above, plus portable Linux and Windows archives, each with a `.sha256` beside
+it. On any other architecture, build from source with the `cargo install`
+commands above.
 
 See [packaging/README.md](packaging/README.md) for all of this in detail.
 

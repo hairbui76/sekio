@@ -219,25 +219,21 @@ esac
 machine=$(uname -m)
 case "$machine" in
     x86_64 | amd64) arch="x86_64" ;;
-    aarch64 | arm64) arch="aarch64" ;;
     *)
+        # Releases are x86_64-only. Say which architectures exist and how to
+        # get one built, rather than 404ing on an asset that was never
+        # published.
         err "unsupported architecture: $machine
-       sekio publishes x86_64 and aarch64 Linux builds. Build from source:
-       cargo install --git https://github.com/${REPO} sekio-cli"
+       sekio publishes x86_64 Linux builds only. Build from source instead:
+       cargo install --git https://github.com/${REPO} sekio-cli
+       cargo install --git https://github.com/${REPO} sekio-tui
+       cargo install --git https://github.com/${REPO} sekio-gui"
         ;;
 esac
 
 target="${arch}-unknown-linux-gnu"
 asset="sekio-${target}.tar.gz"
-
-# The aarch64 archive is cross-compiled and deliberately ships without the GUI:
-# sekio-gui needs GTK/wayland/X11 system libraries that aren't worth
-# cross-building. Say so rather than quietly installing two of three binaries.
-if [ "$arch" = "aarch64" ]; then
-    expected_bins="sekio sekio-tui"
-else
-    expected_bins="sekio sekio-tui sekio-gui"
-fi
+expected_bins="sekio sekio-tui sekio-gui"
 
 # -------------------------------------------------------------- version -----
 
@@ -342,14 +338,6 @@ ok "installed${installed} to ${prefix}"
 
 # ----------------------------------------------------------------- notes -----
 
-if [ "$arch" = "aarch64" ]; then
-    say ""
-    warn "the aarch64 build ships sekio and sekio-tui only — no sekio-gui."
-    say "  The GUI needs GTK/Wayland/X11 system libraries and is not"
-    say "  cross-compiled for aarch64. To get the popup previewer on this"
-    say "  machine, build it natively:"
-    say "      cargo install --git https://github.com/${REPO} sekio-gui"
-fi
 
 # --------------------------------------------------------------- $PATH ------
 

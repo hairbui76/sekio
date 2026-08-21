@@ -49,6 +49,10 @@ ratatui = "0.30"
 crossterm = "0.29"
 eframe = { version = "0.35", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 egui = "0.35"
+# Native "Open file" dialog. Defaults to the XDG desktop portal on Linux (not
+# GTK), so it adds no C toolchain requirement; the built-in browser is the
+# fallback where no portal service is running.
+rfd = "0.17"
 
 [profile.release]
 lto = "thin"

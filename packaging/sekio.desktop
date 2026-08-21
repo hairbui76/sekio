@@ -3,14 +3,20 @@ Type=Application
 Name=sekio
 GenericName=File Previewer
 Comment=Quick-view any file
-# %f: the GUI previews one file at a time.
+# %f is optional: with a file it previews it, without one it opens to a
+# browser and an Open button, so this works as an ordinary launcher too.
 Exec=sekio-gui %f
 Terminal=false
 Categories=Utility;FileTools;Viewer;
-NoDisplay=true
-# Registered as a handler for everything so file managers can offer it as
-# "Open with"; NoDisplay keeps it out of the application menu, where a
-# previewer with no argument would be useless.
-MimeType=application/octet-stream;text/plain;image/png;image/jpeg;image/gif;image/webp;image/svg+xml;application/pdf;application/zip;application/gzip;application/x-tar;audio/mpeg;audio/flac;video/mp4;
+# Shown in the application menu. It used to be hidden because sekio-gui
+# required a path and a no-argument launch simply failed; it now opens
+# normally, so hiding it would only make the app harder to find.
+MimeType=application/octet-stream;text/plain;text/markdown;image/png;image/jpeg;image/gif;image/webp;image/svg+xml;image/bmp;image/tiff;application/pdf;application/zip;application/gzip;application/x-tar;application/x-7z-compressed;audio/mpeg;audio/flac;audio/ogg;audio/x-wav;video/mp4;video/x-matroska;application/vnd.openxmlformats-officedocument.wordprocessingml.document;application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;application/vnd.openxmlformats-officedocument.presentationml.presentation;application/vnd.oasis.opendocument.spreadsheet;application/msword;application/vnd.ms-excel;application/vnd.ms-powerpoint;
 StartupNotify=true
 StartupWMClass=sekio
+
+Actions=OpenFile;
+
+[Desktop Action OpenFile]
+Name=Open a file…
+Exec=sekio-gui

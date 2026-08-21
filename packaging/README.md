@@ -6,7 +6,6 @@ tag is pushed. As of v0.2.0 that is:
 | Asset | Contents |
 |---|---|
 | `sekio-x86_64-unknown-linux-gnu.tar.gz` | `sekio`, `sekio-tui`, `sekio-gui` |
-| `sekio-aarch64-unknown-linux-gnu.tar.gz` | `sekio`, `sekio-tui` — **no GUI** |
 | `sekio-x86_64-pc-windows-msvc.zip` | all three `.exe` |
 | `sekio_<version>-1_amd64.deb` | all three + desktop entry + systemd user unit |
 | `sekio-<version>-1.x86_64.rpm` | same as the `.deb` |
@@ -16,10 +15,9 @@ Every one of them is published with a `.sha256` beside it containing the bare
 hash, which is what `install.sh` verifies against and what Scoop's `autoupdate`
 reads.
 
-The aarch64 archive omits `sekio-gui` because it is cross-compiled and the GUI
-pulls in GTK/Wayland/X11 system libraries that are not worth cross-building.
-`install.sh` says so explicitly rather than quietly installing two of three
-binaries.
+Releases are x86_64 only: the `.deb`, `.rpm` and `.msi` are the supported
+install paths, with the portable archives kept because `install.sh` and the
+Scoop manifest download them. Other architectures build from source.
 
 ## Which install path to document to a user
 
