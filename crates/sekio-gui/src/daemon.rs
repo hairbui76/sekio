@@ -499,6 +499,16 @@ pub enum Handoff {
     Unavailable(String),
 }
 
+/// Is a daemon answering on `socket` right now?
+///
+/// Connect and close, sending nothing: the daemon reads an empty request and
+/// treats it as [`Accepted::Probe`], exactly like the liveness check [`bind`]
+/// makes when it loses the startup race. Nothing is previewed and no window
+/// moves, which is what makes this safe for `--doctor` to call.
+pub fn is_running(socket: &Path) -> bool {
+    UnixStream::connect(socket).is_ok()
+}
+
 /// Try to hand `path` (already canonicalized) to the daemon for this session.
 pub fn try_handoff(path: &Path) -> Handoff {
     try_handoff_at(&socket_path(), path)

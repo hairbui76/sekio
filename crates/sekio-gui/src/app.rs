@@ -9,6 +9,7 @@ use std::time::Duration;
 use egui::{RichText, TextureHandle, TextureOptions, Vec2, ViewportCommand};
 use sekio_core::{ListEntry, MetaField, PreviewContent};
 
+use crate::hotkey::{self, Action};
 use crate::state::{human_size, RequestTracker, Siblings};
 use crate::style::{self, MONO_SIZE};
 use crate::timing::Timing;
@@ -53,6 +54,9 @@ pub struct Startup {
     pub timing: Timing,
     /// Paths arriving from the daemon socket thread; `None` in one-shot mode.
     pub incoming: Option<Receiver<PathBuf>>,
+    /// Paths the global hotkey resolved, already looked up off the UI thread
+    /// (see `hotkey.rs`); `None` when no hotkey is registered.
+    pub presses: Option<Receiver<PathBuf>>,
 }
 
 pub struct SekioApp {
@@ -72,6 +76,8 @@ pub struct SekioApp {
     /// Daemon mode when `Some`: paths handed over by the socket thread, and
     /// the reason dismissing the popup hides the window instead of exiting.
     incoming: Option<Receiver<PathBuf>>,
+    /// Hotkey presses that already resolved to a file.
+    presses: Option<Receiver<PathBuf>>,
     visible: bool,
 }
 
@@ -94,6 +100,7 @@ impl SekioApp {
             borderless,
             timing,
             incoming,
+            presses,
         } = startup;
         let visible = path.is_some();
         let path = path.unwrap_or_default();
@@ -115,6 +122,7 @@ impl SekioApp {
             borderless,
             wrap,
             incoming,
+            presses,
             visible,
         }
     }
@@ -190,6 +198,34 @@ impl SekioApp {
         }
         if let Some(path) = latest {
             self.show(ctx, path);
+        }
+    }
+
+    /// Drain the hotkey thread's channel, newest press wins.
+    ///
+    /// The path arrives already resolved: the selection lookup (an IPC round
+    /// trip that can take ~200 ms) happened on the hotkey thread precisely so
+    /// this frame does not wait for it. A press on the file already on screen
+    /// dismisses it, the way a second spacebar closes Quick Look.
+    fn poll_presses(&mut self, ctx: &egui::Context) {
+        let Some(presses) = &self.presses else {
+            return;
+        };
+        let mut latest = None;
+        while let Ok(path) = presses.try_recv() {
+            latest = Some(path);
+        }
+        // A press that resolved to nothing never reaches this channel, so
+        // `Ignore` here only happens on a frame with no press at all.
+        let showing = if self.visible && !self.path.as_os_str().is_empty() {
+            Some(self.path.as_path())
+        } else {
+            None
+        };
+        match hotkey::action(latest, showing) {
+            Action::Show(path) => self.show(ctx, path),
+            Action::Dismiss => self.dismiss(ctx),
+            Action::Ignore => {}
         }
     }
 
@@ -456,6 +492,9 @@ impl eframe::App for SekioApp {
         // First, so a path that arrived while the window was hidden is picked
         // up on the very repaint the socket thread asked for.
         self.poll_incoming(ctx);
+        // Same route as a socket handoff: `show` -> `request_current` ->
+        // `RequestTracker::begin`, so a press during a slow render cancels it.
+        self.poll_presses(ctx);
         self.poll_worker(ctx);
         self.handle_close_request(ctx);
         self.handle_keys(ctx);

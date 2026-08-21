@@ -15,6 +15,9 @@ clap = { workspace = true }
 image = { workspace = true }
 eframe = { workspace = true }
 egui = { workspace = true }
+# Global hotkey registration. Cross-platform (Win32 RegisterHotKey / X11
+# XGrabKey) behind one API, so the daemon can be summoned from anywhere.
+global-hotkey = "0.8"
 
 # Unix only, and only for the single-instance daemon: `std` cannot install a
 # signal handler at all, so this is what lets SIGTERM/SIGINT unlink the socket
@@ -23,3 +26,18 @@ egui = { workspace = true }
 # and already in this workspace's lockfile via crossterm.
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.3"
+
+# Reading the file manager's current selection. On Windows this is a COM call
+# into Explorer; on Linux there is no universal API, so the fallbacks live
+# behind the same trait (see src/selection/).
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    # IShellBrowser, IFolderView2 and VARIANT itself are all gated behind this;
+    # without it there is no path from a window handle to a shell selection.
+    "Win32_System_Ole",
+    "Win32_System_Variant",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
