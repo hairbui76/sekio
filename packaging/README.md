@@ -1,7 +1,7 @@
 # Packaging
 
 Release artifacts are produced by `.github/workflows/release.yml` when a `v*`
-tag is pushed. As of v0.1.0 that is:
+tag is pushed. As of v0.2.0 that is:
 
 | Asset | Contents |
 |---|---|
@@ -51,7 +51,7 @@ or `openssl`.
 Options:
 
 ```sh
-... | sh -s -- --version v0.1.0        # pin a release (or SEKIO_VERSION=v0.1.0)
+... | sh -s -- --version v0.2.0        # pin a release (or SEKIO_VERSION=v0.2.0)
 ... | sh -s -- --prefix /usr/local/bin # install elsewhere (or SEKIO_PREFIX=...)
 ... | sh -s -- --uninstall             # remove the binaries again
 ```
@@ -67,8 +67,8 @@ Both are built from the same metadata in `crates/sekio-cli/Cargo.toml` — one
 from the release page, then:
 
 ```sh
-sudo apt install ./sekio_0.1.0-1_amd64.deb     # Debian/Ubuntu
-sudo dnf install ./sekio-0.1.0-1.x86_64.rpm    # Fedora/RHEL/openSUSE
+sudo apt install ./sekio_0.2.0-1_amd64.deb     # Debian/Ubuntu
+sudo dnf install ./sekio-0.2.0-1.x86_64.rpm    # Fedora/RHEL/openSUSE
 ```
 
 Layout:

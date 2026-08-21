@@ -1,12 +1,12 @@
 {
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "Fast quick-view for any filetype (CLI, TUI, and GUI previewer)",
     "homepage": "https://github.com/hairbui76/sekio",
     "license": "MIT",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/hairbui76/sekio/releases/download/v0.1.0/sekio-x86_64-pc-windows-msvc.zip",
-            "hash": "3b014b4ddf6af59fc747082e233b0d2db6e0998b9fb5279d0dba449912262c0c"
+            "url": "https://github.com/hairbui76/sekio/releases/download/v0.2.0/sekio-x86_64-pc-windows-msvc.zip",
+            "hash": "0000000000000000000000000000000000000000000000000000000000000000"
         }
     },
     "bin": [
