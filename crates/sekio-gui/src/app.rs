@@ -235,7 +235,7 @@ impl SekioApp {
         // Always re-raise: the window may be visible but behind the file
         // manager that triggered the popup.
         ctx.send_viewport_cmd(ViewportCommand::Focus);
-        self.timing.log("handoff shown");
+        self.timing.log("path shown");
     }
 
     /// Preview something the user opened *through this window* — the dialog,

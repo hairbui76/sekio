@@ -21,10 +21,15 @@ pub fn span_color(fg: Option<(u8, u8, u8)>, fallback: Color32) -> Color32 {
 }
 
 /// egui's bundled fonts ship no bold face and `TextFormat` has no weight axis,
-/// so bold is approximated by lifting the color toward white. Subtle enough to
-/// read as emphasis, and it degrades gracefully on any theme.
+/// so bold is approximated by lifting the color toward white.
+///
+/// The lift is deliberately small. At 45% a syntect keyword colour like
+/// (180,142,173) came out (214,193,210) — visibly washed toward white, so
+/// highlighted code looked desaturated in the GUI while the CLI, where bold is
+/// a real ANSI attribute, kept the true colour. Emphasis is not worth losing
+/// the hue that carries the actual meaning.
 pub fn brighten(color: Color32) -> Color32 {
-    let lift = |c: u8| (c as u16 + (255 - c as u16) * 45 / 100) as u8;
+    let lift = |c: u8| (c as u16 + (255 - c as u16) * 18 / 100) as u8;
     Color32::from_rgba_premultiplied(lift(color.r()), lift(color.g()), lift(color.b()), color.a())
 }
 

@@ -30,29 +30,19 @@
 //! Linux and a plain process spawn on Windows, where a shell hook resolves the
 //! selection instead.
 
-mod app;
-mod browser;
-#[cfg(unix)]
-mod daemon;
-mod dialog;
-mod hotkey;
-mod recent;
-mod selection;
-mod state;
-mod style;
-mod timing;
-mod worker;
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context as _, Result};
 use clap::Parser;
 use sekio_core::PreviewOptions;
 
-use crate::app::{SekioApp, Startup};
-use crate::state::{Mode, RequestTracker};
-use crate::timing::Timing;
-use crate::worker::Worker;
+use sekio_gui::app::{SekioApp, Startup};
+#[cfg(unix)]
+use sekio_gui::daemon;
+use sekio_gui::state::{Mode, RequestTracker};
+use sekio_gui::timing::Timing;
+use sekio_gui::worker::Worker;
+use sekio_gui::{dialog, hotkey, recent, selection, worker};
 
 /// sekio — instant preview popup for any file.
 #[derive(Parser)]
@@ -236,24 +226,38 @@ fn start_preview(
 /// screen before any of the optional extras (the recent list, the dialog
 /// probe) have even been looked at, so this reports the time and then the
 /// extras, in that order.
+///
+/// Written with `writeln!` rather than `println!` because this now prints more
+/// than one line, and `sekio-gui --probe | head -1` is exactly the sort of
+/// thing a benchmark script does: a closed pipe must end the report, never
+/// panic the process.
 fn probe(worker: &Worker, mut tracker: RequestTracker, timing: Timing, has_path: bool) {
-    if has_path {
+    use std::io::Write as _;
+
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    let first = if has_path {
         let outcome = match worker.wait() {
             Some(response) if tracker.accept(response.id) => outcome_label(response.outcome),
             _ => "worker stopped".to_string(),
         };
-        println!(
+        format!(
             "first preview available after {:.1} ms ({outcome})",
             timing.elapsed_ms()
-        );
+        )
     } else {
-        println!(
+        format!(
             "home screen ready after {:.1} ms (no path given)",
             timing.elapsed_ms()
-        );
-    }
-    println!("open dialog: {}", dialog::describe(dialog::availability()));
-    println!("recent files: {}", recent_label());
+        )
+    };
+    let _ = writeln!(out, "{first}");
+    let _ = writeln!(
+        out,
+        "open dialog: {}",
+        dialog::describe(dialog::availability())
+    );
+    let _ = writeln!(out, "recent files: {}", recent_label());
 }
 
 /// What the home screen would list, and where it comes from.
@@ -397,7 +401,14 @@ fn run_daemon(args: Args, binding: Binding, timing: Timing) -> Result<()> {
         // Nothing drains the channel headlessly; dropping it lets the hotkey
         // thread retire on the first press it can never deliver.
         drop(presses);
-        println!("open dialog: {}", dialog::describe(dialog::availability()));
+        {
+            use std::io::Write as _;
+            let _ = writeln!(
+                std::io::stdout(),
+                "open dialog: {}",
+                dialog::describe(dialog::availability())
+            );
+        }
         return probe_daemon(&listener, &guard, &worker, tracker, timing);
     }
 

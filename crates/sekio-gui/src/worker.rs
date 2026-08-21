@@ -102,6 +102,15 @@ impl Worker {
     pub fn wait(&self) -> Option<Response> {
         self.rx.recv().ok()
     }
+
+    /// Build a handle over channels the caller owns, instead of over a spawned
+    /// thread. The UI cannot tell the difference — it only ever sends
+    /// `Request`s and polls `Response`s — which is what lets the headless
+    /// rendering tests paint a chosen `PreviewContent` without a `Previewer`,
+    /// a file on disk or a timing race.
+    pub fn from_channels(tx: Sender<Request>, rx: Receiver<Response>) -> Self {
+        Self { tx, rx }
+    }
 }
 
 fn run(
@@ -194,7 +203,7 @@ fn serve(
 
 /// Pull the bitmap out of a preview (image body or metadata thumbnail) and
 /// convert it to `egui::ColorImage` once, here on the worker thread.
-fn egui_image(content: &PreviewContent) -> Option<egui::ColorImage> {
+pub fn egui_image(content: &PreviewContent) -> Option<egui::ColorImage> {
     let rgba = match content {
         PreviewContent::Image { image, .. } => Some(image),
         PreviewContent::Metadata { thumbnail, .. } => thumbnail.as_ref(),
