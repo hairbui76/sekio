@@ -1,0 +1,41 @@
+[Unit]
+Description=sekio preview daemon
+Documentation=https://github.com/hairbui76/sekio
+Documentation=file:///usr/share/doc/sekio/desktop.md
+
+# This is a *user* unit (systemctl --user), never a system one: the daemon is
+# per-session, keeps a hidden window open, and previews files as you.
+#
+# It must run inside the graphical session, for two reasons:
+#   1. `sekio-gui --daemon` creates a hidden eframe window at startup, so it
+#      needs a display connection immediately — it cannot start before one.
+#   2. The handoff socket under $XDG_RUNTIME_DIR is named after
+#      $WAYLAND_DISPLAY / $DISPLAY. A daemon started without those inherited
+#      binds a *different* socket name than `sekio-gui <path>` looks for, so
+#      every handoff would silently miss and open a fresh window instead.
+#
+# graphical-session.target is the anchor for both: desktop environments import
+# the session environment into the systemd user manager before reaching it.
+PartOf=graphical-session.target
+After=graphical-session.target
+
+# Five crash-restarts in a minute means it is not going to work (no display,
+# missing libraries) — give up instead of looping forever.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/sekio-gui --daemon
+Restart=on-failure
+RestartSec=2s
+
+# User-facing app, not a system service.
+Slice=app.slice
+
+# Deliberately unhardened. sekio is a file previewer: ProtectHome, ReadOnlyPaths
+# and friends would stop it doing the one thing it exists to do. It opens files
+# read-only and never writes to them.
+
+[Install]
+WantedBy=graphical-session.target

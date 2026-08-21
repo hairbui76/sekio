@@ -1,0 +1,233 @@
+<?xml version='1.0' encoding='windows-1252'?>
+<!--
+  WiX source for the sekio Windows installer.
+
+  Derived from cargo-wix's own template (`cargo wix print WXS`, cargo-wix
+  0.3.9, Apache-2.0, Copyright (C) 2017 Christopher R. Field) and then edited
+  to ship all three frontends, keep the PATH entry, and add an optional Start
+  Menu shortcut. It is checked in rather than generated at build time so the
+  UpgradeCode and the Path component GUID stay stable across releases - those
+  two GUIDs are what make an upgrade an upgrade instead of a second parallel
+  installation, and `cargo wix init`/`print` mints fresh ones on every run.
+
+  NEVER change UpgradeCode or the Path component Guid.
+
+  This targets WiX Toolset v3 (candle.exe / light.exe), which is what
+  cargo-wix 0.3.x drives. It is not WiX v4/v5 syntax.
+
+  Built by .github/workflows/release.yml on windows-latest, run from the
+  workspace root. The exact commands live in packaging/README.md rather than
+  here, because an XML comment may not contain a double hyphen and every
+  interesting cargo flag has one.
+
+  Relative Source paths below are resolved by light's bind paths. cargo-wix
+  passes the package manifest directory (crates/sekio-cli) as the base path, so
+  the workflow adds the workspace root as a second bind path; that is what
+  makes 'packaging\wix\License.rtf' resolve.
+
+  cargo-wix supplies these preprocessor variables:
+
+    CargoTargetBinDir = absolute path to the directory holding the built exes
+    CargoTargetDir    = the `target` directory
+    CargoProfile      = build profile ("release")
+    Version           = the package version, as x.y.z
+    TargetTriple / TargetEnv / TargetVendor / Platform
+
+  and invokes candle with `-ext WixUtilExtension` and light with
+  `-ext WixUIExtension -ext WixUtilExtension`, so WixUI_FeatureTree resolves.
+-->
+
+<?if $(sys.BUILDARCH) = x64 or $(sys.BUILDARCH) = arm64 ?>
+    <?define PlatformProgramFilesFolder = "ProgramFiles64Folder" ?>
+<?else ?>
+    <?define PlatformProgramFilesFolder = "ProgramFilesFolder" ?>
+<?endif ?>
+
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+
+    <Product
+        Id='*'
+        Name='sekio'
+        UpgradeCode='5A0E7C04-DE32-482F-8EAD-23C25D54E749'
+        Manufacturer='sekio contributors'
+        Language='1033'
+        Codepage='1252'
+        Version='$(var.Version)'>
+
+        <Package Id='*'
+            Keywords='Installer'
+            Description='Fast quick-view for any filetype (CLI, TUI, and GUI previewer)'
+            Manufacturer='sekio contributors'
+            InstallerVersion='450'
+            Languages='1033'
+            Compressed='yes'
+            InstallScope='perMachine'
+            SummaryCodepage='1252'
+            />
+
+        <MajorUpgrade
+            Schedule='afterInstallInitialize'
+            DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
+
+        <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
+        <Property Id='DiskPrompt' Value='sekio Installation'/>
+
+        <Directory Id='TARGETDIR' Name='SourceDir'>
+            <Directory Id='$(var.PlatformProgramFilesFolder)' Name='PFiles'>
+                <Directory Id='APPLICATIONFOLDER' Name='sekio'>
+
+                    <Component Id='License' Guid='*'>
+                        <File Id='LicenseFile'
+                            DiskId='1'
+                            Source='packaging\wix\License.rtf'
+                            KeyPath='yes'/>
+                    </Component>
+
+                    <Directory Id='Bin' Name='bin'>
+                        <!--
+                          Adds the bin directory to the system PATH. Guid is
+                          fixed, not '*': an Environment element is not a file,
+                          so WiX cannot derive a stable auto-GUID for it, and a
+                          changing GUID would orphan the old PATH entry on
+                          upgrade instead of replacing it.
+                        -->
+                        <Component Id='Path' Guid='6B67EB40-E2BF-45B1-A28C-56243B703C95' KeyPath='yes'>
+                            <Environment
+                                Id='PATH'
+                                Name='PATH'
+                                Value='[Bin]'
+                                Permanent='no'
+                                Part='last'
+                                Action='set'
+                                System='yes'/>
+                        </Component>
+
+                        <!--
+                          One component per binary, each with the exe as its
+                          KeyPath, which is what lets Guid='*' derive a stable
+                          GUID from the install path.
+                        -->
+                        <Component Id='binary0' Guid='*'>
+                            <File
+                                Id='exe0'
+                                Name='sekio.exe'
+                                DiskId='1'
+                                Source='$(var.CargoTargetBinDir)\sekio.exe'
+                                KeyPath='yes'/>
+                        </Component>
+
+                        <Component Id='binary1' Guid='*'>
+                            <File
+                                Id='exe1'
+                                Name='sekio-tui.exe'
+                                DiskId='1'
+                                Source='$(var.CargoTargetBinDir)\sekio-tui.exe'
+                                KeyPath='yes'/>
+                        </Component>
+
+                        <Component Id='binary2' Guid='*'>
+                            <File
+                                Id='exe2'
+                                Name='sekio-gui.exe'
+                                DiskId='1'
+                                Source='$(var.CargoTargetBinDir)\sekio-gui.exe'
+                                KeyPath='yes'/>
+                        </Component>
+                    </Directory>
+                </Directory>
+            </Directory>
+
+            <Directory Id='ProgramMenuFolder'>
+                <Directory Id='ApplicationProgramsFolder' Name='sekio'/>
+            </Directory>
+        </Directory>
+
+        <DirectoryRef Id='ApplicationProgramsFolder'>
+            <!--
+              Fixed Guid for the same reason as the Path component: the KeyPath
+              is a registry value, not a file, so Guid='*' is not available.
+
+              The shortcut points at sekio-tui, not sekio-gui. sekio-gui
+              requires a path argument (it previews one file), so a
+              no-argument Start Menu entry for it would open and immediately
+              fail. sekio-tui defaults to browsing the working directory, which
+              is exactly what a menu entry should do. sekio-gui is reached from
+              Explorer's "Open with" instead - see docs/desktop.md.
+
+              HKLM rather than HKCU for the KeyPath: this is a perMachine
+              install writing to the all-users Start Menu, and mixing per-user
+              registry data into a per-machine component trips ICE57.
+            -->
+            <Component Id='StartMenuShortcut' Guid='49F4BE84-EA94-4F9D-B5E3-31C8304F1CFD'>
+                <Shortcut Id='SekioTuiShortcut'
+                    Name='sekio'
+                    Description='Browse and preview files in the terminal'
+                    Target='[Bin]sekio-tui.exe'
+                    WorkingDirectory='PersonalFolder'/>
+                <RemoveFolder Id='RemoveApplicationProgramsFolder'
+                    Directory='ApplicationProgramsFolder'
+                    On='uninstall'/>
+                <RegistryValue Root='HKLM'
+                    Key='Software\sekio'
+                    Name='StartMenuShortcut'
+                    Type='integer'
+                    Value='1'
+                    KeyPath='yes'/>
+            </Component>
+        </DirectoryRef>
+
+        <Feature
+            Id='Binaries'
+            Title='Application'
+            Description='Installs sekio, sekio-tui and sekio-gui, and the license.'
+            Level='1'
+            ConfigurableDirectory='APPLICATIONFOLDER'
+            AllowAdvertise='no'
+            Display='expand'
+            Absent='disallow'>
+
+            <ComponentRef Id='License'/>
+            <ComponentRef Id='binary0'/>
+            <ComponentRef Id='binary1'/>
+            <ComponentRef Id='binary2'/>
+
+            <Feature
+                Id='Environment'
+                Title='PATH Environment Variable'
+                Description='Add the install location of the [ProductName] executables to the PATH system environment variable. This allows sekio, sekio-tui and sekio-gui to be called from any location.'
+                Level='1'
+                Absent='allow'>
+                <ComponentRef Id='Path'/>
+            </Feature>
+
+            <!--
+              A sub-feature, so the WixUI_FeatureTree dialog offers it as a
+              checkbox the user can clear. Nested inside Binaries so the
+              shortcut's target file is guaranteed installed whenever the
+              shortcut is (a non-advertised Shortcut whose target lives in a
+              feature that might be absent is an ICE error).
+            -->
+            <Feature
+                Id='StartMenuShortcuts'
+                Title='Start Menu Shortcut'
+                Description='Add a Start Menu entry that opens the sekio terminal file browser.'
+                Level='1'
+                Absent='allow'>
+                <ComponentRef Id='StartMenuShortcut'/>
+            </Feature>
+        </Feature>
+
+        <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
+
+        <Property Id='ARPHELPLINK' Value='https://github.com/hairbui76/sekio'/>
+        <Property Id='ARPURLINFOABOUT' Value='https://github.com/hairbui76/sekio'/>
+
+        <UI>
+            <UIRef Id='WixUI_FeatureTree'/>
+        </UI>
+
+        <WixVariable Id='WixUILicenseRtf' Value='packaging\wix\License.rtf'/>
+
+    </Product>
+
+</Wix>

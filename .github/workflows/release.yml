@@ -86,8 +86,126 @@ jobs:
           name: sekio-${{ matrix.target }}
           path: sekio-${{ matrix.target }}.*
 
+  # Native Linux packages. Separate from the `build` matrix on purpose: these
+  # are x86_64-only (cargo-deb/cargo-generate-rpm would need a cross-built
+  # sekio-gui, which the archives already skip for aarch64), and they are built
+  # with the `video` feature enabled, unlike the portable archives. That
+  # renderer only shells out to ffmpeg/ffmpegthumbnailer at runtime, so
+  # compiling it in costs no build dependency — and it is what makes the
+  # ffmpeg Recommends in the package metadata mean something. A tarball has no
+  # way to express an optional dependency, so the archives stay on defaults.
+  linux-packages:
+    name: deb + rpm (x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install GUI build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libwayland-dev
+
+      - name: Install cargo-deb and cargo-generate-rpm
+        run: cargo install cargo-deb cargo-generate-rpm --locked
+
+      # Both packagers run with --no-build against these artifacts, so all
+      # three binaries have to exist before either one runs.
+      - name: Build binaries
+        run: |
+          cargo build --release --features sekio-core/video \
+            -p sekio-cli -p sekio-tui -p sekio-gui
+
+      # --no-strip because [profile.release] already sets strip = true.
+      - name: Build .deb
+        run: cargo deb -p sekio-cli --no-build --no-strip
+
+      - name: Build .rpm
+        run: cargo generate-rpm -p crates/sekio-cli
+
+      - name: Collect and checksum
+        shell: bash
+        run: |
+          shopt -s nullglob
+          mv target/debian/*.deb target/generate-rpm/*.rpm .
+          for f in *.deb *.rpm; do
+            sha256sum "$f" | awk '{print $1}' > "$f.sha256"
+          done
+          ls -l -- *.deb *.rpm *.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sekio-linux-packages
+          path: |
+            *.deb
+            *.rpm
+            *.deb.sha256
+            *.rpm.sha256
+
+  # Windows installer. This job is the only place the WiX source is actually
+  # compiled — WiX v3 is Windows-only, so packaging/wix/main.wxs cannot be
+  # validated on a Linux dev machine beyond XML/schema checks. Run this
+  # workflow via workflow_dispatch to exercise it without cutting a release.
+  msi:
+    name: msi (x86_64-pc-windows-msvc)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # cargo-wix 0.3.x drives candle.exe and light.exe, which are WiX Toolset
+      # *v3*. Do not swap this for `dotnet tool install --global wix`: that
+      # installs WiX v4/v5, whose single `wix build` CLI cargo-wix cannot call.
+      - name: Install WiX Toolset v3
+        shell: pwsh
+        run: |
+          choco install wixtoolset --no-progress -y
+          # Find candle.exe rather than hardcoding a version directory: the
+          # runner image sometimes ships its own WiX 3.x, and the choco package
+          # version moves. Chocolatey sets the machine-level WIX variable, which
+          # this process cannot see without a shell restart, so search instead.
+          $candle = Get-ChildItem `
+            -Path "C:\Program Files (x86)\WiX Toolset*\bin\candle.exe", `
+                  "C:\Program Files\WiX Toolset*\bin\candle.exe" `
+            -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $candle) { throw "candle.exe not found after installing WiX Toolset v3" }
+          Write-Host "Using WiX bin: $($candle.DirectoryName)"
+          $candle.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Install cargo-wix
+        run: cargo install cargo-wix --locked
+
+      # The .wxs pulls in all three exes, and [package.metadata.wix] sets
+      # no-build, so they must be built before cargo-wix runs. Kept on default
+      # features to match the .zip for the same release: Windows has no package
+      # manager dependency to pull ffmpeg in with.
+      - name: Build binaries
+        run: cargo build --release -p sekio-cli -p sekio-tui -p sekio-gui
+
+      # --nocapture so candle/light diagnostics land in the job log; without it
+      # a WiX error surfaces only as an exit code.
+      - name: Build .msi
+        run: cargo wix -p sekio-cli --no-build --nocapture
+
+      - name: Collect and checksum
+        shell: bash
+        run: |
+          # cargo-wix names it sekio-<version>-x86_64.msi; rename to match the
+          # sibling archive naming used by the rest of this release.
+          mv target/wix/*.msi sekio-x86_64-pc-windows-msvc.msi
+          sha256sum sekio-x86_64-pc-windows-msvc.msi | awk '{print $1}' \
+            > sekio-x86_64-pc-windows-msvc.msi.sha256
+          ls -l sekio-x86_64-pc-windows-msvc.msi*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sekio-msi
+          path: sekio-x86_64-pc-windows-msvc.msi*
+
   release:
-    needs: build
+    needs: [build, linux-packages, msi]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
@@ -96,8 +214,16 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
+          # The .deb keeps dpkg's canonical sekio_<version>-1_amd64.deb name,
+          # which uses an underscore — hence `sekio*` rather than `sekio-*` on
+          # the package and checksum lines. `sekio*.sha256` is a superset of the
+          # previous `sekio-*.sha256`, so the archive checksums still publish
+          # exactly as before.
           files: |
             sekio-*.tar.gz
             sekio-*.zip
-            sekio-*.sha256
+            sekio*.deb
+            sekio*.rpm
+            sekio*.msi
+            sekio*.sha256
           generate_release_notes: true

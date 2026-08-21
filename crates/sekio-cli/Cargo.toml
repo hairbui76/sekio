@@ -3,6 +3,10 @@ name = "sekio-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# Required by cargo-deb: it is the only source for the .deb's Description
+# synopsis line, and without it the package ships a literal
+# "[generated from Rust crate sekio-cli]" placeholder.
+description = "Fast quick-view for any filetype (CLI, TUI, and GUI previewer)"
 
 [[bin]]
 name = "sekio"
@@ -13,3 +17,168 @@ sekio-core = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 image = { workspace = true }
+
+# ---------------------------------------------------------------------------
+# Linux packaging.
+#
+# One `sekio` package ships all three frontends, so the metadata lives here in
+# the crate that owns the `sekio` binary rather than being split three ways.
+# sekio-tui and sekio-gui carry no packaging metadata on purpose.
+#
+# Build both from the workspace root, after building the binaries:
+#
+#   cargo build --release -p sekio-cli -p sekio-tui -p sekio-gui \
+#       --features sekio-core/video
+#   cargo deb -p sekio-cli --no-build --no-strip
+#   cargo generate-rpm -p crates/sekio-cli
+#
+# `--no-strip` because [profile.release] already sets strip = true, and
+# `--features sekio-core/video` because that renderer only shells out to
+# ffmpeg/ffmpegthumbnailer at runtime — compiling it in costs no build-time
+# dependency and is what makes the ffmpeg Recommends below mean anything.
+# The `pdf` feature is deliberately left out: pdfium is not packaged by Debian
+# or Fedora, so there would be nothing for a dependency to point at.
+# ---------------------------------------------------------------------------
+
+[package.metadata.deb]
+name = "sekio"
+maintainer = "sekio contributors <hairbui76@users.noreply.github.com>"
+copyright = "2026, sekio contributors"
+license-file = ["../../LICENSE-MIT", "0"]
+section = "utils"
+priority = "optional"
+extended-description = """
+sekio is a quick-view tool for any filetype: syntax-highlighted code, rendered \
+markdown, images, SVG, archive listings, audio tags with cover art, EXIF, \
+office documents, and a hexdump with the detected MIME type for anything else.
+
+Three frontends share one detection and rendering core:
+  * sekio      - prints a preview to the terminal; works as an fzf/lf/yazi \
+preview backend
+  * sekio-tui  - two-pane terminal browser with real terminal graphics
+  * sekio-gui  - Quick Look-style popup window, with a resident --daemon mode
+
+Enable the popup daemon so previews open instantly:
+  systemctl --user enable --now sekio
+"""
+# `$auto` reads DT_NEEDED and finds only libc6/libgcc-s1 — verified with `ldd`
+# on the release build. That is not the whole story: eframe/winit/glutin
+# *dlopen* the windowing and GL libraries, so nothing links them and no
+# ELF-based scanner can see them. Left to `$auto` alone the package installs
+# cleanly and then sekio-gui fails at runtime with a dlopen error, which is a
+# far worse failure than a slightly heavy dependency list. So they are spelled
+# out. The CLI and TUI need none of this; the package is a GUI package because
+# it ships a GUI binary.
+depends = "$auto, libgl1, libegl1, libwayland-client0, libwayland-cursor0, libwayland-egl1, libxkbcommon0, libxkbcommon-x11-0, libx11-6, libxcursor1, libxrandr2, libxi6"
+# Video frame grabs shell out to one of these at preview time. Everything else
+# is compiled in, so this is the only optional runtime dependency.
+recommends = "ffmpegthumbnailer | ffmpeg"
+suggests = "fzf"
+assets = [
+    ["target/release/sekio", "usr/bin/", "755"],
+    ["target/release/sekio-tui", "usr/bin/", "755"],
+    ["target/release/sekio-gui", "usr/bin/", "755"],
+    ["../../packaging/sekio.desktop", "usr/share/applications/", "644"],
+    # A *user* unit, not a system one: it is per-session and runs as you.
+    # Not enabled by a postinst on purpose — see the systemd-units note below.
+    ["../../packaging/systemd/sekio.service", "usr/lib/systemd/user/", "644"],
+    ["../../README.md", "usr/share/doc/sekio/README.md", "644"],
+    ["../../docs/integration.md", "usr/share/doc/sekio/integration.md", "644"],
+    ["../../docs/desktop.md", "usr/share/doc/sekio/desktop.md", "644"],
+]
+# Note the absence of [package.metadata.deb.systemd-units]: that would generate
+# maintainer scripts that enable and start the unit on install. A previewer
+# daemon that appears in every session without being asked for is not a good
+# default, so the unit ships disabled and README.md documents the one command
+# that turns it on.
+
+[package.metadata.generate-rpm]
+name = "sekio"
+# cargo-generate-rpm 0.21 feeds ONE string to both the rpm Summary and
+# Description tags, and `summary` takes precedence over `description` — so a
+# separate long description is not expressible here and adding one would be a
+# key that silently does nothing. Keep this to a single Summary-shaped line;
+# the .deb carries the long form in extended-description above.
+summary = "Fast quick-view for any filetype (CLI, TUI, and GUI previewer)"
+license = "MIT"
+url = "https://github.com/hairbui76/sekio"
+# Fedora dropped the Group tag, but it is harmless and helps older tooling.
+group = "Applications/File"
+# Read DT_NEEDED out of the ELF headers ourselves rather than shelling out to
+# rpm's find-requires: these packages are built on an Ubuntu CI runner, which
+# may not have rpm's helper scripts installed at all.
+auto-req = "builtin"
+assets = [
+    { source = "target/release/sekio", dest = "/usr/bin/sekio", mode = "755" },
+    { source = "target/release/sekio-tui", dest = "/usr/bin/sekio-tui", mode = "755" },
+    { source = "target/release/sekio-gui", dest = "/usr/bin/sekio-gui", mode = "755" },
+    { source = "packaging/sekio.desktop", dest = "/usr/share/applications/sekio.desktop", mode = "644" },
+    { source = "packaging/systemd/sekio.service", dest = "/usr/lib/systemd/user/sekio.service", mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/sekio/README.md", mode = "644", doc = true },
+    { source = "docs/integration.md", dest = "/usr/share/doc/sekio/integration.md", mode = "644", doc = true },
+    { source = "docs/desktop.md", dest = "/usr/share/doc/sekio/desktop.md", mode = "644", doc = true },
+    { source = "LICENSE-MIT", dest = "/usr/share/licenses/sekio/LICENSE-MIT", mode = "644", doc = true },
+]
+
+# The dlopen'd windowing/GL libraries, same gap as the .deb's `depends` above:
+# `auto-req` only sees DT_NEEDED, and eframe links none of these.
+#
+# Spelled as sonames rather than package names on purpose — rpm resolves them
+# through each distro's automatic `Provides:`, so one list works on Fedora,
+# openSUSE and RHEL, which disagree about whether it is `mesa-libGL`,
+# `libglvnd-glx` or `Mesa-libGL1`. The `(64bit)` suffix is correct because the
+# release workflow only builds an x86_64 rpm.
+[package.metadata.generate-rpm.requires]
+"libGL.so.1()(64bit)" = "*"
+"libEGL.so.1()(64bit)" = "*"
+"libwayland-client.so.0()(64bit)" = "*"
+"libwayland-cursor.so.0()(64bit)" = "*"
+"libwayland-egl.so.1()(64bit)" = "*"
+"libxkbcommon.so.0()(64bit)" = "*"
+"libxkbcommon-x11.so.0()(64bit)" = "*"
+"libX11.so.6()(64bit)" = "*"
+"libXcursor.so.1()(64bit)" = "*"
+"libXrandr.so.2()(64bit)" = "*"
+"libXi.so.6()(64bit)" = "*"
+
+# Same optional runtime dependency as the .deb. Fedora ships ffmpeg-free in the
+# default repos and full ffmpeg via RPM Fusion; either satisfies this.
+[package.metadata.generate-rpm.recommends]
+ffmpegthumbnailer = "*"
+
+[package.metadata.generate-rpm.suggests]
+fzf = "*"
+
+# ---------------------------------------------------------------------------
+# Windows packaging (cargo-wix -> WiX Toolset v3 -> .msi).
+#
+# Like the .deb and .rpm above, one installer ships all three frontends, so the
+# metadata lives in the crate that owns the `sekio` binary.
+#
+# Every path here is resolved against the *current directory*, not this
+# manifest's directory, so `cargo wix` must be run from the workspace root.
+# ---------------------------------------------------------------------------
+
+[package.metadata.wix]
+# Names the output: target/wix/sekio-<version>-x86_64.msi.
+name = "sekio"
+
+# The WiX source is checked in at packaging/wix/main.wxs instead of being
+# generated by `cargo wix init` at build time. cargo-wix auto-discovers
+# <manifest-dir>/wix/*.wxs and nothing else, so the non-default location has to
+# be declared. Keeping it in the repo is the point: `init`/`print` mint a fresh
+# UpgradeCode on every run, and a changing UpgradeCode turns an upgrade into a
+# second side-by-side installation.
+include = ["packaging/wix/main.wxs"]
+
+# cargo-wix would otherwise run `cargo build --release` for THIS package only,
+# which produces sekio.exe and leaves sekio-tui.exe and sekio-gui.exe missing —
+# light then fails late with an unhelpful "cannot find file". Requiring the
+# caller to build all three first makes that ordering explicit.
+no-build = true
+
+# cargo-wix invokes light with `-b <this manifest's directory>` as the only bind
+# path, which is where relative Source paths in the .wxs get resolved from.
+# main.wxs refers to packaging\wix\License.rtf, which is relative to the
+# workspace root, so add the workspace root as a second bind path.
+linker-args = ["-b", "."]
