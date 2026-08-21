@@ -34,8 +34,11 @@ for now); heavy dependencies are feature-gated.
   - [x] Image EXIF: camera, lens, date, exposure, aperture, ISO, focal length
         — plus orientation applied, so phone photos aren't sideways
   - [x] Binaries: mime + size line above the hexdump
-- [x] **PDF → `Image`** (first page) via pdfium-render behind the `pdf`
-      feature, degrading to a `Metadata` preview when pdfium isn't installed
+- [x] **PDF → `Text`** by default via pure-Rust `pdf-extract`, or `Image`
+      (first page) via pdfium-render behind the `pdf-render` feature. The
+      tiers chain: a missing pdfium falls through to text rather than to a
+      metadata card, and only a PDF with no text layer at all (a scan) shows
+      metadata explaining why.
 - [x] **Video → `Image`** (frame grab) shelling out to ffmpegthumbnailer or
       ffmpeg behind the `video` feature, with a hard 5s child timeout and a
       `Metadata` fallback when neither is on PATH

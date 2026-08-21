@@ -294,9 +294,10 @@ mod imp {
                 out.page(&raw);
             }
 
-            if readable == 0 {
-                // Every page refused to parse: the object graph loaded but is
-                // not a document anyone can read. Show the bytes instead.
+            // Every page we opened refused to parse: the object graph loaded but
+            // is not a document anyone can read. Show the bytes instead. Guarded
+            // on `read` so a zero-line cap is not mistaken for a broken file.
+            if read > 0 && readable == 0 {
                 return Err(PreviewError::Format(
                     "malformed PDF: no page could be read".into(),
                 ));
@@ -460,8 +461,12 @@ mod imp {
                         text.pop();
                     }
                     // PDF text layers are full of blank runs; a preview pane is
-                    // not, and every one of them costs a line of the cap.
-                    if text.is_empty() && self.lines.last().is_some_and(is_blank) {
+                    // not, and every one of them costs a line of the cap. The
+                    // `is_empty` case also trims the leading blank a content
+                    // stream that opens with a newline would otherwise produce.
+                    if text.is_empty()
+                        && (self.lines.is_empty() || self.lines.last().is_some_and(is_blank))
+                    {
                         continue;
                     }
                     self.push(text, (Some(palette::TEXT), false));
@@ -985,18 +990,26 @@ mod tests {
     /// A file that gets past the `%PDF-` header check and then falls apart:
     /// this is the input that must reach `PreviewError::Format` — via
     /// `catch_unwind` if pdf-extract panics on it — rather than crashing.
+    ///
+    /// A build with neither parser compiled in *cannot* tell this from a good
+    /// document, and its metadata card is the documented degradation, so the
+    /// strict assertion only holds where something can actually read a PDF.
     #[test]
     fn header_without_a_document_is_a_format_error() {
         let bytes = b"%PDF-1.7\nnothing here is a real object\n%%EOF\n".to_vec();
         let file = TempFile::new("headeronly", &bytes);
-        let err = super::render(
+        let result = super::render(
             &file.0,
             bytes,
             &PreviewOptions::default(),
             &CancelToken::new(),
-        )
-        .expect_err("a header alone is not a document");
-        assert!(matches!(err, PreviewError::Format(_)), "got {err:?}");
+        );
+        match result {
+            Err(PreviewError::Format(_)) => {}
+            // Only reachable with `pdf` off and pdfium not loadable.
+            Ok(_) if cfg!(not(feature = "pdf")) => {}
+            other => panic!("a header alone is not a document: got {other:?}"),
+        }
     }
 
     /// The known pdf-extract panic must surface as a `Format` error — which is

@@ -114,7 +114,7 @@ Windows) for themes and default limits; see
 | Documents | Formatted text | docx, and pptx with slides in order |
 | Audio | Metadata + cover art | Tags, duration, codec, sample rate |
 | Directories | Listing | |
-| PDF | First page | Needs `--features pdf` and the pdfium library |
+| PDF | Text, or first page as an image | Text works out of the box; `--features pdf-render` plus pdfium renders the page instead |
 | Video | Frame grab | Needs `--features video` and ffmpeg/ffmpegthumbnailer |
 | Legacy `.doc`/`.ppt` | Converted text | Needs `--features office-legacy` and LibreOffice |
 | Anything else | Hexdump | With the detected mime type |

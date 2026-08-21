@@ -30,7 +30,8 @@ jobs:
         run: |
           cargo check -p sekio-core --no-default-features
           cargo check -p sekio-core --features video
-          cargo check -p sekio-core --features pdf
+          cargo check -p sekio-core --features pdf-render
+          cargo check -p sekio-core --features office-legacy
 
   lint:
     name: fmt + clippy

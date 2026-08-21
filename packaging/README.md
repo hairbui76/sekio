@@ -130,7 +130,7 @@ Two things worth knowing about that build line:
   ffmpegthumbnailer/ffmpeg at runtime, so compiling it in adds no build
   dependency — and it is what makes `Recommends: ffmpegthumbnailer | ffmpeg`
   honest. A tarball cannot express an optional dependency, so it stays on
-  defaults. `pdf` is left out of both: pdfium is not packaged by Debian or
+  defaults. `pdf-render` is left out of both: pdfium is not packaged by Debian or
   Fedora, so a dependency would have nothing to point at.
 - `--no-strip` because `[profile.release]` already sets `strip = true`.
 
