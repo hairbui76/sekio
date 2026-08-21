@@ -1,0 +1,15 @@
+[package]
+name = "sekio-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sekio"
+path = "src/main.rs"
+
+[dependencies]
+sekio-core = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+image = { workspace = true }
