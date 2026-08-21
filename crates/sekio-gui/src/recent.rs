@@ -158,11 +158,22 @@ pub fn state_dir_from(
             .filter(|dir| !dir.as_os_str().is_empty())
             .map(|dir| dir.join("sekio"));
     }
-    if let Some(dir) = xdg_state.filter(|dir| dir.is_absolute()) {
+    if let Some(dir) = xdg_state.filter(|dir| is_absolute_unix(dir)) {
         return Some(dir.join("sekio"));
     }
-    home.filter(|dir| dir.is_absolute())
+    home.filter(|dir| is_absolute_unix(dir))
         .map(|dir| dir.join(".local").join("state").join("sekio"))
+}
+
+/// Absolute by Unix rules, regardless of the host.
+///
+/// `Path::is_absolute` answers for the OS the binary is running on, which
+/// defeats the point of taking `windows` as a parameter: on a Windows runner
+/// `/home/x/.state` is not absolute, so the Unix branch would reject a
+/// perfectly good `$XDG_STATE_HOME` and this function would disagree with
+/// itself depending on where it was compiled.
+fn is_absolute_unix(path: &Path) -> bool {
+    path.as_os_str().as_encoded_bytes().first() == Some(&b'/')
 }
 
 /// Where this machine keeps the list, or `None` when the environment says
