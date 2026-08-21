@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/sekio-core",
     "crates/sekio-cli",
+    "crates/sekio-tui",
 ]
 
 [workspace.package]

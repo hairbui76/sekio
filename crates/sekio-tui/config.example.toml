@@ -1,0 +1,71 @@
+## sekio-tui configuration.
+##
+## Copy this file to:
+##   Linux:    $XDG_CONFIG_HOME/sekio/config.toml
+##             (or ~/.config/sekio/config.toml when XDG_CONFIG_HOME is unset)
+##   Windows:  %APPDATA%\sekio\config.toml
+##
+## Or point at it explicitly with `sekio-tui --config <PATH>`, and skip config
+## loading altogether with `sekio-tui --no-config`.
+##
+## Every key is optional; a partial file is fine. Unknown keys are an error
+## (reported on stderr, with sekio-tui still starting on the built-in defaults),
+## so a typo is never silently ignored.
+##
+## Precedence: command-line flags > this file > built-in defaults.
+##
+## Each key below is shown commented out, set to its built-in default.
+
+## Max lines of text produced per preview. The TUI scrolls within a preview, so
+## this is the scrollback buffer, not the pane height. Syntax highlighting is
+## the dominant cost (~73 us/line of Rust), so raising it is not free.
+# lines = 500
+
+## Max bytes read from any one file. Caps the *reading*, so a 4 GB file is
+## still instant.
+# max_bytes = 524288
+
+## Max entries listed for a directory or an archive.
+# max_entries = 1000
+
+## Longest edge an image is downscaled to before it reaches the terminal.
+# image_max_dim = 1024
+
+## Skip the terminal graphics-capability query and always draw images with
+## halfblocks. Set this if your terminal never answers `CSI 5n` and swallows
+## keypresses (same as passing `--halfblocks`).
+# halfblocks = false
+
+[theme]
+
+## Syntect theme used for syntax highlighting, by name. An unknown name is
+## reported on stderr along with the full list of valid names, and the default
+## is used. Bundled examples: "base16-ocean.dark", "base16-ocean.light",
+## "base16-eighties.dark", "base16-mocha.dark", "InspiredGitHub",
+## "Solarized (dark)", "Solarized (light)".
+# syntax = "base16-ocean.dark"
+
+## UI chrome colors. Each accepts "#rrggbb", the "#rgb" shorthand, a 0-255
+## palette index as a string ("12"), an ANSI name ("cyan", "light-blue",
+## "dark-gray"), or "reset" for the terminal's own default.
+
+## Selected row in the file list (drawn reversed, so this is its background).
+# accent = "reset"
+
+## Pane borders.
+# border = "reset"
+
+## Directory entries, in both panes.
+# directory = "#8abeb7"
+
+## Metadata field names and the hexdump's ASCII gutter.
+# key = "#8fa1b3"
+
+## Pane titles, the status bar, hexdump offsets and file sizes.
+# dim = "#65737e"
+
+## "truncated" / "more entries not shown" markers.
+# warning = "yellow"
+
+## Error text ("preview failed", "cannot read directory").
+# error = "red"

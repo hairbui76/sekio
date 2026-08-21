@@ -1,0 +1,28 @@
+[package]
+name = "sekio-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sekio-tui"
+path = "src/main.rs"
+
+[dependencies]
+sekio-core = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+image = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+# Default features pull in `chafa-dyn`, which hard-requires libchafa >= 1.8 via
+# pkg-config at build time (and at runtime) — that breaks the Windows target and
+# any Linux box without libchafa-dev. The built-in halfblock renderer is the
+# fallback we want anyway, so take only the crossterm backend. `image-defaults`
+# is likewise off: sekio-core already pins the image formats we support.
+ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
+# Config file. Kept crate-local rather than in the workspace table: the TUI is
+# the only frontend with a config file so far, and `serde`/`toml` are pure Rust,
+# so this costs the Windows target nothing.
+serde = { version = "1", features = ["derive"] }
+toml = "1"
