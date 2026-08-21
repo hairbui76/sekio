@@ -24,6 +24,12 @@ pub enum Origin {
     /// Read from the file manager's actual selection.
     FileManager,
     /// A path sitting in the clipboard.
+    ///
+    /// Only the Linux strategy falls back this far: Explorer answers directly,
+    /// so on Windows this variant is legitimately never constructed. Scoped to
+    /// the variant rather than the enum so a genuinely dead `FileManager`
+    /// would still be reported.
+    #[cfg_attr(windows, allow(dead_code))]
     Clipboard,
 }
 

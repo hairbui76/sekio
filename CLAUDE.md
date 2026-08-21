@@ -20,6 +20,15 @@ cargo run --release -p sekio-core --example bench   # preview latency per format
 cargo check --target x86_64-pc-windows-msvc --workspace   # verify Windows from Linux
 ```
 
+CI sets `RUSTFLAGS: -D warnings`, so a warning fails the build there but not
+locally. Before pushing, mirror it — especially for the Windows target, where
+`#[cfg]`-gated code produces dead-code warnings that never appear on Linux:
+
+```sh
+RUSTFLAGS="-D warnings" cargo check --workspace --all-targets
+RUSTFLAGS="-D warnings" cargo check --workspace --target x86_64-pc-windows-msvc
+```
+
 The Windows cross-check works because the dependency tree contains no C `-sys`
 crates: `cargo check` doesn't link, so no MSVC toolchain is needed. Use it
 before claiming a change is Windows-safe. If it ever starts failing with
