@@ -34,10 +34,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libwayland-dev
 
+      # One line, no continuation: the default shell on windows-latest is
+      # PowerShell, where a trailing backslash is not a line continuation and
+      # the second line would be parsed as its own broken command.
       - name: Build all three frontends
-        run: |
-          cargo build --release --target ${{ matrix.target }} \
-            -p sekio-cli -p sekio-tui -p sekio-gui
+        run: cargo build --release --target ${{ matrix.target }} -p sekio-cli -p sekio-tui -p sekio-gui
 
       - name: Package
         shell: bash
