@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=sekio
+GenericName=File Previewer
+Comment=Quick-view any file
+# %f: the GUI previews one file at a time.
+Exec=sekio-gui %f
+Terminal=false
+Categories=Utility;FileTools;Viewer;
+NoDisplay=true
+# Registered as a handler for everything so file managers can offer it as
+# "Open with"; NoDisplay keeps it out of the application menu, where a
+# previewer with no argument would be useless.
+MimeType=application/octet-stream;text/plain;image/png;image/jpeg;image/gif;image/webp;image/svg+xml;application/pdf;application/zip;application/gzip;application/x-tar;audio/mpeg;audio/flac;video/mp4;
+StartupNotify=true
+StartupWMClass=sekio

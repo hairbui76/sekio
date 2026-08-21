@@ -1,0 +1,48 @@
+# Maintainer: sekio contributors
+pkgname=sekio
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Fast quick-view for any filetype (CLI, TUI, and GUI previewer)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/hairbui76/sekio"
+license=('MIT')
+depends=('gcc-libs')
+makedepends=('cargo')
+optdepends=(
+  'ffmpegthumbnailer: video frame previews'
+  'ffmpeg: video frame previews (fallback)'
+)
+source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  # The GUI needs system libraries; build it alongside the terminal binaries.
+  cargo build --frozen --release --all-features \
+    -p sekio-cli -p sekio-tui -p sekio-gui
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo test --frozen --workspace
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm0755 target/release/sekio     "$pkgdir/usr/bin/sekio"
+  install -Dm0755 target/release/sekio-tui "$pkgdir/usr/bin/sekio-tui"
+  install -Dm0755 target/release/sekio-gui "$pkgdir/usr/bin/sekio-gui"
+  install -Dm0644 LICENSE-MIT "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+  install -Dm0644 README.md   "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm0644 docs/integration.md "$pkgdir/usr/share/doc/$pkgname/integration.md"
+  install -Dm0644 packaging/sekio.desktop "$pkgdir/usr/share/applications/sekio.desktop"
+}

@@ -1,0 +1,37 @@
+{
+    "version": "0.1.0",
+    "description": "Fast quick-view for any filetype (CLI, TUI, and GUI previewer)",
+    "homepage": "https://github.com/hairbui76/sekio",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/hairbui76/sekio/releases/download/v0.1.0/sekio-x86_64-pc-windows-msvc.zip",
+            "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+    },
+    "bin": [
+        "sekio.exe",
+        "sekio-tui.exe",
+        "sekio-gui.exe"
+    ],
+    "checkver": {
+        "github": "https://github.com/hairbui76/sekio"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/hairbui76/sekio/releases/download/v$version/sekio-x86_64-pc-windows-msvc.zip"
+            }
+        },
+        "hash": {
+            "url": "$url.sha256"
+        }
+    },
+    "notes": [
+        "sekio      - preview a file to stdout (use with fzf, lf, ...)",
+        "sekio-tui  - two-pane terminal browser",
+        "sekio-gui  - popup preview window",
+        "",
+        "Video frame previews additionally need ffmpeg on PATH:  scoop install ffmpeg"
+    ]
+}
