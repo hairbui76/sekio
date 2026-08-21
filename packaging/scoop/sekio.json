@@ -6,7 +6,7 @@
     "architecture": {
         "64bit": {
             "url": "https://github.com/hairbui76/sekio/releases/download/v0.2.0/sekio-x86_64-pc-windows-msvc.zip",
-            "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+            "hash": "c5c1a534eaa9780ba48dab226df4cf3e2916014bc50e1996977713c4ef705b7e"
         }
     },
     "bin": [
