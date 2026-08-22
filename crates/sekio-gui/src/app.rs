@@ -15,7 +15,9 @@ use sekio_core::{ListEntry, MetaField, PreviewContent};
 
 use crate::browser::{self, Activate, Browser};
 use crate::dialog;
+use crate::fonts;
 use crate::hotkey::{self, Action as PressAction};
+use crate::paths;
 use crate::recent::{self, Recent};
 use crate::state::{close_action, human_size, Close, Mode, RequestTracker, Siblings};
 use crate::style::{self, MONO_SIZE};
@@ -146,6 +148,10 @@ impl SekioApp {
     /// result may already be waiting in the channel.
     pub fn new(ctx: &egui::Context, startup: Startup) -> Self {
         ctx.set_visuals(egui::Visuals::dark());
+        // Before the first layout: egui's bundled faces cannot draw Vietnamese
+        // (or anything else in Latin Extended Additional), and a file name
+        // full of boxes is what the user sees first.
+        fonts::install(ctx);
         // We drive zoom ourselves (image scale for pictures, UI scale for
         // everything else), so egui's built-in Ctrl+± must not also fire.
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
@@ -248,8 +254,10 @@ impl SekioApp {
         // Best effort: the recent list and the sibling scan both want a path
         // that still means this file in the next process. A path that cannot
         // be canonicalised (it just vanished) is previewed anyway, so the
-        // failure is a message in the window rather than a silent nothing.
-        let path = path.canonicalize().unwrap_or(path);
+        // failure is a message in the window rather than a silent nothing —
+        // but it still goes through `paths::plain`, so an unresolvable path is
+        // not left in a different spelling from every other one.
+        let path = paths::canonical(&path).unwrap_or_else(|_| paths::plain(&path));
         self.mode = self.mode.promoted();
         self.dialog_note = None;
         self.show(ctx, path);

@@ -42,7 +42,7 @@ use sekio_gui::daemon;
 use sekio_gui::state::{Mode, RequestTracker};
 use sekio_gui::timing::Timing;
 use sekio_gui::worker::Worker;
-use sekio_gui::{dialog, hotkey, recent, selection, worker};
+use sekio_gui::{dialog, hotkey, paths, recent, selection, worker};
 
 /// sekio — instant preview popup for any file.
 #[derive(Parser)]
@@ -143,8 +143,7 @@ fn run_once(args: Args, timing: Timing) -> Result<()> {
     // path does not exist.
     let path = match args.path.clone() {
         Some(requested) => Some(
-            requested
-                .canonicalize()
+            paths::canonical(&requested)
                 .with_context(|| format!("cannot open {}", requested.display()))?,
         ),
         None => None,
@@ -361,8 +360,7 @@ fn run_daemon(args: Args, binding: Binding, timing: Timing) -> Result<()> {
                 socket.display()
             );
             if let Some(path) = args.path.as_ref() {
-                let path = path
-                    .canonicalize()
+                let path = paths::canonical(path)
                     .with_context(|| format!("cannot open {}", path.display()))?;
                 if !hand_off(&path, timing) {
                     // The winner of the race stopped answering in the
@@ -383,8 +381,7 @@ fn run_daemon(args: Args, binding: Binding, timing: Timing) -> Result<()> {
 
     let path = match args.path.as_ref() {
         Some(path) => Some(
-            path.canonicalize()
-                .with_context(|| format!("cannot open {}", path.display()))?,
+            paths::canonical(path).with_context(|| format!("cannot open {}", path.display()))?,
         ),
         None => None,
     };

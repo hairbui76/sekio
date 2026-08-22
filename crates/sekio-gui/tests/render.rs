@@ -1198,3 +1198,221 @@ fn dragging_a_file_over_the_window_paints_the_drop_hint() {
         hint.rect
     );
 }
+
+// ---------------------------------------------------------------------------
+// Text egui's bundled fonts cannot draw, and paths Windows spells oddly
+// ---------------------------------------------------------------------------
+
+/// A code point no font has a glyph for. Whatever epaint rasterises for it in
+/// a given font *is* that font's replacement box, which is how "is this a
+/// box?" is asked below without hard-coding which character egui chose for it.
+const NEVER_DRAWN: char = '\u{10FFFD}';
+
+/// The file name from the bug report — it came out as
+/// `00. Thông cáo báo chí v□ FLC.pdf`, because `ề` (U+1EC1) is in Latin
+/// Extended Additional and neither Ubuntu-Light nor Hack has it.
+const VIETNAMESE_FILE: &str = "Thông cáo báo chí về FLC.pdf";
+
+/// Vietnamese prose for the *contents* of a preview, which is drawn in the
+/// monospace family rather than the proportional one.
+const VIETNAMESE_TEXT: &str = "Mật độ dân số tăng — nguyện vọng của người dân về việc này.";
+
+/// The atlas rectangle of the replacement box, for every font `galley` was
+/// laid out in.
+///
+/// Per font, because the box is a rasterised glyph like any other: the same
+/// `◻` at 11pt and at 13pt occupies two different rectangles, so a single
+/// "the box" value would compare against the wrong one.
+fn replacement_boxes(ctx: &egui::Context, galley: &egui::Galley) -> Vec<([u16; 2], [u16; 2])> {
+    let pixels_per_point = ctx.pixels_per_point();
+    let mut fonts: Vec<egui::FontId> = Vec::new();
+    for section in &galley.job.sections {
+        if !fonts.contains(&section.format.font_id) {
+            fonts.push(section.format.font_id.clone());
+        }
+    }
+
+    let mut boxes = Vec::new();
+    for font_id in fonts {
+        // epaint bins each glyph's fractional x position into one of four
+        // sub-pixel offsets and rasterises a separate bitmap per bin, so "the"
+        // replacement box is really four rectangles in the atlas. Which one a
+        // painted glyph got depends on where in its row it landed, so all four
+        // are collected: a probe at one fixed offset would miss.
+        for bin in 0..4 {
+            let mut job = egui::text::LayoutJob::default();
+            job.wrap.max_width = f32::INFINITY;
+            job.append(
+                &NEVER_DRAWN.to_string(),
+                bin as f32 * 0.25 / pixels_per_point,
+                egui::TextFormat::simple(font_id.clone(), Color32::WHITE),
+            );
+            let probe = ctx.fonts_mut(|f| f.layout_job(job));
+            let uv = probe.rows[0].row.glyphs[0].uv_rect;
+            boxes.push((uv.min, uv.max));
+        }
+    }
+    boxes
+}
+
+/// Assert that every character of `needle` really was rasterised as itself in
+/// the frame that painted it.
+///
+/// This reads the *painted galley*, not the string: a galley whose text is
+/// `…về…` while its glyphs all point at the replacement box is exactly the bug
+/// in the screenshot, and `assert_shows` cannot tell the difference. Drop the
+/// fallback from `fonts::with_fallbacks` and this fails.
+#[track_caller]
+fn assert_no_tofu(ui: &AppUi, needle: &str) {
+    let painted = ui.painted();
+    let hit = painted
+        .iter()
+        .find(|p| p.text.contains(needle))
+        .unwrap_or_else(|| panic!("nothing painted containing {needle:?}:\n{}", ui.text()));
+    let boxes = replacement_boxes(&ui.harness.ctx, &hit.galley);
+
+    let wanted: std::collections::BTreeSet<char> =
+        needle.chars().filter(|c| !c.is_whitespace()).collect();
+    let mut drawn = std::collections::BTreeSet::new();
+    for row in &hit.galley.rows {
+        for glyph in &row.row.glyphs {
+            if !wanted.contains(&glyph.chr) {
+                continue;
+            }
+            let uv = (glyph.uv_rect.min, glyph.uv_rect.max);
+            assert!(
+                !boxes.contains(&uv),
+                "U+{:04X} {:?} in {needle:?} painted as the replacement box, not as itself",
+                glyph.chr as u32,
+                glyph.chr
+            );
+            assert_ne!(
+                uv.0, uv.1,
+                "U+{:04X} {:?} in {needle:?} painted nothing at all",
+                glyph.chr as u32, glyph.chr
+            );
+            drawn.insert(glyph.chr);
+        }
+    }
+    assert_eq!(
+        drawn, wanted,
+        "some characters of {needle:?} produced no glyph at all"
+    );
+}
+
+#[test]
+fn a_vietnamese_file_name_paints_real_glyphs_in_the_header_and_the_recent_list() {
+    let dir = std::env::temp_dir().join(format!("sekio-gui-tofu-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create the fixture directory");
+    let path = dir.join(format!("00. {VIETNAMESE_FILE}"));
+    std::fs::write(&path, b"%PDF-1.4\n").expect("write the fixture file");
+
+    let mut ui = AppUi::new(Some(path.clone()), Mode::App);
+    ui.run();
+    ui.deliver(FIRST, &path, metadata_content());
+
+    // The header, in the proportional family.
+    ui.assert_shows(VIETNAMESE_FILE, "the file name in the header");
+    assert_no_tofu(&ui, VIETNAMESE_FILE);
+
+    // And the recent list on the way home, which is where the screenshot was
+    // taken.
+    ui.harness.key_press(egui::Key::Escape);
+    ui.run();
+    ui.assert_shows("Recent", "the recent-files heading");
+    ui.assert_shows(VIETNAMESE_FILE, "the file name in the recent list");
+    assert_no_tofu(&ui, VIETNAMESE_FILE);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn vietnamese_file_contents_paint_real_glyphs_in_the_monospace_body() {
+    let content = PreviewContent::Text {
+        lines: vec![
+            line(vec![span(
+                VIETNAMESE_TEXT,
+                Some((200, 200, 200)),
+                false,
+                false,
+            )]),
+            // Every precomposed Vietnamese letter there is, so this cannot
+            // pass by covering only the handful the default fonts compose out
+            // of a base letter and a combining mark.
+            line(vec![span(
+                &(0x1EA0..=0x1EF9u32)
+                    .filter_map(char::from_u32)
+                    .collect::<String>(),
+                None,
+                false,
+                false,
+            )]),
+        ],
+        language: "Plain Text".to_owned(),
+    };
+
+    let path = PathBuf::from("/tmp/ghi-chú.txt");
+    let mut ui = ui_with_path("/tmp/ghi-chú.txt");
+    ui.deliver(FIRST, &path, content);
+
+    ui.assert_shows(VIETNAMESE_TEXT, "the previewed Vietnamese text");
+    assert_no_tofu(&ui, VIETNAMESE_TEXT);
+    assert_no_tofu(
+        &ui,
+        &(0x1EA0..=0x1EF9u32)
+            .filter_map(char::from_u32)
+            .collect::<String>(),
+    );
+
+    // The body really is the monospace family — a proportional fallback here
+    // would break every hexdump and listing column in the app.
+    let painted = ui.painted();
+    let body = painted
+        .iter()
+        .find(|p| p.text.contains(VIETNAMESE_TEXT))
+        .expect("the Vietnamese line must be among the painted shapes");
+    for section in &body.galley.job.sections {
+        assert_eq!(
+            section.format.font_id,
+            egui::FontId::monospace(style::MONO_SIZE)
+        );
+    }
+}
+
+#[test]
+fn the_window_never_paints_a_windows_verbatim_path_prefix() {
+    // What `Path::canonicalize` hands back on Windows. `paths::plain` is the
+    // one place that rewrites it, and it works on the string form, so this
+    // runs the same on either host.
+    let previewed = sekio_gui::paths::plain(Path::new(r"\\?\C:\Users\Admin\Downloads\note.txt"));
+    assert_eq!(
+        previewed,
+        PathBuf::from(r"C:\Users\Admin\Downloads\note.txt")
+    );
+
+    let mut ui = AppUi::new(Some(previewed.clone()), Mode::App);
+    ui.run();
+    ui.deliver(FIRST, &previewed, text_content());
+
+    ui.assert_shows(
+        r"C:\Users\Admin\Downloads\note.txt",
+        "the path in the header",
+    );
+    ui.assert_hides(r"\\?\", "the extended-length prefix must never be painted");
+}
+
+/// The four shapes the UI depends on `paths::strip_verbatim` getting right.
+/// Host-independent by construction: it is a string rewrite, and nothing in it
+/// asks the OS what a path means. The exhaustive cases (device paths, long
+/// paths, trailing dots) live beside the helper in `src/paths.rs`.
+#[test]
+fn the_verbatim_prefix_helper_handles_both_platforms_shapes_on_either_host() {
+    use sekio_gui::paths::strip_verbatim;
+
+    assert_eq!(strip_verbatim(r"\\?\C:\x"), r"C:\x");
+    assert_eq!(strip_verbatim(r"\\?\UNC\srv\share"), r"\\srv\share");
+    assert_eq!(strip_verbatim(r"C:\x"), r"C:\x");
+    assert_eq!(strip_verbatim("/home/x"), "/home/x");
+    assert_eq!(strip_verbatim(r"\\server\share"), r"\\server\share");
+}

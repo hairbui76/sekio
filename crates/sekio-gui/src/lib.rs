@@ -13,7 +13,9 @@ pub mod browser;
 #[cfg(unix)]
 pub mod daemon;
 pub mod dialog;
+pub mod fonts;
 pub mod hotkey;
+pub mod paths;
 pub mod recent;
 pub mod selection;
 pub mod state;
