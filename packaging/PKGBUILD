@@ -13,7 +13,7 @@ optdepends=(
   'ffmpeg: video frame previews (fallback)'
 )
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-sha256sums=('SKIP')  # filled in after the v0.4.0 release publishes
+sha256sums=('3fc9c8bcec449d6a7a66cff3a2af94d488efe71ea4517102d319f7a7e6bad18c')
 
 prepare() {
   cd "$pkgname-$pkgver"
