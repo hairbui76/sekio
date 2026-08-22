@@ -64,20 +64,29 @@ const FIRST: u64 = 1;
 // Harness
 // ---------------------------------------------------------------------------
 
-/// Point the recent-files store at a scratch directory.
+/// Give the recent-files store nowhere to live, so it never touches a file.
 ///
-/// `SekioApp::new` unconditionally spawns `recent::Store`, which reads and
-/// writes the *user's* real list. A test suite must not touch it, so the whole
-/// process is redirected once, before any harness (and therefore any store
-/// thread) exists.
+/// `SekioApp::new` unconditionally spawns `recent::Store`, which would read and
+/// write the *user's* real list. Pointing it at a scratch directory is not
+/// enough: every test in this binary shares one process and therefore one file,
+/// so a test that previews something writes a recent entry that the home-screen
+/// test then reads, and whether it does so first is a matter of scheduling. That
+/// is exactly how it passed on Linux and failed on the Windows runner.
+///
+/// `recent::state_file()` returns `None` when the environment names no usable
+/// directory, and `Store::spawn` answers that with an inert store — no reads, no
+/// writes, no thread. The *in-memory* list still fills as previews land, which is
+/// what the behaviour tests actually assert on, so nothing is lost by removing
+/// the file.
 fn isolate_state_dir() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        let dir = std::env::temp_dir().join(format!("sekio-gui-render-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create the scratch state directory");
-        std::env::set_var("XDG_STATE_HOME", &dir);
-        std::env::set_var("LOCALAPPDATA", &dir);
+        // Empty, not unset: `state_dir_from` rejects an empty LOCALAPPDATA and a
+        // non-absolute XDG_STATE_HOME/HOME, which is what makes it answer `None`
+        // on both platforms.
+        for var in ["XDG_STATE_HOME", "LOCALAPPDATA", "HOME", "USERPROFILE"] {
+            std::env::set_var(var, "");
+        }
     });
 }
 
