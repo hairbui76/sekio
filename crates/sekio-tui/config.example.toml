@@ -58,7 +58,8 @@
 ## Directory entries, in both panes.
 # directory = "#8abeb7"
 
-## Metadata field names and the hexdump's ASCII gutter.
+## Metadata field names, the hexdump's ASCII gutter, and a spreadsheet table's
+## column letters and row numbers.
 # key = "#8fa1b3"
 
 ## Pane titles, the status bar, hexdump offsets and file sizes.
@@ -67,5 +68,18 @@
 ## "truncated" / "more entries not shown" markers.
 # warning = "yellow"
 
-## Error text ("preview failed", "cannot read directory").
+## Error text ("preview failed", "cannot read directory"), and a spreadsheet
+## cell holding an error value such as "#REF!".
 # error = "red"
+
+## Spreadsheet cells, coloured by what the cell holds. Text cells are left in
+## the terminal's own foreground colour and have no key here.
+
+## Numeric cells.
+# number = "#d08770"
+
+## Boolean cells (TRUE / FALSE).
+# boolean = "#b48ead"
+
+## Date, time and duration cells.
+# date = "#96b5b4"

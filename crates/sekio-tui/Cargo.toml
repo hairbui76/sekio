@@ -26,3 +26,9 @@ ratatui-image = { version = "11", default-features = false, features = ["crosste
 # so this costs the Windows target nothing.
 serde = { version = "1", features = ["derive"] }
 toml = "1"
+# Table column widths are measured in terminal cells, not `char`s: a Vietnamese
+# `ề` written as `e` plus two combining marks is three chars and one cell, and a
+# column sized by `chars().count()` leaves every column right of it crooked.
+# Pure Rust and already in the tree (ratatui measures text with it), so this
+# costs the Windows target nothing.
+unicode-width = "0.2"

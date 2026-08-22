@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::Parser;
 use sekio_core::{CancelToken, Preview, PreviewContent, PreviewOptions, Previewer};
+use unicode_width::UnicodeWidthStr;
 
 /// sekio — quick preview of any file, straight to your terminal.
 /// Also works as a preview backend for fzf / lf / yazi.
@@ -136,6 +137,25 @@ fn paint(out: &mut impl Write, preview: &Preview, color: bool, width: u32) -> Re
             writeln!(out, "{format} · {original_width}×{original_height}")?;
             paint_fields(out, fields, color)?;
         }
+        PreviewContent::Table {
+            columns,
+            rows,
+            sheets,
+            active_sheet,
+            total_rows,
+            total_cols,
+        } => paint_table(
+            out,
+            columns,
+            rows,
+            sheets,
+            *active_sheet,
+            *total_rows,
+            *total_cols,
+            preview.truncated,
+            color,
+            width,
+        )?,
         PreviewContent::Listing { entries } => {
             for e in entries {
                 let marker = if e.is_dir { "/" } else { "" };
@@ -300,6 +320,198 @@ fn human_size(bytes: u64) -> String {
     } else {
         format!("{size:.1} {}", UNITS[unit])
     }
+}
+
+// ---------------------------------------------------------------- tables ----
+
+/// A terminal cannot scroll sideways, so unlike the GUI this has to make the
+/// grid fit the pane. Widths follow the same rule the old core layout used:
+/// a column is never wider than it needs, and when the total does not fit the
+/// shortfall is taken from the widest columns first, so a column of short
+/// numbers never loses a digit to keep a prose column whole.
+fn column_widths(natural: &[usize], budget: usize, gaps: usize) -> Vec<usize> {
+    let total: usize = natural.iter().sum();
+    if natural.is_empty() || total + gaps <= budget {
+        return natural.to_vec();
+    }
+    let room = budget.saturating_sub(gaps).max(natural.len());
+
+    // Water-fill: find the cap where every column under it keeps its width and
+    // only the ones above it are cut, all to the same size.
+    let mut cap = 1;
+    loop {
+        let used: usize = natural.iter().map(|w| (*w).min(cap)).sum();
+        if used > room || cap > room {
+            cap -= 1;
+            break;
+        }
+        if natural.iter().all(|w| *w <= cap) {
+            break;
+        }
+        cap += 1;
+    }
+    natural.iter().map(|w| (*w).min(cap.max(1))).collect()
+}
+
+/// Display columns, not `char`s: Vietnamese and CJK text misaligns otherwise.
+fn cell_width(text: &str) -> usize {
+    UnicodeWidthStr::width(text)
+}
+
+/// Cut to `width` display columns, marking the cut with `…`.
+fn fit(text: &str, width: usize) -> String {
+    if cell_width(text) <= width {
+        return text.to_string();
+    }
+    if width <= 1 {
+        return "…".into();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let w = UnicodeWidthStr::width(ch.to_string().as_str());
+        if used + w > width - 1 {
+            break;
+        }
+        out.push(ch);
+        used += w;
+    }
+    out.push('…');
+    out
+}
+
+fn pad(text: &str, width: usize, right: bool) -> String {
+    let fitted = fit(text, width);
+    let slack = width.saturating_sub(cell_width(&fitted));
+    if right {
+        format!("{}{fitted}", " ".repeat(slack))
+    } else {
+        format!("{fitted}{}", " ".repeat(slack))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_table(
+    out: &mut impl Write,
+    columns: &[String],
+    rows: &[sekio_core::TableRow],
+    sheets: &[String],
+    active_sheet: usize,
+    total_rows: u64,
+    total_cols: u64,
+    truncated: bool,
+    color: bool,
+    width: u32,
+) -> Result<()> {
+    let dim = |s: &str| -> String {
+        if color {
+            format!("\x1b[38;2;101;115;126m{s}\x1b[0m")
+        } else {
+            s.to_string()
+        }
+    };
+
+    if !sheets.is_empty() {
+        let names: Vec<String> = sheets
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                if i == active_sheet {
+                    format!("[{name}]")
+                } else {
+                    name.clone()
+                }
+            })
+            .collect();
+        writeln!(out, "{} {}", dim("Sheets:"), names.join("  "))?;
+    }
+
+    // The gutter holds the widest row label; every column at least its heading.
+    let gutter = rows
+        .iter()
+        .map(|r| cell_width(&r.label))
+        .chain(std::iter::once(0))
+        .max()
+        .unwrap_or(0);
+    let natural: Vec<usize> = columns
+        .iter()
+        .enumerate()
+        .map(|(i, head)| {
+            rows.iter()
+                .filter_map(|r| r.cells.get(i))
+                .map(|c| cell_width(&c.text))
+                .chain(std::iter::once(cell_width(head)))
+                .max()
+                .unwrap_or(1)
+                .max(1)
+        })
+        .collect();
+
+    // Borders cost: "│ " per column plus the gutter cell and the closing "│".
+    let overhead = gutter + 3 + columns.len() * 3 + 1;
+    let widths = column_widths(&natural, width as usize, overhead);
+
+    let rule = |left: &str, mid: &str, right: &str| -> String {
+        let mut s = String::from(left);
+        s.push_str(&"─".repeat(gutter + 2));
+        for w in &widths {
+            s.push_str(mid);
+            s.push_str(&"─".repeat(w + 2));
+        }
+        s.push_str(right);
+        s
+    };
+
+    writeln!(out, "{}", dim(&rule("┌", "┬", "┐")))?;
+    let mut head = format!("{} {} ", dim("│"), " ".repeat(gutter));
+    for (w, name) in widths.iter().zip(columns) {
+        head.push_str(&format!("{} {} ", dim("│"), dim(&pad(name, *w, false))));
+    }
+    head.push_str(&dim("│"));
+    writeln!(out, "{head}")?;
+    writeln!(out, "{}", dim(&rule("├", "┼", "┤")))?;
+
+    for row in rows {
+        let mut line = format!("{} {} ", dim("│"), dim(&pad(&row.label, gutter, true)));
+        for (i, w) in widths.iter().enumerate() {
+            let cell = row.cells.get(i);
+            let text = cell.map(|c| c.text.as_str()).unwrap_or("");
+            let right = cell.is_some_and(|c| c.kind.align_right());
+            let body = pad(text, *w, right);
+            let painted = match (color, cell.map(|c| c.kind)) {
+                (true, Some(sekio_core::CellKind::Number)) => {
+                    format!("\x1b[38;2;208;135;112m{body}\x1b[0m")
+                }
+                (true, Some(sekio_core::CellKind::Date)) => {
+                    format!("\x1b[38;2;150;181;180m{body}\x1b[0m")
+                }
+                (true, Some(sekio_core::CellKind::Bool)) => {
+                    format!("\x1b[38;2;180;142;173m{body}\x1b[0m")
+                }
+                (true, Some(sekio_core::CellKind::Error)) => {
+                    format!("\x1b[38;2;191;97;106m{body}\x1b[0m")
+                }
+                _ => body,
+            };
+            line.push_str(&format!("{} {painted} ", dim("│")));
+        }
+        line.push_str(&dim("│"));
+        writeln!(out, "{line}")?;
+    }
+    writeln!(out, "{}", dim(&rule("└", "┴", "┘")))?;
+
+    let shown_rows = rows.len() as u64;
+    let shown_cols = columns.len() as u64;
+    if truncated || total_rows > shown_rows || total_cols > shown_cols {
+        writeln!(
+            out,
+            "{}",
+            dim(&format!(
+                "{total_rows} rows × {total_cols} columns — showing {shown_rows} × {shown_cols}"
+            ))
+        )?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

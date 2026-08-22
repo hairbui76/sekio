@@ -106,7 +106,7 @@ Windows) for themes and default limits; see
 | Images | Image | PNG/JPEG/GIF/WebP/BMP/ICO/TIFF, plus EXIF and auto-rotation |
 | SVG | Image | Rasterized with resvg |
 | Archives | Listing | zip, tar, tar.gz, gz |
-| Spreadsheets | Aligned table | xlsx, xlsm, xlsb, xls, ods |
+| Spreadsheets | A real table | xlsx, xlsm, xlsb, xls, ods. The GUI scrolls a wide sheet sideways rather than squeezing it; the terminal fits it to the pane. |
 | Documents | Formatted text | docx, and pptx with slides in order |
 | Audio | Metadata + cover art | Tags, duration, codec, sample rate |
 | Directories | Listing | |

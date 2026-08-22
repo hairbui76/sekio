@@ -59,14 +59,21 @@ pub struct ThemeConfig {
     pub border: Option<ThemeColor>,
     /// Directory entries.
     pub directory: Option<ThemeColor>,
-    /// Metadata keys and the hexdump's ASCII gutter.
+    /// Metadata keys, the hexdump's ASCII gutter, a table's column letters and
+    /// row numbers.
     pub key: Option<ThemeColor>,
     /// Titles, status bar, hexdump offsets, file sizes.
     pub dim: Option<ThemeColor>,
     /// "truncated" markers.
     pub warning: Option<ThemeColor>,
-    /// Error text.
+    /// Error text, and a table cell holding `#REF!`.
     pub error: Option<ThemeColor>,
+    /// Numeric cells in a spreadsheet.
+    pub number: Option<ThemeColor>,
+    /// Boolean cells in a spreadsheet.
+    pub boolean: Option<ThemeColor>,
+    /// Date, time and duration cells in a spreadsheet.
+    pub date: Option<ThemeColor>,
 }
 
 /// A color written as `#rrggbb`, a 0–255 palette index, or an ANSI name.
@@ -93,6 +100,9 @@ pub struct Theme {
     pub dim: Color,
     pub warning: Color,
     pub error: Color,
+    pub number: Color,
+    pub boolean: Color,
+    pub date: Color,
 }
 
 impl Default for Theme {
@@ -107,6 +117,13 @@ impl Default for Theme {
             dim: Color::Rgb(101, 115, 126),
             warning: Color::Yellow,
             error: Color::Red,
+            // Cell kinds, in the same base16-ocean slots core used to bake into
+            // a spreadsheet's spans before it started emitting a real table:
+            // base09 for numbers, base0E for booleans, base0C for dates. A
+            // sheet and a source file still sit side by side without clashing.
+            number: Color::Rgb(208, 135, 112),
+            boolean: Color::Rgb(180, 142, 173),
+            date: Color::Rgb(150, 181, 180),
         }
     }
 }
@@ -123,6 +140,9 @@ impl Theme {
             dim: pick(cfg.dim, base.dim),
             warning: pick(cfg.warning, base.warning),
             error: pick(cfg.error, base.error),
+            number: pick(cfg.number, base.number),
+            boolean: pick(cfg.boolean, base.boolean),
+            date: pick(cfg.date, base.date),
         }
     }
 }

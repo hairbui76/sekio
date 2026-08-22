@@ -20,6 +20,7 @@ use crate::hotkey::{self, Action as PressAction};
 use crate::recent::{self, Recent};
 use crate::state::{close_action, human_size, Close, Mode, RequestTracker, Siblings};
 use crate::style::{self, MONO_SIZE};
+use crate::table;
 use crate::timing::Timing;
 use crate::worker::{Kind, Loaded, Outcome, Request, Response, Worker};
 use sekio_core::paths;
@@ -67,6 +68,9 @@ struct Shown {
     loaded: Box<Loaded>,
     /// Built once per preview, on its first frame (see `style::text_job`).
     text_job: Option<egui::text::LayoutJob>,
+    /// Column widths for a `Table`, measured once per preview rather than per
+    /// frame: sizing a column lays real text out (see `table::Grid::measure`).
+    grid: Option<table::Grid>,
     /// Uploaded to the GPU exactly once per preview.
     texture: Option<TextureHandle>,
     elapsed: Duration,
@@ -514,10 +518,6 @@ impl SekioApp {
     /// Re-request the preview when the text area has settled at a materially
     /// different width.
     ///
-    /// Only for text: an image or a hexdump lays out the same at any width, and
-    /// re-decoding a photo on every window drag would cost a decode, a GPU
-    /// upload and a visible flicker for nothing.
-    ///
     /// `true` means a request went out. The clock is a parameter so the rule is
     /// testable without an event loop.
     fn poll_reflow(&mut self, ctx: &egui::Context, now: std::time::Instant) -> bool {
@@ -526,10 +526,7 @@ impl SekioApp {
         };
         let reflowable = matches!(
             &self.view,
-            View::Ready(shown) if matches!(
-                shown.loaded.preview.content,
-                PreviewContent::Text { .. }
-            )
+            View::Ready(shown) if needs_relayout(&shown.loaded.preview.content)
         );
         if !reflowable {
             return false;
@@ -650,6 +647,7 @@ impl SekioApp {
                 self.view = View::Ready(Box::new(Shown {
                     loaded,
                     text_job: None,
+                    grid: None,
                     texture,
                     elapsed: response.elapsed,
                 }));
@@ -881,6 +879,13 @@ impl SekioApp {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 match &shown.loaded.preview.content {
+                    PreviewContent::Table { .. } => {
+                        // How big the sheet is, and — when a cap or the column
+                        // window cut it short — how much of it is on screen.
+                        if let Some(view) = table_view(&shown.loaded.preview.content) {
+                            dim_label(ui, view.footer(shown.loaded.preview.truncated));
+                        }
+                    }
                     PreviewContent::Text { lines, language } => {
                         dim_label(ui, format!("{language} · {} lines", lines.len()));
                     }
@@ -981,6 +986,30 @@ impl SekioApp {
             .inner;
         self.text_columns = columns;
         action
+    }
+}
+
+/// Is this content laid out by *core*, for a width core has to be told?
+///
+/// Only text is. An image or a hexdump lays out the same at any width, and
+/// re-decoding a photo on every window drag would cost a decode, a GPU upload
+/// and a visible flicker for nothing.
+///
+/// A `Table` used to be text — core flattened a spreadsheet into space-aligned
+/// lines, so the only way to use a wider window was to ask for the whole
+/// workbook again at a bigger `text_width`. It now hands over the grid itself,
+/// and every width in it is decided on this side by `table::Grid`, from content
+/// and from the space the pane actually has. Re-requesting one on resize would
+/// re-read the workbook to produce byte-identical IR, so a table is explicitly
+/// not reflowable: dragging a window edge now just moves the columns.
+fn needs_relayout(content: &PreviewContent) -> bool {
+    match content {
+        PreviewContent::Text { .. } => true,
+        PreviewContent::Table { .. }
+        | PreviewContent::Image { .. }
+        | PreviewContent::Listing { .. }
+        | PreviewContent::Metadata { .. }
+        | PreviewContent::HexDump { .. } => false,
     }
 }
 
@@ -1321,8 +1350,42 @@ fn dim_label(ui: &mut egui::Ui, text: String) {
     ui.label(RichText::new(text).color(style::DIM).size(11.0));
 }
 
+/// Borrow a `Table` out of the IR, so the painter and the footer read the same
+/// six fields without either of them spelling them out again.
+fn table_view(content: &PreviewContent) -> Option<table::Table<'_>> {
+    match content {
+        PreviewContent::Table {
+            columns,
+            rows,
+            sheets,
+            active_sheet,
+            total_rows,
+            total_cols,
+        } => Some(table::Table {
+            columns,
+            rows,
+            sheets,
+            active_sheet: *active_sheet,
+            total_rows: *total_rows,
+            total_cols: *total_cols,
+        }),
+        _ => None,
+    }
+}
+
 fn paint_content(ui: &mut egui::Ui, shown: &mut Shown, zoom: f32) {
     match &shown.loaded.preview.content {
+        PreviewContent::Table { .. } => {
+            let Some(view) = table_view(&shown.loaded.preview.content) else {
+                return;
+            };
+            // Measured on the preview's first frame and kept: sizing a column
+            // lays real text out, which is not a per-frame cost worth paying.
+            let grid = shown
+                .grid
+                .get_or_insert_with(|| table::Grid::measure(ui.ctx(), &view));
+            table::paint(ui, &view, grid);
+        }
         PreviewContent::Text { lines, .. } => {
             let job = shown.text_job.get_or_insert_with(|| {
                 style::text_job(lines, ui.visuals().text_color(), MONO_SIZE)
@@ -1492,6 +1555,14 @@ fn desired_size(content: &PreviewContent) -> Vec2 {
     let clamp = |w: f32, h: f32| Vec2::new(w.clamp(420.0, 1400.0), h.clamp(300.0, 900.0));
 
     match content {
+        // A grid wants width per column and a line per row. The real column
+        // widths are not known until the font has measured them, so this is a
+        // first guess at a window to open at; the table scrolls sideways if it
+        // turns out to want more.
+        PreviewContent::Table { columns, rows, .. } => clamp(
+            (columns.len().clamp(1, 10) as f32 * 13.0 + 6.0) * CHAR_W + 40.0,
+            (rows.len() + 2) as f32 * LINE_H + CHROME,
+        ),
         PreviewContent::Text { lines, .. } => {
             let cols = lines
                 .iter()
@@ -1585,6 +1656,53 @@ mod tests {
         let size = desired_size(&content);
         assert!(size.x >= 420.0 && size.x <= 1400.0);
         assert!(size.y >= 300.0 && size.y <= 900.0);
+
+        // A 16 384-column, 500-row sheet must not ask for a window the size of
+        // a wall; it scrolls instead.
+        let sheet = PreviewContent::Table {
+            columns: (0..900).map(|i| i.to_string()).collect(),
+            rows: vec![sekio_core::TableRow::default(); 500],
+            sheets: Vec::new(),
+            active_sheet: 0,
+            total_rows: 500,
+            total_cols: 16_384,
+        };
+        let size = desired_size(&sheet);
+        assert!(size.x >= 420.0 && size.x <= 1400.0, "{size:?}");
+        assert!(size.y >= 300.0 && size.y <= 900.0, "{size:?}");
+    }
+
+    /// The reflow machinery exists for exactly one variant, and the cost of it
+    /// leaking to another is a full re-render per window drag.
+    #[test]
+    fn only_text_is_laid_out_by_core_for_a_width_we_supply() {
+        assert!(needs_relayout(&PreviewContent::Text {
+            lines: Vec::new(),
+            language: String::new(),
+        }));
+        // A table carries the grid; the widths are decided in `table.rs`, so
+        // re-requesting one at a new width would re-read the workbook for
+        // byte-identical IR.
+        assert!(!needs_relayout(&PreviewContent::Table {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            sheets: Vec::new(),
+            active_sheet: 0,
+            total_rows: 0,
+            total_cols: 0,
+        }));
+        assert!(!needs_relayout(&PreviewContent::Listing {
+            entries: Vec::new()
+        }));
+        assert!(!needs_relayout(&PreviewContent::HexDump {
+            data: Vec::new(),
+            file_size: 0,
+            mime: None,
+        }));
+        assert!(!needs_relayout(&PreviewContent::Metadata {
+            fields: Vec::new(),
+            thumbnail: None,
+        }));
     }
 
     #[test]

@@ -42,7 +42,9 @@ use eframe::App as _;
 use egui::{Color32, Rect, Shape, TextureId};
 use egui_kittest::kittest::Queryable as _;
 use egui_kittest::Harness;
-use sekio_core::{ListEntry, MetaField, Preview, PreviewContent, Span, StyledLine};
+use sekio_core::{
+    CellKind, ListEntry, MetaField, Preview, PreviewContent, Span, StyledLine, TableCell, TableRow,
+};
 use sekio_gui::app::{SekioApp, Startup};
 use sekio_gui::state::{Mode, RequestTracker};
 use sekio_gui::style;
@@ -235,19 +237,78 @@ impl AppUi {
             .size
     }
 
-    /// Spin the wheel far enough to hit the end of whatever is on screen.
-    /// `ScrollArea` clamps the offset, and `kittest` disables egui's scroll
-    /// animation, so one shove lands exactly at the bottom.
-    fn scroll_to_the_bottom(&mut self) {
+    /// Spin the wheel over the middle of the window. `ScrollArea` clamps the
+    /// offset, and `kittest` disables egui's scroll animation, so one big shove
+    /// lands exactly at the far end.
+    fn scroll_by(&mut self, delta: egui::Vec2) {
         let middle = Rect::from_min_size(egui::Pos2::ZERO, SIZE.into()).center();
         self.harness.event(egui::Event::PointerMoved(middle));
         self.harness.event(egui::Event::MouseWheel {
             unit: egui::MouseWheelUnit::Point,
-            delta: egui::Vec2::new(0.0, -100_000.0),
+            delta,
             phase: egui::TouchPhase::Move,
             modifiers: egui::Modifiers::NONE,
         });
         self.run();
+    }
+
+    fn scroll_to_the_bottom(&mut self) {
+        self.scroll_by(egui::Vec2::new(0.0, -100_000.0));
+    }
+
+    /// All the way to the right-hand edge of the content.
+    fn scroll_to_the_right(&mut self) {
+        self.scroll_by(egui::Vec2::new(-100_000.0, 0.0));
+    }
+
+    /// Every straight line the frame was about to draw — the table's column
+    /// rules and the rule under its header.
+    fn lines(&self) -> Vec<PaintedLine> {
+        let mut out = Vec::new();
+        for clipped in &self.harness.output().shapes {
+            collect_lines(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    fn fills(&self) -> Vec<PaintedFill> {
+        let mut out = Vec::new();
+        for clipped in &self.harness.output().shapes {
+            collect_fills(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    /// The one galley whose text is exactly `needle`.
+    #[track_caller]
+    fn galley_of(&self, needle: &str) -> PaintedText {
+        self.painted()
+            .into_iter()
+            .find(|painted| painted.text == needle)
+            .unwrap_or_else(|| panic!("nothing painted for {needle:?}:\n{}", self.text()))
+    }
+
+    /// The colour `needle` was laid out in.
+    #[track_caller]
+    fn color_of(&self, needle: &str) -> Color32 {
+        self.galley_of(needle)
+            .galley
+            .job
+            .sections
+            .first()
+            .map(|section| section.format.color)
+            .unwrap_or_else(|| panic!("{needle:?} was painted with no format at all"))
+    }
+
+    /// Where a galley whose text is exactly `needle` was painted.
+    #[track_caller]
+    fn rect_of(&self, needle: &str) -> Rect {
+        self.galley_of(needle).rect
+    }
+
+    /// Is anything at all painted with exactly this text?
+    fn has(&self, needle: &str) -> bool {
+        self.painted().iter().any(|painted| painted.text == needle)
     }
 
     #[track_caller]
@@ -298,6 +359,62 @@ fn collect_text(shape: &Shape, clip: Rect, out: &mut Vec<PaintedText>) {
         Shape::Vec(shapes) => {
             for shape in shapes {
                 collect_text(shape, clip, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A filled rectangle the frame was about to draw. The table's frozen header
+/// and gutter are opaque strips: without them the cells would scroll straight
+/// through the column letters and the row numbers.
+struct PaintedFill {
+    rect: Rect,
+    color: Color32,
+}
+
+fn collect_fills(shape: &Shape, out: &mut Vec<PaintedFill>) {
+    match shape {
+        Shape::Rect(rect) if rect.fill.a() > 0 => out.push(PaintedFill {
+            rect: rect.rect,
+            color: rect.fill,
+        }),
+        Shape::Vec(shapes) => {
+            for shape in shapes {
+                collect_fills(shape, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// One straight line the frame was about to draw.
+struct PaintedLine {
+    from: egui::Pos2,
+    to: egui::Pos2,
+    color: Color32,
+}
+
+impl PaintedLine {
+    fn is_vertical(&self) -> bool {
+        (self.from.x - self.to.x).abs() < 0.5 && (self.from.y - self.to.y).abs() > 1.0
+    }
+
+    fn is_horizontal(&self) -> bool {
+        (self.from.y - self.to.y).abs() < 0.5 && (self.from.x - self.to.x).abs() > 1.0
+    }
+}
+
+fn collect_lines(shape: &Shape, out: &mut Vec<PaintedLine>) {
+    match shape {
+        Shape::LineSegment { points, stroke } => out.push(PaintedLine {
+            from: points[0],
+            to: points[1],
+            color: stroke.color,
+        }),
+        Shape::Vec(shapes) => {
+            for shape in shapes {
+                collect_lines(shape, out);
             }
         }
         _ => {}
@@ -409,6 +526,81 @@ fn metadata_content() -> PreviewContent {
             MetaField::new("duration", "3:21"),
         ],
         thumbnail: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Table fixtures
+//
+// The IR is built by hand rather than read out of a workbook: `PreviewContent`
+// is the contract between core and this frontend, so a painting test that goes
+// through calamine is testing the wrong half. The one end-to-end case that does
+// build a real .xlsx lives at the bottom of this file.
+// ---------------------------------------------------------------------------
+
+fn cell(text: &str, kind: CellKind) -> TableCell {
+    TableCell {
+        text: text.to_owned(),
+        kind,
+    }
+}
+
+fn text_cell(text: &str) -> TableCell {
+    cell(text, CellKind::Text)
+}
+
+fn table_row(label: &str, cells: Vec<TableCell>) -> TableRow {
+    TableRow {
+        label: label.to_owned(),
+        cells,
+    }
+}
+
+/// `columns` letters, A onwards.
+fn column_letters(count: usize) -> Vec<String> {
+    (0..count)
+        .map(|i| ((b'A' + i as u8) as char).to_string())
+        .collect()
+}
+
+/// The sheet from the bug report: Vietnamese prose in one column, numbers in
+/// another, and a note long enough to be worth eliding.
+fn table_content() -> PreviewContent {
+    PreviewContent::Table {
+        columns: column_letters(4),
+        rows: vec![
+            table_row(
+                "1",
+                vec![
+                    text_cell("STT"),
+                    text_cell("Hoạt động"),
+                    text_cell("Kết quả (giờ quy đổi)"),
+                    text_cell("Ghi chú"),
+                ],
+            ),
+            table_row(
+                "2",
+                vec![
+                    cell("1.3", CellKind::Number),
+                    text_cell("Đứng lớp hướng dẫn thực hành"),
+                    cell("47.3", CellKind::Number),
+                    text_cell(""),
+                ],
+            ),
+            table_row(
+                "3",
+                vec![
+                    cell("8", CellKind::Number),
+                    text_cell("Các hoạt động hỗ trợ khác"),
+                    cell("12", CellKind::Number),
+                    text_cell("Hỗ trợ lễ bảo vệ khóa luận"),
+                ],
+            ),
+        ],
+        sheets: vec!["Tong".to_owned(), "Chi tiết".to_owned()],
+        active_sheet: 0,
+        total_rows: 3,
+        total_cols: 4,
     }
 }
 
@@ -688,6 +880,509 @@ fn an_image_preview_uploads_a_texture_and_paints_it_at_a_sane_size() {
     // The footer describes the *original*, not the downscaled bitmap.
     ui.assert_shows("PNG · 1280×640", "the footer");
     ui.assert_shows("camera: Test Rig", "the footer's extra fields");
+}
+
+// ---------------------------------------------------------------------------
+// 1b. The table painter
+//
+// A spreadsheet is the one preview that is a *layout* rather than a stream of
+// text, and every way it can be wrong is invisible to a unit test: column
+// letters that scroll off, a gutter that never freezes, a number painted flush
+// left, a virtualiser that lays out ten thousand rows a frame, a cell elided
+// while half the window sits empty. So all of it is asserted on the frame.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_table_paints_a_grid_with_column_letters_a_row_gutter_and_rules() {
+    let path = PathBuf::from("/tmp/bang-cong.xlsx");
+    let mut ui = ui_with_path("/tmp/bang-cong.xlsx");
+    ui.deliver(FIRST, &path, table_content());
+
+    // The column letters, left to right, each its own galley.
+    let letters: Vec<Rect> = ["A", "B", "C", "D"]
+        .into_iter()
+        .map(|letter| ui.rect_of(letter))
+        .collect();
+    for pair in letters.windows(2) {
+        assert!(
+            pair[0].max.x <= pair[1].min.x,
+            "the column letters are out of order: {:?} then {:?}",
+            pair[0],
+            pair[1]
+        );
+    }
+
+    // The row-number gutter, down the left of the data and left of column A.
+    let gutter: Vec<Rect> = ["1", "2", "3"]
+        .into_iter()
+        .map(|number| ui.rect_of(number))
+        .collect();
+    let first_cell = ui.rect_of("STT");
+    for (number, row) in ["1", "2", "3"].into_iter().zip(gutter.iter()) {
+        assert!(
+            row.max.x <= first_cell.min.x,
+            "row number {number:?} at {row:?} is not left of the first column ({first_cell:?})"
+        );
+    }
+    for pair in gutter.windows(2) {
+        assert!(
+            pair[1].min.y - pair[0].min.y > 1.0,
+            "two rows were painted on top of each other at y={}",
+            pair[0].min.y
+        );
+    }
+
+    // The letters sit above the data, and the data lines up in rows.
+    assert!(
+        letters[0].max.y <= gutter[0].min.y,
+        "the header row ({:?}) overlaps the first data row ({:?})",
+        letters[0],
+        gutter[0]
+    );
+    let quy_doi = ui.rect_of("Kết quả (giờ quy đổi)");
+    assert!(
+        (quy_doi.min.y - first_cell.min.y).abs() < 1.0,
+        "two cells of row 1 were painted at different heights: {first_cell:?} and {quy_doi:?}"
+    );
+
+    // Whole cells, because the IR now carries whole cells: `rect_of` matches
+    // the galley text exactly, so an elided cell would not be found at all.
+    ui.rect_of("Đứng lớp hướng dẫn thực hành");
+    ui.rect_of("Hỗ trợ lễ bảo vệ khóa luận");
+
+    // Faint rules on the column boundaries and under the header — separation
+    // without a box round every cell.
+    let lines = ui.lines();
+    let verticals = lines
+        .iter()
+        .filter(|line| line.is_vertical() && line.color == style::FAINT)
+        .count();
+    assert!(
+        verticals >= 4,
+        "expected a rule between each of the four columns and after the \
+         gutter, found {verticals} vertical rules in {} lines",
+        lines.len()
+    );
+    let under_header = lines
+        .iter()
+        .filter(|line| line.is_horizontal() && line.color == style::FAINT)
+        .any(|line| line.from.y > letters[0].max.y && line.from.y < gutter[0].min.y + 4.0);
+    assert!(
+        under_header,
+        "no rule was painted between the column letters and the first data row"
+    );
+
+    // Colour by `CellKind`, and chrome that does not read as data.
+    assert_eq!(ui.color_of("47.3"), style::CELL_NUMBER, "a numeric cell");
+    assert_eq!(ui.color_of("Hoạt động"), style::CELL_TEXT, "a text cell");
+    assert_eq!(ui.color_of("A"), style::DIM, "a column letter");
+    assert_eq!(ui.color_of("2"), style::DIM, "a row number");
+
+    // The sheet names, with the previewed one bracketed and picked out.
+    ui.assert_shows("Sheets:", "the sheet strip");
+    assert_eq!(ui.color_of("[Tong]"), style::ACTIVE, "the active sheet");
+    assert_eq!(ui.color_of("Chi tiết"), style::FAINT, "the other sheet");
+    assert!(
+        ui.rect_of("[Tong]").max.y <= letters[0].min.y,
+        "the sheet strip must sit above the grid"
+    );
+
+    ui.assert_shows("3 rows × 4 columns", "the footer");
+}
+
+#[test]
+fn numbers_right_align_in_their_column_while_text_does_not() {
+    let content = PreviewContent::Table {
+        columns: column_letters(2),
+        rows: vec![
+            table_row("9", vec![cell("7", CellKind::Number), text_cell("y")]),
+            table_row(
+                "1000",
+                vec![cell("7000000", CellKind::Number), text_cell("yyyyyyy")],
+            ),
+        ],
+        sheets: Vec::new(),
+        active_sheet: 0,
+        total_rows: 2,
+        total_cols: 2,
+    };
+
+    let path = PathBuf::from("/tmp/numbers.xlsx");
+    let mut ui = ui_with_path("/tmp/numbers.xlsx");
+    ui.deliver(FIRST, &path, content);
+
+    let (short, long) = (ui.rect_of("7"), ui.rect_of("7000000"));
+    assert!(
+        (short.max.x - long.max.x).abs() < 1.0,
+        "a numeric column must line up on its right edge: {short:?} against {long:?}"
+    );
+    assert!(
+        short.min.x > long.min.x + 1.0,
+        "the short number was not pushed right: {short:?} against {long:?}"
+    );
+
+    let (short, long) = (ui.rect_of("y"), ui.rect_of("yyyyyyy"));
+    assert!(
+        (short.min.x - long.min.x).abs() < 1.0,
+        "a text column must line up on its left edge: {short:?} against {long:?}"
+    );
+    assert!(
+        short.max.x < long.max.x - 1.0,
+        "the two text cells came out the same width: {short:?} against {long:?}"
+    );
+
+    // The gutter is right-aligned too, the way every spreadsheet shows it.
+    let (short, long) = (ui.rect_of("9"), ui.rect_of("1000"));
+    assert!(
+        (short.max.x - long.max.x).abs() < 1.0,
+        "the row numbers must line up on their right edge: {short:?} against {long:?}"
+    );
+}
+
+/// Twenty columns of eight-character cells want roughly 1 600 px. The window is
+/// 900. Before this change core was told "you have N characters" and elided
+/// until the sheet fitted; now it scrolls.
+fn wide_table(columns: usize, rows: usize) -> PreviewContent {
+    PreviewContent::Table {
+        columns: column_letters(columns),
+        rows: (0..rows)
+            .map(|row| {
+                table_row(
+                    &(row + 1).to_string(),
+                    (0..columns)
+                        .map(|column| {
+                            text_cell(&format!(
+                                "cell-{}-{}",
+                                (b'A' + column as u8) as char,
+                                row + 1
+                            ))
+                        })
+                        .collect(),
+                )
+            })
+            .collect(),
+        sheets: Vec::new(),
+        active_sheet: 0,
+        total_rows: rows as u64,
+        total_cols: columns as u64,
+    }
+}
+
+#[test]
+fn a_wide_table_scrolls_sideways_instead_of_eliding_everything() {
+    let path = PathBuf::from("/tmp/wide.xlsx");
+    let mut ui = ui_with_path("/tmp/wide.xlsx");
+    ui.deliver(FIRST, &path, wide_table(20, 12));
+
+    // The left-hand columns are on screen whole; the right-hand ones are past
+    // the window and cost nothing to not paint.
+    ui.rect_of("cell-A-1");
+    assert!(
+        !ui.has("cell-T-1"),
+        "a 20-column sheet cannot fit in a 900px window, so the last column \
+         must be off to the right, not squeezed in:\n{}",
+        ui.text()
+    );
+
+    ui.scroll_to_the_right();
+
+    // …and one shove of the wheel reaches it, whole.
+    ui.rect_of("cell-T-1");
+    assert!(
+        !ui.has("cell-A-1"),
+        "scrolling right did not move the columns at all"
+    );
+    // The column letter travelled with its column.
+    ui.rect_of("T");
+
+    // The gutter did not travel: every row number is still on screen, still at
+    // the left edge, after the cells have slid a full window sideways. Painted
+    // is not enough — a gutter that scrolled with the content would still be
+    // laid out, just a thousand pixels off the left of the window.
+    let screen = Rect::from_min_size(egui::Pos2::ZERO, SIZE.into());
+    for row in 1..=12 {
+        let number = ui.galley_of(&row.to_string());
+        assert!(
+            number.is_visible(screen) && number.rect.min.x >= 0.0,
+            "row number {row} was laid out at {:?}, off the {screen:?} window: \
+             the gutter scrolled away with the cells",
+            number.rect
+        );
+    }
+    assert!(
+        ui.rect_of("1").max.x <= ui.rect_of("cell-T-1").min.x,
+        "the row-number gutter is not left of the cells it labels"
+    );
+}
+
+#[test]
+fn the_column_letters_stay_put_while_the_rows_scroll() {
+    let path = PathBuf::from("/tmp/tall.xlsx");
+    let mut ui = ui_with_path("/tmp/tall.xlsx");
+    ui.deliver(FIRST, &path, wide_table(3, 200));
+
+    let before = ui.rect_of("A");
+    ui.rect_of("cell-A-1");
+
+    ui.scroll_to_the_bottom();
+
+    let letter = ui.galley_of("A");
+    let after = letter.rect;
+    assert!(
+        (before.min.y - after.min.y).abs() < 1.0,
+        "the column letters slid from {before:?} to {after:?} while the rows \
+         scrolled — the header is not frozen"
+    );
+    let screen = Rect::from_min_size(egui::Pos2::ZERO, SIZE.into());
+    assert!(
+        letter.is_visible(screen),
+        "the column letter is still laid out, at {after:?}, but no longer \
+         inside the {screen:?} window"
+    );
+    ui.rect_of("cell-A-200");
+    assert!(
+        !ui.has("cell-A-1"),
+        "the first row is still painted after scrolling 200 rows down"
+    );
+
+    // Rows that scroll under the header and the gutter must not show through
+    // them, so both are opaque strips rather than bare text.
+    let fills = ui.fills();
+    let strip = |what: &str, over: Rect, wide: bool| {
+        assert!(
+            fills.iter().any(|fill| {
+                fill.color.a() == 255
+                    && fill.rect.contains_rect(over)
+                    && if wide {
+                        fill.rect.width() > 400.0
+                    } else {
+                        fill.rect.height() > 200.0
+                    }
+            }),
+            "{what} at {over:?} is painted over nothing opaque, so the rows \
+             scrolling under it would show through"
+        );
+    };
+    strip("the header", after, true);
+    strip("the gutter", ui.rect_of("200"), false);
+}
+
+#[test]
+fn a_five_thousand_row_table_paints_only_a_window_of_rows() {
+    // The whole point of virtualising: `Grid` measures once, and each frame
+    // lays out the thirty-odd rows the pane can actually show. Without it a
+    // 5 000-row sheet is 5 000 galleys a frame, all but a handful of them
+    // outside the clip rectangle.
+    let path = PathBuf::from("/tmp/huge.xlsx");
+    let mut ui = ui_with_path("/tmp/huge.xlsx");
+    ui.deliver(FIRST, &path, wide_table(3, 5000));
+
+    let painted = ui
+        .painted()
+        .iter()
+        .filter(|painted| painted.text.starts_with("cell-A-"))
+        .count();
+    assert!(
+        painted >= 10,
+        "only {painted} of 5000 rows were painted into a {}px pane",
+        SIZE[1]
+    );
+    assert!(
+        painted <= 60,
+        "{painted} rows were painted for a pane that fits about thirty: the \
+         rows are not being virtualised"
+    );
+    assert!(
+        !ui.has("cell-A-5000"),
+        "the last row, before anyone scrolls"
+    );
+
+    // And the row height the virtualiser is told about is the one the rows are
+    // really painted at, or the end of the sheet would be unreachable however
+    // far you scrolled.
+    ui.scroll_to_the_bottom();
+    ui.rect_of("cell-A-5000");
+    ui.rect_of("5000");
+}
+
+#[test]
+fn one_enormous_cell_does_not_make_the_table_ten_thousand_pixels_wide() {
+    let note = "x".repeat(4000);
+    let content = PreviewContent::Table {
+        columns: column_letters(3),
+        rows: vec![table_row(
+            "1",
+            vec![text_cell("a"), text_cell(&note), text_cell("b")],
+        )],
+        sheets: Vec::new(),
+        active_sheet: 0,
+        total_rows: 1,
+        total_cols: 3,
+    };
+
+    let path = PathBuf::from("/tmp/note.xlsx");
+    let mut ui = ui_with_path("/tmp/note.xlsx");
+    ui.deliver(FIRST, &path, content);
+
+    let painted = ui.galley_of(&note);
+    assert!(
+        painted.galley.elided,
+        "a 4000-character cell was painted in full at {:?}",
+        painted.rect.size()
+    );
+    assert!(
+        painted.rect.width() < 400.0,
+        "the note column came out {:.0}px wide; the per-column ceiling is not \
+         holding",
+        painted.rect.width()
+    );
+    // The column after it is still reachable without scrolling a mile.
+    let after = ui.rect_of("b");
+    assert!(
+        after.min.x < SIZE[0],
+        "column C landed at x={:.0}, off the right of a {}px window",
+        after.min.x,
+        SIZE[0]
+    );
+}
+
+#[test]
+fn a_table_bigger_than_its_preview_says_so_in_the_footer() {
+    let PreviewContent::Table { columns, rows, .. } = table_content() else {
+        unreachable!("table_content is a table");
+    };
+    let content = PreviewContent::Table {
+        columns,
+        rows,
+        sheets: Vec::new(),
+        active_sheet: 0,
+        total_rows: 4000,
+        total_cols: 90,
+    };
+
+    let path = PathBuf::from("/tmp/big.xlsx");
+    let mut ui = ui_with_path("/tmp/big.xlsx");
+    ui.respond(
+        FIRST,
+        &path,
+        Outcome::Ready(Box::new(Loaded {
+            preview: Preview {
+                content,
+                truncated: true,
+            },
+            image: None,
+        })),
+    );
+
+    ui.assert_shows(
+        "4000 rows × 90 columns — showing 3 × 4",
+        "the footer's note about what is not shown",
+    );
+    ui.assert_shows("truncated", "the header's truncation marker");
+    ui.assert_shows("STT", "the part of the sheet that did fit");
+}
+
+#[test]
+fn a_capped_table_that_never_declared_its_size_still_admits_there_is_more() {
+    let path = PathBuf::from("/tmp/nodim.xlsx");
+    let mut ui = ui_with_path("/tmp/nodim.xlsx");
+    // An xlsx written without a `<dimension>`: the row cap bit, but the sheet
+    // never said how big it was, so "there is more" is all anyone knows.
+    ui.respond(
+        FIRST,
+        &path,
+        Outcome::Ready(Box::new(Loaded {
+            preview: Preview {
+                content: table_content(),
+                truncated: true,
+            },
+            image: None,
+        })),
+    );
+
+    ui.assert_shows(
+        "showing first 3 rows × 4 columns — more follow",
+        "the vaguer footer note",
+    );
+}
+
+#[test]
+fn a_ragged_table_paints_what_it_has_instead_of_panicking() {
+    // Everything a malformed sheet can hand over at once: a row with no cells,
+    // a row shorter than the column list, a row longer than it, an empty row
+    // label, a cell holding a newline, and an `active_sheet` that indexes past
+    // the end of the sheet list.
+    let content = PreviewContent::Table {
+        columns: column_letters(3),
+        rows: vec![
+            table_row("1", Vec::new()),
+            table_row("", vec![text_cell("short")]),
+            table_row(
+                "3",
+                vec![
+                    text_cell("one"),
+                    text_cell("two\nlines"),
+                    cell("#REF!", CellKind::Error),
+                    text_cell("extra"),
+                    text_cell("more"),
+                ],
+            ),
+        ],
+        sheets: vec!["only".to_owned()],
+        active_sheet: 9,
+        total_rows: 0,
+        total_cols: 0,
+    };
+
+    let path = PathBuf::from("/tmp/ragged.xlsx");
+    let mut ui = ui_with_path("/tmp/ragged.xlsx");
+    ui.deliver(FIRST, &path, content);
+
+    ui.assert_shows("short", "a row shorter than the column list");
+    ui.assert_shows("#REF!", "an error cell");
+    assert_eq!(ui.color_of("#REF!"), style::CELL_ERROR);
+    // A newline inside a cell must not open a second row and push every row
+    // below it out of step with the virtualiser.
+    let wrapped = ui.galley_of("two lines");
+    assert_eq!(
+        wrapped.galley.rows.len(),
+        1,
+        "a cell with a newline in it laid out as {} rows",
+        wrapped.galley.rows.len()
+    );
+    // The IR under-reported its own size; the footer must not say "0 rows".
+    ui.assert_shows("3 rows × 3 columns", "the footer");
+}
+
+#[test]
+fn a_table_is_not_re_requested_when_the_window_is_resized() {
+    // The reflow machinery exists because core used to lay a spreadsheet out
+    // for a width the frontend had to supply. A `Table` carries the grid, and
+    // every width in it is decided on this side, so asking for it again at a
+    // new width would re-read the workbook to get byte-identical IR back.
+    let path = PathBuf::from("/tmp/steady.xlsx");
+    let mut ui = ui_with_path("/tmp/steady.xlsx");
+    ui.deliver(FIRST, &path, table_content());
+
+    // Long enough for the reflow settle timer to expire several times over.
+    // The same wait against `text_content` produces exactly one re-request —
+    // see `a_window_that_is_not_resized_never_re_requests_its_preview`.
+    std::thread::sleep(Duration::from_millis(300));
+    ui.run();
+    ui.run();
+
+    let requests: Vec<Request> = ui
+        .requests
+        .try_iter()
+        .filter(|request| request.kind == Kind::Preview)
+        .collect();
+    assert!(
+        requests.is_empty(),
+        "a table on screen must never be re-requested for a new pane width, \
+         but {} request(s) went out",
+        requests.len()
+    );
+    ui.assert_shows("STT", "the table, still the one that was delivered");
 }
 
 // ---------------------------------------------------------------------------
@@ -1505,124 +2200,54 @@ fn xlsx() -> Vec<u8> {
     writer.finish().expect("finish zip").into_inner()
 }
 
-/// The painted table itself — the body galley, not the chrome around it. The
-/// header and the "Open…" button both carry an ellipsis of their own, so the
-/// whole frame's text cannot answer "was a cell elided?".
-fn painted_table(ui: &AppUi) -> String {
-    let table: Vec<String> = ui
-        .painted()
-        .iter()
-        .filter(|painted| painted.text.contains("STT"))
-        .map(|painted| painted.text.clone())
-        .collect();
-    assert!(
-        !table.is_empty(),
-        "no table was painted; the frame said:\n{}",
-        ui.text()
-    );
-    table.join("\n")
-}
-
-/// Widest row of the painted table, in characters.
-fn painted_table_width(table: &str) -> usize {
-    table
-        .lines()
-        .map(|line| line.chars().count())
-        .max()
-        .unwrap_or(0)
-}
-
-/// Run one window size end to end: render the workbook through core at the
-/// width this window asked for, paint it, and report what came out.
-fn table_in_a_window(
-    previewer: &sekio_core::Previewer,
-    path: &Path,
-    size: [f32; 2],
-) -> (usize, usize, String) {
-    let mut ui = AppUi::sized(Some(path.to_path_buf()), Mode::App, size);
-    ui.run();
-    // Something text-shaped has to be on screen before a resize means
-    // anything — the app does not re-lay-out an image or a home screen.
-    ui.deliver(FIRST, path, text_content());
-
-    // The window is not the width core assumed when `main` fired the first
-    // request with no hint, so once it holds still the app re-requests.
-    std::thread::sleep(Duration::from_millis(200));
-    ui.run();
-
-    let request = ui
-        .requests
-        .try_iter()
-        .filter(|request| request.kind == Kind::Preview)
-        .last()
-        .unwrap_or_else(|| panic!("a {size:?} window must re-request its preview"));
-    let asked = request
-        .text_width
-        .expect("a preview request must carry the width the pane measured");
-
-    // Core's real spreadsheet renderer, at exactly that width.
-    let opts = sekio_core::PreviewOptions {
-        text_width: Some(asked),
-        ..Default::default()
-    };
-    let preview = previewer
-        .preview(path, &opts, &sekio_core::CancelToken::new())
-        .expect("the workbook must render");
-    ui.deliver(request.id, path, preview.content);
-
-    let table = painted_table(&ui);
-    (asked, painted_table_width(&table), table)
-}
-
-/// The bug, end to end: a spreadsheet in a wide window has to use the window.
+/// The bug, end to end: a real workbook, read by core's real spreadsheet
+/// renderer, painted by this app, with every cell whole.
 ///
-/// Both halves are real — the width comes from the running UI's own
-/// measurement of its text area, and the table comes from core's spreadsheet
-/// renderer laying out for it.
+/// This is the one test here that goes through core rather than a hand-built
+/// IR, and it deliberately asserts nothing about *which* IR came back. It used
+/// to assert that a wider window produced a wider table, because core flattened
+/// a sheet into space-aligned text and had to be told how many characters the
+/// pane had. It no longer does: the grid comes over structured and this
+/// frontend decides the widths, so "wider window, wider table" is not the
+/// contract any more — "the cells arrive whole and are painted whole" is.
 #[test]
-fn a_wide_window_lays_a_spreadsheet_out_wider_than_a_narrow_one() {
+fn a_real_workbook_paints_every_cell_whole() {
     let dir = std::env::temp_dir().join(format!("sekio-gui-width-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create the fixture directory");
     let path = dir.join("bang-cong.xlsx");
     std::fs::write(&path, xlsx()).expect("write the fixture workbook");
 
-    let previewer = sekio_core::Previewer::new();
-    let (narrow_ask, narrow_table, narrow_text) =
-        table_in_a_window(&previewer, &path, [500.0, 620.0]);
-    let (wide_ask, wide_table, wide_text) = table_in_a_window(&previewer, &path, [1500.0, 620.0]);
+    let preview = sekio_core::Previewer::new()
+        .preview(
+            &path,
+            &sekio_core::PreviewOptions::default(),
+            &sekio_core::CancelToken::new(),
+        )
+        .expect("the workbook must render");
 
-    assert!(
-        wide_ask > narrow_ask * 2,
-        "a 1500px window measured {wide_ask} characters and a 500px one \
-         {narrow_ask}: the pane width is not reaching the request"
-    );
-    assert!(
-        wide_table > narrow_table,
-        "the table came out {wide_table} characters wide in the big window and \
-         {narrow_table} in the small one — the width never reached the layout"
-    );
-    // The whole complaint: in the wide window nothing is elided at all…
-    assert!(
-        !wide_text.contains('…'),
-        "a table that needs ~90 characters was still elided in a window with \
-         room for {wide_ask}:\n{wide_text}"
-    );
-    assert!(
-        wide_text.contains("Đứng lớp hướng dẫn thực hành"),
-        "the longest cell should be whole in a wide window:\n{wide_text}"
-    );
-    // …while the small window, which genuinely cannot fit it, still says so.
-    assert!(
-        narrow_text.contains('…'),
-        "a 500px window cannot fit a 90-character table, so something must be \
-         elided:\n{narrow_text}"
-    );
-    // And the numbers survive at both sizes: they are the cheapest thing to
-    // elide and the most expensive thing to lose.
-    for text in [&narrow_text, &wide_text] {
-        assert!(text.contains("47.3"), "a value lost a digit:\n{text}");
+    let mut ui = AppUi::sized(Some(path.clone()), Mode::App, [1500.0, 620.0]);
+    ui.run();
+    ui.deliver(FIRST, &path, preview.content);
+
+    // Every one of these is a whole cell of the fixture. `assert_shows` is a
+    // substring match over the painted galleys, so a cell that came out as
+    // "Đứng lớp hướng dẫn…" fails here — which is exactly the screenshot in
+    // the bug report.
+    for whole in [
+        "STT",
+        "Hoạt động",
+        "Kết quả (giờ quy đổi)",
+        "Ghi chú",
+        "Đứng lớp hướng dẫn thực hành",
+        "Các hoạt động hỗ trợ khác",
+        "Hỗ trợ lễ bảo vệ khóa luận",
+    ] {
+        ui.assert_shows(whole, "a cell of the workbook");
     }
+    // The numbers survive too: the cheapest thing to elide and the most
+    // expensive thing to lose.
+    ui.assert_shows("47.3", "a value");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

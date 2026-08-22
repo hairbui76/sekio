@@ -95,6 +95,9 @@ fn describe(content: &PreviewContent) -> String {
         } => format!("Image/{format} ({original_width}x{original_height})"),
         PreviewContent::Listing { entries } => format!("Listing ({} entries)", entries.len()),
         PreviewContent::Metadata { fields, .. } => format!("Metadata ({} fields)", fields.len()),
+        PreviewContent::Table { columns, rows, .. } => {
+            format!("Table ({} rows x {} columns)", rows.len(), columns.len())
+        }
         PreviewContent::HexDump { mime, .. } => {
             format!("HexDump/{}", mime.as_deref().unwrap_or("binary"))
         }

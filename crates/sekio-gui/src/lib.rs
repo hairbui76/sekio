@@ -20,5 +20,6 @@ pub mod recent;
 pub mod selection;
 pub mod state;
 pub mod style;
+pub mod table;
 pub mod timing;
 pub mod worker;

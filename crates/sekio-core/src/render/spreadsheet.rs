@@ -1,15 +1,13 @@
 //! Spreadsheet preview: xlsx/xlsm, xlsb, legacy xls (BIFF) and ods, all read
 //! through `calamine` — pure Rust, so nothing here needs a C toolchain.
 //!
-//! The output is an aligned text table in the ordinary `PreviewContent::Text`
-//! IR: a header line naming every sheet (the previewed one bracketed), a row of
-//! column letters, then the cells. Frontends paint it exactly like source code,
-//! so no frontend has to learn what a spreadsheet is.
-//!
-//! Column widths are laid out for `PreviewOptions::text_width` — how many
-//! characters the frontend says it has room for. Nothing is elided while the
-//! columns' natural widths fit inside it; past that the shortfall comes out of
-//! the widest columns first. See `plan` for the rule.
+//! The output is a real grid in the `PreviewContent::Table` IR: the column
+//! letters, one row per spreadsheet row with its own row number as the label,
+//! and a typed cell per column. Cells carry their **full** text and core picks
+//! no widths at all — a frontend knows how much room it actually has, so it is
+//! the one that decides what (if anything) has to be elided. `total_rows` and
+//! `total_cols` carry the sheet's real extent so a frontend can say how much of
+//! it is not shown.
 //!
 //! Only the *first* sheet is previewed, and only its first `max_lines` rows.
 //! For xlsx that cap is a real read bound: `Xlsx::worksheet_cells_reader`
@@ -37,56 +35,23 @@ mod imp {
     };
 
     use crate::{
-        CancelToken, Preview, PreviewContent, PreviewError, PreviewOptions, Span, StyledLine,
+        CancelToken, CellKind, Preview, PreviewContent, PreviewError, PreviewOptions, TableCell,
+        TableRow,
     };
-
-    /// Palette, harmonised with the syntect theme the text renderer uses
-    /// (base16-ocean.dark) so a sheet and a source file sit side by side
-    /// without clashing. Comments name the base16 slot.
-    pub(super) mod palette {
-        pub type Rgb = (u8, u8, u8);
-
-        /// Sheet-list label, column letters, row numbers. base0D
-        pub const HEADER: Rgb = (0x8f, 0xa1, 0xb3);
-        /// The sheet actually being previewed. base0B
-        pub const ACTIVE: Rgb = (0xa3, 0xbe, 0x8c);
-        /// Ordinary string cells. base05
-        pub const TEXT: Rgb = (0xc0, 0xc5, 0xce);
-        /// Numeric cells — deliberately distinct from text. base09
-        pub const NUMBER: Rgb = (0xd0, 0x87, 0x70);
-        /// Booleans. base0E
-        pub const BOOL: Rgb = (0xb4, 0x8e, 0xad);
-        /// Dates, times and durations. base0C
-        pub const DATE: Rgb = (0x96, 0xb5, 0xb4);
-        /// `#REF!` and friends. base08
-        pub const ERROR: Rgb = (0xbf, 0x61, 0x6a);
-        /// Empty cells and the trailing summary. base03
-        pub const DIM: Rgb = (0x65, 0x73, 0x7e);
-    }
 
     /// Poll the cancel token every this many rows / cells of work.
     const CANCEL_INTERVAL: usize = 64;
-    /// Columns shown. Wider sheets are reported in the trailing summary.
-    const MAX_COLS: usize = 32;
-    /// Columns kept while collecting, before the visible window is chosen.
-    /// Bounds memory on a sheet with 16 384 populated columns.
+    /// Columns read at all. Bounds the work on a sheet with 16 384 populated
+    /// columns; anything past it is counted in `total_cols` but not read.
     const SCAN_COLS: u32 = 512;
-    /// Characters kept from one cell. A cell can legally hold 32 767 of them;
-    /// a preview pane can show a few dozen.
-    const MAX_CELL_CHARS: usize = 64;
-    /// Hard ceiling on one column's printed width, however much room the pane
-    /// has. Without it a single 4 000-character note would be the only thing on
-    /// the line.
-    const MAX_COL_WIDTH: usize = 40;
-    /// Narrowest a squeezed column is allowed to get: two characters and the
-    /// `…` that says there were more. A column that cannot have this much is
-    /// dropped instead, and reported in the summary.
-    const MIN_COL_WIDTH: usize = 3;
-    /// Spaces between two columns.
-    const COL_GAP: &str = "  ";
-    /// Lines spent on the sheet list and the column letters.
-    const HEADER_LINES: usize = 2;
-    /// Sheet names listed before the header line gives up and counts the rest.
+    /// Characters kept from one cell. A cell can legally hold 32 767 of them,
+    /// and no pane will ever show that, so this is the sanity bound that stops
+    /// one 4 000-character note (or a grid full of them) from costing real
+    /// memory. It is not a layout decision: it is generous enough that an
+    /// ordinary cell is never touched, and when it does bite the preview says
+    /// so by setting `truncated`.
+    const MAX_CELL_CHARS: usize = 256;
+    /// Sheet names listed before the list gives up. `max_entries` can lower it.
     const MAX_SHEET_NAMES: usize = 24;
 
     pub fn render(
@@ -111,28 +76,13 @@ mod imp {
             build(path, format, opts, cancel)
         }));
 
-        let (lines, truncated) = match built {
+        let (content, truncated) = match built {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => return Err(e),
             Err(_) => return Err(PreviewError::Format("malformed spreadsheet".into())),
         };
 
-        Ok(Preview {
-            content: PreviewContent::Text {
-                lines,
-                language: language_of(format).to_string(),
-            },
-            truncated,
-        })
-    }
-
-    fn language_of(format: &str) -> &'static str {
-        match format {
-            "xlsb" => "Excel Binary Workbook",
-            "xls" => "Excel Spreadsheet (legacy)",
-            "ods" => "OpenDocument Spreadsheet",
-            _ => "Excel Spreadsheet",
-        }
+        Ok(Preview { content, truncated })
     }
 
     fn build(
@@ -140,39 +90,23 @@ mod imp {
         format: &str,
         opts: &PreviewOptions,
         cancel: &CancelToken,
-    ) -> Result<(Vec<StyledLine>, bool), PreviewError> {
-        // Reserve room for the sheet list, the column letters and the trailing
-        // summary so the finished preview still fits inside `max_lines`.
-        let max_rows = opts.max_lines.saturating_sub(HEADER_LINES + 1).max(1);
+    ) -> Result<(PreviewContent, bool), PreviewError> {
+        // A row of the sheet is a row of the table, so `max_lines` bounds the
+        // read directly — there are no header or summary lines to reserve room
+        // for any more.
+        let max_rows = opts.max_lines.max(1);
 
         let (names, sheet) = read(path, format, max_rows, cancel)?;
         cancel.check()?;
-        Ok(layout(&names, &sheet, opts))
+        Ok(table(names, sheet, opts))
     }
 
     // ------------------------------------------------------------- reading
 
-    /// One cell's rendered text plus what kind of value produced it, which is
-    /// all the layout pass needs to colour and align it.
-    #[derive(Clone)]
-    struct CellText {
-        text: String,
-        kind: Kind,
-    }
-
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    enum Kind {
-        Text,
-        Number,
-        Bool,
-        Date,
-        Error,
-    }
-
     /// Rows are sparse — `(column, value)` in ascending column order, empty
     /// cells simply absent — so a sheet with one value in column ZZ costs one
-    /// entry rather than 700.
-    type Row = (u32, Vec<(u32, CellText)>);
+    /// entry rather than 700. They are squared off into full rows in [`table`].
+    type Row = (u32, Vec<(u32, TableCell)>);
 
     struct Sheet {
         rows: Vec<Row>,
@@ -258,16 +192,16 @@ mod imp {
             if seen.is_multiple_of(CANCEL_INTERVAL) {
                 cancel.check()?;
             }
-            let cell = match reader.next_cell() {
+            let raw = match reader.next_cell() {
                 Ok(Some(cell)) => cell,
                 Ok(None) => break,
                 Err(e) => return Err(fmt_err("xlsx", e)),
             };
-            if matches!(cell.get_value(), DataRef::Empty) {
+            if matches!(raw.get_value(), DataRef::Empty) {
                 continue;
             }
 
-            let (r, c) = cell.get_position();
+            let (r, c) = raw.get_position();
             // Cells arrive in ascending row order; the first one anchors the
             // grid so a sheet whose data starts at row 40 doesn't cost 40
             // blank lines.
@@ -289,7 +223,9 @@ mod imp {
                 let n = start + rows.len() as u32;
                 rows.push((n, Vec::new()));
             }
-            rows[idx].1.push((c, cell_of_ref(cell.get_value())));
+            let (cell, cut) = cell_of_ref(raw.get_value());
+            truncated |= cut;
+            rows[idx].1.push((c, cell));
             max_col = max_col.max(c);
             last_row = r;
         }
@@ -371,7 +307,9 @@ mod imp {
                 if matches!(value, Data::Empty) {
                     continue;
                 }
-                cells.push((base_col + j as u32, cell_of_data(value)));
+                let (cell, cut) = cell_of_data(value);
+                truncated |= cut;
+                cells.push((base_col + j as u32, cell));
             }
             rows.push((base_row + i as u32, cells));
         }
@@ -391,41 +329,111 @@ mod imp {
             .unwrap_or(0)
     }
 
+    // --------------------------------------------------------------- table
+
+    /// Square the sparse rows off into the IR: every row gets exactly
+    /// `columns.len()` cells, absent ones empty, so a frontend indexing by
+    /// column never has to cope with a ragged row.
+    fn table(names: Vec<String>, sheet: Sheet, opts: &PreviewOptions) -> (PreviewContent, bool) {
+        let min_col = min_col_of(&sheet.rows);
+        let max_col = sheet
+            .rows
+            .iter()
+            .filter_map(|(_, cells)| cells.last().map(|(c, _)| *c))
+            .max();
+        // Columns span the cells we actually read: from the leftmost populated
+        // column to the rightmost. A sheet with nothing in it has none.
+        let width = match max_col {
+            Some(max) => (max.saturating_sub(min_col) as usize) + 1,
+            None => 0,
+        };
+
+        let columns: Vec<String> = (0..width)
+            .map(|i| column_label(min_col.saturating_add(i as u32)))
+            .collect();
+
+        let rows: Vec<TableRow> = sheet
+            .rows
+            .into_iter()
+            .map(|(number, cells)| {
+                let mut out = vec![empty_cell(); width];
+                for (c, cell) in cells {
+                    if let Some(slot) = c.checked_sub(min_col).and_then(|i| out.get_mut(i as usize))
+                    {
+                        *slot = cell;
+                    }
+                }
+                TableRow {
+                    // Row numbers are 1-based, like every spreadsheet UI.
+                    label: number.saturating_add(1).to_string(),
+                    cells: out,
+                }
+            })
+            .collect();
+
+        let cap = MAX_SHEET_NAMES.min(opts.max_entries.max(1));
+        let names_truncated = names.len() > cap;
+        let sheets: Vec<String> = names.into_iter().take(cap).map(|n| clean(&n).0).collect();
+
+        let shown_rows = rows.len() as u64;
+        let content = PreviewContent::Table {
+            columns,
+            rows,
+            sheets,
+            // The first sheet is the one we read, and it is never dropped from
+            // the (capped) name list.
+            active_sheet: 0,
+            total_rows: sheet.total_rows.max(shown_rows),
+            total_cols: sheet.total_cols.max(width as u64),
+        };
+        (content, sheet.truncated || names_truncated)
+    }
+
+    fn empty_cell() -> TableCell {
+        TableCell {
+            text: String::new(),
+            kind: CellKind::Text,
+        }
+    }
+
     // ------------------------------------------------------------ cell text
 
-    fn cell_of_data(value: &Data) -> CellText {
+    fn cell_of_data(value: &Data) -> (TableCell, bool) {
         match value {
-            Data::Int(i) => CellText::new(i.to_string(), Kind::Number),
-            Data::Float(f) => CellText::new(number(*f), Kind::Number),
-            Data::String(s) => CellText::new(clean(s), Kind::Text),
-            Data::Bool(b) => CellText::new(bool_text(*b), Kind::Bool),
-            Data::DateTime(dt) => CellText::new(datetime(dt), Kind::Date),
-            Data::DateTimeIso(s) | Data::DurationIso(s) => CellText::new(clean(s), Kind::Date),
-            Data::Error(e) => CellText::new(clean(&e.to_string()), Kind::Error),
-            Data::Empty => CellText::new(String::new(), Kind::Text),
+            Data::Int(i) => (cell(i.to_string(), CellKind::Number), false),
+            Data::Float(f) => (cell(number(*f), CellKind::Number), false),
+            Data::String(s) => from_str(s, CellKind::Text),
+            Data::Bool(b) => (cell(bool_text(*b), CellKind::Bool), false),
+            Data::DateTime(dt) => (cell(datetime(dt), CellKind::Date), false),
+            Data::DateTimeIso(s) | Data::DurationIso(s) => from_str(s, CellKind::Date),
+            Data::Error(e) => from_str(&e.to_string(), CellKind::Error),
+            Data::Empty => (empty_cell(), false),
         }
     }
 
-    fn cell_of_ref(value: &DataRef<'_>) -> CellText {
+    fn cell_of_ref(value: &DataRef<'_>) -> (TableCell, bool) {
         match value {
-            DataRef::Int(i) => CellText::new(i.to_string(), Kind::Number),
-            DataRef::Float(f) => CellText::new(number(*f), Kind::Number),
-            DataRef::String(s) => CellText::new(clean(s), Kind::Text),
-            DataRef::SharedString(s) => CellText::new(clean(s), Kind::Text),
-            DataRef::Bool(b) => CellText::new(bool_text(*b), Kind::Bool),
-            DataRef::DateTime(dt) => CellText::new(datetime(dt), Kind::Date),
-            DataRef::DateTimeIso(s) | DataRef::DurationIso(s) => {
-                CellText::new(clean(s), Kind::Date)
-            }
-            DataRef::Error(e) => CellText::new(clean(&e.to_string()), Kind::Error),
-            DataRef::Empty => CellText::new(String::new(), Kind::Text),
+            DataRef::Int(i) => (cell(i.to_string(), CellKind::Number), false),
+            DataRef::Float(f) => (cell(number(*f), CellKind::Number), false),
+            DataRef::String(s) => from_str(s, CellKind::Text),
+            DataRef::SharedString(s) => from_str(s, CellKind::Text),
+            DataRef::Bool(b) => (cell(bool_text(*b), CellKind::Bool), false),
+            DataRef::DateTime(dt) => (cell(datetime(dt), CellKind::Date), false),
+            DataRef::DateTimeIso(s) | DataRef::DurationIso(s) => from_str(s, CellKind::Date),
+            DataRef::Error(e) => from_str(&e.to_string(), CellKind::Error),
+            DataRef::Empty => (empty_cell(), false),
         }
     }
 
-    impl CellText {
-        fn new(text: String, kind: Kind) -> Self {
-            Self { text, kind }
-        }
+    fn cell(text: String, kind: CellKind) -> TableCell {
+        TableCell { text, kind }
+    }
+
+    /// A string straight out of the file: flattened, and bounded by
+    /// [`MAX_CELL_CHARS`]. The flag says whether that bound bit.
+    fn from_str(s: &str, kind: CellKind) -> (TableCell, bool) {
+        let (text, cut) = clean(s);
+        (TableCell { text, kind }, cut)
     }
 
     fn bool_text(b: bool) -> String {
@@ -458,354 +466,21 @@ mod imp {
         }
     }
 
-    /// One cell must stay one table cell: newlines and tabs become spaces,
-    /// other control characters are dropped, and the whole thing is capped.
-    fn clean(s: &str) -> String {
-        s.chars()
+    /// One cell must stay one table cell: newlines and tabs become spaces and
+    /// other control characters are dropped, so a frontend can put the text in
+    /// a grid cell without it breaking the row. Returns the (bounded) text and
+    /// whether [`MAX_CELL_CHARS`] cut it short.
+    fn clean(s: &str) -> (String, bool) {
+        let mut chars = s
+            .chars()
             .map(|c| match c {
                 '\n' | '\r' | '\t' => ' ',
                 other => other,
             })
-            .filter(|c| !c.is_control())
-            .take(MAX_CELL_CHARS)
-            .collect()
-    }
-
-    // --------------------------------------------------------------- layout
-
-    #[derive(Clone, Copy)]
-    struct Sty {
-        fg: Option<palette::Rgb>,
-        bold: bool,
-    }
-
-    impl Sty {
-        fn new(fg: palette::Rgb) -> Self {
-            Self {
-                fg: Some(fg),
-                bold: false,
-            }
-        }
-        fn plain() -> Self {
-            Self {
-                fg: None,
-                bold: false,
-            }
-        }
-        fn bold(mut self) -> Self {
-            self.bold = true;
-            self
-        }
-    }
-
-    fn span(text: impl Into<String>, sty: Sty) -> Span {
-        Span {
-            text: text.into(),
-            fg: sty.fg,
-            bold: sty.bold,
-            italic: false,
-        }
-    }
-
-    fn style_of(kind: Kind) -> Sty {
-        Sty::new(match kind {
-            Kind::Text => palette::TEXT,
-            Kind::Number => palette::NUMBER,
-            Kind::Bool => palette::BOOL,
-            Kind::Date => palette::DATE,
-            Kind::Error => palette::ERROR,
-        })
-    }
-
-    fn layout(names: &[String], sheet: &Sheet, opts: &PreviewOptions) -> (Vec<StyledLine>, bool) {
-        let min_col = min_col_of(&sheet.rows);
-        let max_col = sheet
-            .rows
-            .iter()
-            .filter_map(|(_, cells)| cells.last().map(|(c, _)| *c))
-            .max()
-            .unwrap_or(min_col);
-
-        let spread = (max_col.saturating_sub(min_col) as usize) + 1;
-        let scanned_cols = spread.clamp(1, MAX_COLS);
-
-        // Dense window over the sparse rows: only the columns we might paint.
-        let grid: Vec<Vec<Option<&CellText>>> = sheet
-            .rows
-            .iter()
-            .map(|(_, cells)| {
-                let mut row: Vec<Option<&CellText>> = vec![None; scanned_cols];
-                for (c, cell) in cells {
-                    if let Some(i) = c.checked_sub(min_col).map(|d| d as usize) {
-                        if i < scanned_cols {
-                            row[i] = Some(cell);
-                        }
-                    }
-                }
-                row
-            })
-            .collect();
-
-        // What each column would need to show everything in it, unelided.
-        let mut natural: Vec<usize> = (0..scanned_cols)
-            .map(|i| {
-                column_label(min_col.saturating_add(i as u32))
-                    .chars()
-                    .count()
-            })
-            .collect();
-        for row in &grid {
-            for (width, cell) in natural.iter_mut().zip(row.iter()) {
-                if let Some(cell) = cell {
-                    *width = (*width).max(cell.text.chars().count().min(MAX_COL_WIDTH));
-                }
-            }
-        }
-
-        // Row numbers are 1-based like every spreadsheet UI.
-        let last_row_number = sheet.rows.last().map_or(1, |(r, _)| r.saturating_add(1));
-        let gutter = last_row_number.to_string().len().max(3);
-
-        // Now spend the frontend's width on those columns.
-        let widths = plan(&natural, opts.line_width(), gutter);
-        let shown_cols = widths.len();
-        let squeezed = widths
-            .iter()
-            .zip(natural.iter())
-            .any(|(shown, wanted)| shown < wanted);
-        let col_truncated = spread > shown_cols || sheet.total_cols > shown_cols as u64;
-
-        let mut lines = Vec::with_capacity(sheet.rows.len() + HEADER_LINES + 1);
-        let (sheet_line, names_truncated) = sheet_header(names, opts);
-        lines.push(sheet_line);
-        lines.push(column_header(min_col, &widths, gutter));
-
-        for ((row_number, _), row) in sheet.rows.iter().zip(grid.iter()) {
-            lines.push(data_line(
-                row_number.saturating_add(1),
-                row,
-                &widths,
-                gutter,
-            ));
-        }
-
-        let shown_rows = sheet.rows.len() as u64;
-        if sheet.truncated || sheet.total_rows > shown_rows || col_truncated {
-            lines.push(summary(sheet, shown_rows, shown_cols));
-        }
-
-        // Safety net: the row cap already reserved room for the header and the
-        // summary, but a pathological `max_lines` of 1 must still be honoured.
-        let mut truncated = sheet.truncated || col_truncated || names_truncated || squeezed;
-        if lines.len() > opts.max_lines {
-            lines.truncate(opts.max_lines);
-            truncated = true;
-        }
-        (lines, truncated)
-    }
-
-    /// Decide a printed width for every column, spending the `budget`
-    /// characters the frontend says it has.
-    ///
-    /// Two rules, in order:
-    ///
-    /// 1. **A column is never padded past what it needs.** `natural[i]` is the
-    ///    widest thing in column `i` (already ceilinged at [`MAX_COL_WIDTH`]),
-    ///    and no column is ever given more than that — a `STT` column stays
-    ///    three characters wide however much room is going spare. So when the
-    ///    natural widths fit the budget, they are used unchanged and nothing is
-    ///    elided at all.
-    /// 2. **When they do not fit, the shortfall comes out of the widest
-    ///    columns.** A single cap is chosen by water-filling: every column
-    ///    narrower than the cap keeps its full width, and every column above it
-    ///    is cut to the cap. A three-character number column therefore never
-    ///    loses a character so a prose column can keep one — the width comes
-    ///    out of whoever has the most of it, which is also where a `…` costs
-    ///    the least of the meaning. The handful of characters the integer
-    ///    division leaves over go to the cut columns, left to right, so the
-    ///    line fills the pane exactly rather than stopping short of it.
-    ///
-    /// Returns *fewer* widths than `natural` when the budget cannot seat every
-    /// column at [`MIN_COL_WIDTH`]: past that point another column would show
-    /// nothing but an ellipsis. The caller reports the dropped ones in the
-    /// trailing summary, exactly as it does for the [`MAX_COLS`] cap.
-    fn plan(natural: &[usize], budget: usize, gutter: usize) -> Vec<usize> {
-        // Everything to the right of the row-number gutter.
-        let room = budget.saturating_sub(gutter);
-        // A column costs its own width plus the gap in front of it, so that is
-        // what one has to be worth before it is shown at all. At least one is
-        // always shown: a table with no columns is not a preview.
-        let seats = (room / (COL_GAP.len() + MIN_COL_WIDTH)).max(1);
-        let shown = natural.len().min(seats);
-        let natural = &natural[..shown];
-        // `.max(shown)` keeps the pathological case (a pane narrower than
-        // `MIN_TEXT_WIDTH` can be) off the zero-width path below; every column
-        // still gets at least one character.
-        let content = room.saturating_sub(COL_GAP.len() * shown).max(shown);
-
-        // Water level: walk the columns narrowest first, letting each keep its
-        // natural width for as long as everything still to come could be capped
-        // at that width and fit.
-        let mut sorted: Vec<usize> = natural.to_vec();
-        sorted.sort_unstable();
-        let mut spent = 0usize;
-        let mut rest = shown;
-        for &width in &sorted {
-            if spent + rest * width > content {
-                break;
-            }
-            spent += width;
-            rest -= 1;
-        }
-        if rest == 0 {
-            // Everything fits at its natural width: nothing is elided.
-            return natural.to_vec();
-        }
-
-        let left = content - spent;
-        let cap = (left / rest).max(1);
-        let mut spare = left.saturating_sub(cap * rest);
-        natural
-            .iter()
-            .map(|&width| {
-                if width <= cap {
-                    width
-                } else if spare > 0 {
-                    spare -= 1;
-                    cap + 1
-                } else {
-                    cap
-                }
-            })
-            .collect()
-    }
-
-    /// `Sheets: [Data]  Notes  Q3` — the previewed one bracketed and bold.
-    fn sheet_header(names: &[String], opts: &PreviewOptions) -> (StyledLine, bool) {
-        let mut spans = vec![span("Sheets: ", Sty::new(palette::HEADER))];
-        let cap = MAX_SHEET_NAMES.min(opts.max_entries.max(1));
-        let truncated = names.len() > cap;
-
-        for (i, name) in names.iter().take(cap).enumerate() {
-            if i > 0 {
-                spans.push(span(COL_GAP, Sty::plain()));
-            }
-            if i == 0 {
-                // The first sheet is the one we preview.
-                spans.push(span(
-                    format!("[{}]", clean(name)),
-                    Sty::new(palette::ACTIVE).bold(),
-                ));
-            } else {
-                spans.push(span(clean(name), Sty::new(palette::DIM)));
-            }
-        }
-        if truncated {
-            spans.push(span(
-                format!("  +{} more", names.len() - cap),
-                Sty::new(palette::DIM),
-            ));
-        }
-        (StyledLine { spans }, truncated)
-    }
-
-    fn column_header(min_col: u32, widths: &[usize], gutter: usize) -> StyledLine {
-        let mut spans = vec![span(" ".repeat(gutter), Sty::plain())];
-        for (i, width) in widths.iter().enumerate() {
-            spans.push(span(COL_GAP, Sty::plain()));
-            let label = column_label(min_col.saturating_add(i as u32));
-            spans.push(span(pad(&label, *width, false), Sty::new(palette::HEADER)));
-        }
-        finish(spans)
-    }
-
-    fn data_line(
-        row_number: u32,
-        row: &[Option<&CellText>],
-        widths: &[usize],
-        gutter: usize,
-    ) -> StyledLine {
-        let mut spans = vec![span(
-            pad(&row_number.to_string(), gutter, true),
-            Sty::new(palette::HEADER),
-        )];
-        for (cell, width) in row.iter().zip(widths.iter()) {
-            spans.push(span(COL_GAP, Sty::plain()));
-            match cell {
-                Some(cell) => {
-                    // Numbers right-align so decimal points line up; text
-                    // left-aligns, exactly as a spreadsheet would show it.
-                    let right = cell.kind == Kind::Number;
-                    spans.push(span(pad(&cell.text, *width, right), style_of(cell.kind)));
-                }
-                // An empty cell still occupies its column, dimmed.
-                None => spans.push(span(" ".repeat(*width), Sty::new(palette::DIM))),
-            }
-        }
-        finish(spans)
-    }
-
-    fn summary(sheet: &Sheet, shown_rows: u64, shown_cols: usize) -> StyledLine {
-        let total_rows = sheet.total_rows.max(shown_rows);
-        let total_cols = sheet.total_cols.max(shown_cols as u64);
-        let text = if total_rows > shown_rows || total_cols > shown_cols as u64 {
-            format!(
-                "{total_rows} rows × {total_cols} columns — showing {shown_rows} × {shown_cols}"
-            )
-        } else {
-            // A cap bit, but the sheet never declared its size (xlsx written
-            // without a `<dimension>`), so "there is more" is all we honestly
-            // know. Better a vague note than a confident wrong number.
-            format!("showing first {shown_rows} rows × {shown_cols} columns — more follow")
-        };
-        StyledLine {
-            spans: vec![span(text, Sty::new(palette::DIM))],
-        }
-    }
-
-    /// Drop trailing padding so a line carries no invisible whitespace tail.
-    fn finish(mut spans: Vec<Span>) -> StyledLine {
-        while spans
-            .last()
-            .is_some_and(|s| s.text.chars().all(|c| c == ' '))
-        {
-            spans.pop();
-        }
-        if let Some(last) = spans.last_mut() {
-            let trimmed = last.text.trim_end();
-            if trimmed.len() != last.text.len() {
-                last.text.truncate(trimmed.len());
-            }
-        }
-        StyledLine { spans }
-    }
-
-    fn pad(text: &str, width: usize, right: bool) -> String {
-        let shown = fit(text, width);
-        let gap = width.saturating_sub(shown.chars().count());
-        if right {
-            format!("{}{}", " ".repeat(gap), shown)
-        } else {
-            format!("{}{}", shown, " ".repeat(gap))
-        }
-    }
-
-    /// Elide with `…` when the value is wider than its column. Character
-    /// counts, not display widths: core has no unicode-width dependency, so
-    /// full-width CJK will run a little long. Everything still lines up on the
-    /// character grid the frontends use.
-    fn fit(text: &str, width: usize) -> String {
-        if width == 0 {
-            return String::new();
-        }
-        let mut chars = text.chars();
-        let head: String = chars.by_ref().take(width).collect();
-        if chars.next().is_none() {
-            return head;
-        }
-        let mut out: String = head.chars().take(width - 1).collect();
-        out.push('…');
-        out
+            .filter(|c| !c.is_control());
+        let text: String = chars.by_ref().take(MAX_CELL_CHARS).collect();
+        let cut = chars.next().is_some();
+        (text, cut)
     }
 
     /// 0 -> A, 25 -> Z, 26 -> AA, exactly like a spreadsheet's column headers.
@@ -840,122 +515,22 @@ mod imp {
         }
 
         #[test]
-        fn fit_elides_only_when_too_wide() {
-            assert_eq!(fit("abc", 5), "abc");
-            assert_eq!(fit("abc", 3), "abc");
-            assert_eq!(fit("abcdef", 4), "abc…");
-            assert_eq!(fit("abc", 0), "");
-        }
-
-        #[test]
         fn cells_are_flattened_to_one_line() {
-            assert_eq!(clean("a\nb\tc"), "a b c");
-            assert_eq!(clean(&"x".repeat(500)).chars().count(), MAX_CELL_CHARS);
+            assert_eq!(clean("a\nb\tc"), ("a b c".to_string(), false));
         }
 
-        // ------------------------------------------------------ width plan
-
-        /// What one line of the table costs: the gutter plus a gap and a
-        /// column for each width.
-        fn line_cost(widths: &[usize], gutter: usize) -> usize {
-            gutter + widths.iter().map(|w| w + COL_GAP.len()).sum::<usize>()
-        }
-
+        /// The per-cell bound is the only thing core still shortens, and it
+        /// owns up to it.
         #[test]
-        fn columns_that_fit_are_never_squeezed_or_padded() {
-            // The user's sheet, roughly: a 3-char id, two prose columns and a
-            // number column, in a 200-character window.
-            let natural = [3, 20, 24, 30];
-            let widths = plan(&natural, 200, 3);
-            assert_eq!(
-                widths,
-                natural.to_vec(),
-                "everything fits, so every column keeps exactly what it needs"
-            );
-            assert!(line_cost(&widths, 3) <= 200);
-        }
+        fn a_pathological_cell_is_bounded_and_says_so() {
+            let (text, cut) = clean(&"x".repeat(4000));
+            assert_eq!(text.chars().count(), MAX_CELL_CHARS);
+            assert!(cut);
 
-        #[test]
-        fn spare_room_is_not_handed_to_columns_that_do_not_want_it() {
-            // 1 000 characters of pane and four narrow columns: the table stays
-            // narrow rather than sprawling across the window.
-            assert_eq!(plan(&[3, 4, 5, 6], 1000, 3), vec![3, 4, 5, 6]);
-        }
-
-        #[test]
-        fn a_shortfall_comes_out_of_the_widest_columns_only() {
-            // gutter 3 + 4 gaps of 2 leaves 40 characters of columns; the
-            // natural widths want 78.
-            let natural = [3, 5, 30, 40];
-            let widths = plan(&natural, 51, 3);
-            assert_eq!(line_cost(&widths, 3), 51, "the whole budget is spent");
-            assert_eq!(
-                &widths[..2],
-                &[3, 5],
-                "narrow columns must not lose a character to a prose column"
-            );
-            // The two wide ones share what is left equally: 40 - 3 - 5 = 32,
-            // so 16 each.
-            assert_eq!(&widths[2..], &[16, 16]);
-        }
-
-        /// Water-filling, not equal-shares: a column only loses width down to
-        /// the level of the *next* widest, so a middling column that fits under
-        /// the cap keeps everything while the giant beside it pays.
-        #[test]
-        fn only_the_columns_above_the_water_line_are_cut() {
-            // Same budget as above, but the third column is 15 rather than 30 —
-            // narrow enough to survive whole once the 40 has been cut back.
-            let widths = plan(&[3, 5, 15, 40], 51, 3);
-            assert_eq!(widths, vec![3, 5, 15, 17]);
-            assert_eq!(line_cost(&widths, 3), 51);
-        }
-
-        #[test]
-        fn the_leftover_characters_of_the_split_are_not_thrown_away() {
-            // 3 + 5 = 8 spent, 33 left over two columns: 16 each with 1 spare,
-            // which goes to the first column that was cut.
-            let natural = [3, 5, 20, 40];
-            let widths = plan(&natural, 52, 3);
-            assert_eq!(widths, vec![3, 5, 17, 16]);
-            assert_eq!(line_cost(&widths, 3), 52);
-        }
-
-        #[test]
-        fn a_column_is_dropped_rather_than_shown_as_an_ellipsis() {
-            // 40 characters of pane: gutter 3 leaves 37, and a column costs at
-            // least 2 + 3, so seven columns is all that will seat.
-            let natural = [8; 20];
-            let widths = plan(&natural, 40, 3);
-            assert_eq!(widths.len(), 7);
-            assert!(
-                widths.iter().all(|w| *w >= MIN_COL_WIDTH),
-                "a shown column must be wide enough to say something: {widths:?}"
-            );
-            assert!(line_cost(&widths, 3) <= 40, "{widths:?}");
-        }
-
-        #[test]
-        fn a_pane_too_narrow_for_even_one_column_still_lays_out() {
-            for budget in 0..12usize {
-                for gutter in [0usize, 3, 9] {
-                    let widths = plan(&[3, 30, 7], budget, gutter);
-                    assert_eq!(widths.len().min(1), 1, "at least one column survives");
-                    assert!(
-                        widths.iter().all(|w| *w >= 1),
-                        "budget {budget}, gutter {gutter}: {widths:?} has a zero-width column"
-                    );
-                }
-            }
-        }
-
-        #[test]
-        fn one_column_never_swallows_the_whole_line() {
-            // One column of 40 (the ceiling) beside three tiny ones, in a pane
-            // with room to spare: the tiny ones keep every character.
-            let widths = plan(&[40, 3, 3, 3], 80, 3);
-            assert_eq!(&widths[1..], &[3, 3, 3]);
-            assert!(widths[0] <= MAX_COL_WIDTH);
+            // An ordinary cell is nowhere near it and is passed through whole.
+            let (text, cut) = clean("Hỗ trợ lễ bảo vệ khóa luận");
+            assert_eq!(text, "Hỗ trợ lễ bảo vệ khóa luận");
+            assert!(!cut);
         }
     }
 }
@@ -976,7 +551,9 @@ pub fn render(
 #[cfg(all(test, feature = "office"))]
 mod tests {
     use super::render;
-    use crate::{CancelToken, Preview, PreviewContent, PreviewError, PreviewOptions, StyledLine};
+    use crate::{
+        CancelToken, CellKind, Preview, PreviewContent, PreviewError, PreviewOptions, TableRow,
+    };
 
     use std::io::Write;
     use std::path::PathBuf;
@@ -1002,11 +579,19 @@ mod tests {
     }
 
     /// Build a minimal but real xlsx: the four parts calamine insists on plus
-    /// one worksheet whose cells are inline strings and numbers. Written with
-    /// the `zip` crate so no binary fixture ever lands in the repo.
+    /// one worksheet. Written with the `zip` crate so no binary fixture ever
+    /// lands in the repo.
+    ///
+    /// A cell's text decides its type, so a fixture can exercise every
+    /// `CellKind`: `""` is an absent cell, anything that parses as a number is
+    /// numeric, `TRUE`/`FALSE` are booleans, a leading `#` is a formula error
+    /// and everything else is an inline string.
     fn xlsx(rows: &[Vec<&str>]) -> Vec<u8> {
-        let mut sheet = String::from(
-            r#"<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>"#,
+        let cols = rows.iter().map(|r| r.len()).max().unwrap_or(1).max(1);
+        let mut sheet = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:{}{}"/><sheetData>"#,
+            super::imp::column_label(cols as u32 - 1),
+            rows.len().max(1),
         );
         for (r, row) in rows.iter().enumerate() {
             sheet.push_str(&format!(r#"<row r="{}">"#, r + 1));
@@ -1017,6 +602,11 @@ mod tests {
                 let reference = format!("{}{}", super::imp::column_label(c as u32), r + 1);
                 if value.parse::<f64>().is_ok() {
                     sheet.push_str(&format!(r#"<c r="{reference}"><v>{value}</v></c>"#));
+                } else if *value == "TRUE" || *value == "FALSE" {
+                    let bit = u8::from(*value == "TRUE");
+                    sheet.push_str(&format!(r#"<c r="{reference}" t="b"><v>{bit}</v></c>"#));
+                } else if value.starts_with('#') {
+                    sheet.push_str(&format!(r#"<c r="{reference}" t="e"><v>{value}</v></c>"#));
                 } else {
                     sheet.push_str(&format!(
                         r#"<c r="{reference}" t="inlineStr"><is><t>{value}</t></is></c>"#
@@ -1075,18 +665,43 @@ mod tests {
         )
     }
 
-    fn lines(p: &Preview) -> &[StyledLine] {
+    /// The table IR, borrowed out of a preview.
+    struct Grid<'a> {
+        columns: &'a [String],
+        rows: &'a [TableRow],
+        sheets: &'a [String],
+        active_sheet: usize,
+        total_rows: u64,
+        total_cols: u64,
+    }
+
+    fn grid(p: &Preview) -> Grid<'_> {
         match &p.content {
-            PreviewContent::Text { lines, language } => {
-                assert_eq!(language, "Excel Spreadsheet");
-                lines
-            }
-            other => panic!("expected text content, got {other:?}"),
+            PreviewContent::Table {
+                columns,
+                rows,
+                sheets,
+                active_sheet,
+                total_rows,
+                total_cols,
+            } => Grid {
+                columns,
+                rows,
+                sheets,
+                active_sheet: *active_sheet,
+                total_rows: *total_rows,
+                total_cols: *total_cols,
+            },
+            other => panic!("expected table content, got {other:?}"),
         }
     }
 
-    fn plain(line: &StyledLine) -> String {
-        line.spans.iter().map(|s| s.text.as_str()).collect()
+    fn texts(row: &TableRow) -> Vec<&str> {
+        row.cells.iter().map(|c| c.text.as_str()).collect()
+    }
+
+    fn kinds(row: &TableRow) -> Vec<CellKind> {
+        row.cells.iter().map(|c| c.kind).collect()
     }
 
     /// A minimal ODF spreadsheet: the `mimetype` member has to be stored
@@ -1146,108 +761,125 @@ mod tests {
             &CancelToken::new(),
         )
         .expect("render");
-        let rendered: Vec<String> = match &p.content {
-            PreviewContent::Text { lines, language } => {
-                assert_eq!(language, "OpenDocument Spreadsheet");
-                lines.iter().map(plain).collect()
-            }
-            other => panic!("expected text content, got {other:?}"),
-        };
-        assert!(rendered[0].contains("[Budget]"), "{rendered:?}");
-        assert!(
-            rendered.iter().any(|l| l.contains("Server")),
-            "{rendered:?}"
-        );
-        assert!(
-            rendered.iter().any(|l| l.contains("1200.5")),
-            "{rendered:?}"
-        );
+        let g = grid(&p);
+        assert_eq!(g.sheets, ["Budget"]);
+        assert_eq!(g.columns, ["A", "B"]);
+        assert_eq!(texts(&g.rows[0]), ["Item", "Cost"]);
+        assert_eq!(texts(&g.rows[1]), ["Server", "1200.5"]);
+        assert_eq!(kinds(&g.rows[1]), [CellKind::Text, CellKind::Number]);
     }
 
     #[test]
-    fn cell_values_appear_and_columns_align() {
+    fn a_sheet_becomes_columns_rows_and_cells() {
         let bytes = xlsx(&[
             vec!["Name", "Qty", "Price"],
             vec!["Widget", "12", "3.5"],
             vec!["Sprocket", "7", "11.25"],
         ]);
         let p = preview(&bytes, &PreviewOptions::default()).expect("render");
-        let rendered: Vec<String> = lines(&p).iter().map(plain).collect();
+        let g = grid(&p);
 
-        // Sheet list names both sheets, previewed one bracketed.
-        assert!(rendered[0].contains("[Data]"), "{:?}", rendered[0]);
-        assert!(rendered[0].contains("Notes"), "{:?}", rendered[0]);
-        // Column letters.
-        assert!(rendered[1].contains(" A "), "{:?}", rendered[1]);
-        assert!(rendered[1].contains('B') && rendered[1].contains('C'));
+        assert_eq!(g.columns, ["A", "B", "C"]);
+        assert_eq!(g.rows.len(), 3);
+        // Labels are the spreadsheet's own 1-based row numbers.
+        let labels: Vec<&str> = g.rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, ["1", "2", "3"]);
 
-        let body = &rendered[2..];
-        assert!(body.iter().any(|l| l.contains("Widget")));
-        assert!(body.iter().any(|l| l.contains("Sprocket")));
-        assert!(body.iter().any(|l| l.contains("11.25")));
+        assert_eq!(texts(&g.rows[0]), ["Name", "Qty", "Price"]);
+        assert_eq!(texts(&g.rows[1]), ["Widget", "12", "3.5"]);
+        assert_eq!(texts(&g.rows[2]), ["Sprocket", "7", "11.25"]);
 
-        // Alignment: column B occupies the same character span on every line.
-        // Its width is 3 — the widest of "B", "Qty", "12", "7".
-        let header = &rendered[1];
-        let start = header
-            .chars()
-            .position(|c| c == 'B')
-            .expect("column B in header");
-        let field = |line: &str| {
-            line.chars()
-                .skip(start)
-                .take(3)
-                .collect::<String>()
-                .trim()
-                .to_string()
-        };
-
-        assert_eq!(field(header), "B");
-        assert_eq!(field(&body[0]), "Qty", "header row: {:?}", body[0]);
-        let widget = body
-            .iter()
-            .find(|l| l.contains("Widget"))
-            .expect("widget row");
-        let sprocket = body
-            .iter()
-            .find(|l| l.contains("Sprocket"))
-            .expect("sprocket row");
-        assert_eq!(field(widget), "12", "row {widget:?} vs header {header:?}");
-        assert_eq!(
-            field(sprocket),
-            "7",
-            "row {sprocket:?} vs header {header:?}"
-        );
+        assert_eq!(g.total_rows, 3);
+        assert_eq!(g.total_cols, 3);
+        assert!(!p.truncated);
     }
 
     #[test]
-    fn numbers_text_and_empties_get_distinct_styles() {
-        let bytes = xlsx(&[vec!["Name", "Qty"], vec!["Widget", ""], vec!["", "42"]]);
+    fn every_cell_carries_the_kind_of_value_that_produced_it() {
+        let bytes = xlsx(&[
+            vec!["Name", "Qty", "Ok", "Calc"],
+            vec!["Widget", "12", "TRUE", "#REF!"],
+        ]);
         let p = preview(&bytes, &PreviewOptions::default()).expect("render");
-        let spans: Vec<_> = lines(&p).iter().flat_map(|l| l.spans.iter()).collect();
+        let g = grid(&p);
 
-        let text = spans
-            .iter()
-            .find(|s| s.text.trim() == "Widget")
-            .expect("text cell");
-        let number = spans
-            .iter()
-            .find(|s| s.text.trim() == "42")
-            .expect("number cell");
-        assert_ne!(text.fg, number.fg, "numbers must not look like text");
-        assert_eq!(number.fg, Some(super::imp::palette::NUMBER));
-
-        // The empty cell next to "Widget" is padding painted in the dim slot.
-        assert!(
-            spans.iter().any(|s| s.fg == Some(super::imp::palette::DIM)
-                && s.text.chars().all(|c| c == ' ')
-                && !s.text.is_empty()),
-            "an empty cell should be dim"
+        assert_eq!(
+            kinds(&g.rows[0]),
+            [CellKind::Text; 4],
+            "a header row is all text"
         );
+        assert_eq!(
+            kinds(&g.rows[1]),
+            [
+                CellKind::Text,
+                CellKind::Number,
+                CellKind::Bool,
+                CellKind::Error
+            ],
+            "{:?}",
+            texts(&g.rows[1])
+        );
+        assert_eq!(texts(&g.rows[1]), ["Widget", "12", "TRUE", "#REF!"]);
+        // The IR's alignment rule is the frontends', not ours — but a number
+        // has to be the thing it applies to.
+        assert!(g.rows[1].cells[1].kind.align_right());
+        assert!(!g.rows[1].cells[0].kind.align_right());
+    }
+
+    /// Sparse rows are the normal case in a real workbook: the gaps have to
+    /// come out as empty cells in the right *positions*, not as a short row.
+    #[test]
+    fn a_sparse_row_gets_empty_cells_in_the_gaps() {
+        let bytes = xlsx(&[
+            vec!["A1", "B1", "C1", "D1"],
+            vec!["", "B2", "", "D2"],
+            vec![""; 4],
+            vec!["A4", "", "", "D4"],
+        ]);
+        let p = preview(&bytes, &PreviewOptions::default()).expect("render");
+        let g = grid(&p);
+
+        assert_eq!(g.columns, ["A", "B", "C", "D"]);
+        for row in g.rows {
+            assert_eq!(
+                row.cells.len(),
+                g.columns.len(),
+                "row {:?} is ragged",
+                row.label
+            );
+        }
+        assert_eq!(texts(&g.rows[1]), ["", "B2", "", "D2"]);
+        // A blank row inside the data is still a row, of empty cells.
+        assert_eq!(g.rows[2].label, "3");
+        assert_eq!(texts(&g.rows[2]), ["", "", "", ""]);
+        assert_eq!(kinds(&g.rows[2]), [CellKind::Text; 4]);
+        assert_eq!(texts(&g.rows[3]), ["A4", "", "", "D4"]);
+    }
+
+    /// A sheet whose data starts in the middle of the grid is anchored on its
+    /// first populated column, and the letters say which one that is.
+    #[test]
+    fn columns_are_labelled_from_the_first_populated_one() {
+        let bytes = xlsx(&[vec!["", "", "C1", "D1"], vec!["", "", "C2", ""]]);
+        let g_owner = preview(&bytes, &PreviewOptions::default()).expect("render");
+        let g = grid(&g_owner);
+        assert_eq!(g.columns, ["C", "D"]);
+        assert_eq!(texts(&g.rows[0]), ["C1", "D1"]);
+        assert_eq!(texts(&g.rows[1]), ["C2", ""]);
     }
 
     #[test]
-    fn max_lines_truncates_and_flags() {
+    fn every_sheet_is_named_and_the_active_one_is_the_first() {
+        let bytes = xlsx(&[vec!["a"]]);
+        let p = preview(&bytes, &PreviewOptions::default()).expect("render");
+        let g = grid(&p);
+        assert_eq!(g.sheets, ["Data", "Notes"]);
+        assert_eq!(g.active_sheet, 0);
+        assert_eq!(g.sheets[g.active_sheet], "Data");
+    }
+
+    #[test]
+    fn max_lines_bounds_the_rows_and_the_real_extent_is_still_reported() {
         let rows: Vec<Vec<&str>> = (0..200).map(|_| vec!["a", "b"]).collect();
         let bytes = xlsx(&rows);
         let opts = PreviewOptions {
@@ -1255,21 +887,142 @@ mod tests {
             ..PreviewOptions::default()
         };
         let p = preview(&bytes, &opts).expect("render");
+        let g = grid(&p);
+
         assert!(p.truncated);
-        assert!(lines(&p).len() <= 12, "got {}", lines(&p).len());
-        // And the trailing summary owns up to what was left out.
-        let last = plain(lines(&p).last().expect("a line"));
-        assert!(last.contains("rows"), "{last:?}");
+        assert_eq!(g.rows.len(), 12);
+        assert_eq!(g.rows[11].label, "12");
+        // The sheet's declared extent survives the cap, so a frontend can say
+        // "12 of 200".
+        assert_eq!(g.total_rows, 200);
+        assert_eq!(g.total_cols, 2);
     }
 
+    /// Nothing is dropped for being far to the right any more: the frontend
+    /// has the room, so it gets every column that was read.
     #[test]
-    fn wide_sheets_report_the_columns_they_hid() {
+    fn a_wide_sheet_keeps_all_the_columns_it_read() {
         let wide: Vec<&str> = (0..80).map(|_| "x").collect();
         let bytes = xlsx(&[wide]);
         let p = preview(&bytes, &PreviewOptions::default()).expect("render");
+        let g = grid(&p);
+
+        assert_eq!(g.columns.len(), 80);
+        assert_eq!(g.columns.last().map(String::as_str), Some("CB"));
+        assert_eq!(g.rows[0].cells.len(), 80);
+        assert_eq!(g.total_cols, 80);
+        assert!(!p.truncated, "nothing was hidden, so nothing to own up to");
+    }
+
+    /// `SCAN_COLS` still bounds the *read*, and when it bites the count of what
+    /// is out there is still honest.
+    #[test]
+    fn columns_past_the_scan_cap_are_counted_but_not_read() {
+        let wide: Vec<&str> = (0..513).map(|_| "x").collect();
+        let bytes = xlsx(&[wide]);
+        let p = preview(&bytes, &PreviewOptions::default()).expect("render");
+        let g = grid(&p);
+
         assert!(p.truncated);
-        let last = plain(lines(&p).last().expect("a line"));
-        assert!(last.contains("80 columns"), "{last:?}");
+        assert_eq!(g.columns.len(), 512);
+        assert_eq!(g.rows[0].cells.len(), 512);
+        assert_eq!(g.total_cols, 513);
+    }
+
+    /// The bug report: a Vietnamese sheet whose cells were elided to fit a
+    /// width core had guessed. Core now hands over the whole string.
+    fn vietnamese() -> Vec<u8> {
+        xlsx(&[
+            vec!["STT", "Hoạt động", "Kết quả (giờ quy đổi)", "Ghi chú"],
+            vec!["1.3", "Đứng lớp hướng dẫn thực hành", "47.3", ""],
+            vec![
+                "8",
+                "Các hoạt động hỗ trợ khác",
+                "12",
+                "Hỗ trợ lễ bảo vệ khóa luận",
+            ],
+        ])
+    }
+
+    #[test]
+    fn cells_carry_their_full_text_and_nothing_is_elided() {
+        let p = preview(&vietnamese(), &PreviewOptions::default()).expect("render");
+        let g = grid(&p);
+
+        assert_eq!(
+            texts(&g.rows[0]),
+            ["STT", "Hoạt động", "Kết quả (giờ quy đổi)", "Ghi chú"]
+        );
+        assert_eq!(
+            texts(&g.rows[1]),
+            ["1.3", "Đứng lớp hướng dẫn thực hành", "47.3", ""]
+        );
+        assert_eq!(
+            texts(&g.rows[2]),
+            [
+                "8",
+                "Các hoạt động hỗ trợ khác",
+                "12",
+                "Hỗ trợ lễ bảo vệ khóa luận"
+            ]
+        );
+        assert!(
+            !g.rows
+                .iter()
+                .flat_map(|r| r.cells.iter())
+                .any(|c| c.text.contains('…')),
+            "core must not elide anything"
+        );
+        assert!(!p.truncated);
+        // "1.3" and "8" are numbers to Excel and stay numbers here.
+        assert_eq!(g.rows[1].cells[0].kind, CellKind::Number);
+        assert_eq!(g.rows[1].cells[2].kind, CellKind::Number);
+    }
+
+    /// Width is the frontend's business now: the same workbook produces the
+    /// same table however wide the caller says it is.
+    #[test]
+    fn the_width_hint_no_longer_changes_anything() {
+        let bytes = vietnamese();
+        let at = |width: Option<usize>| {
+            let opts = PreviewOptions {
+                text_width: width,
+                ..PreviewOptions::default()
+            };
+            let p = preview(&bytes, &opts).expect("render");
+            let g = grid(&p);
+            let rows: Vec<Vec<String>> = g
+                .rows
+                .iter()
+                .map(|r| r.cells.iter().map(|c| c.text.clone()).collect())
+                .collect();
+            (g.columns.to_vec(), rows, p.truncated)
+        };
+
+        let reference = at(None);
+        for width in [Some(0usize), Some(1), Some(40), Some(200), Some(4096)] {
+            assert_eq!(at(width), reference, "width {width:?} changed the table");
+        }
+    }
+
+    /// One 4 000-character note is bounded when it is read, and that is a cap
+    /// biting, so the preview says so.
+    #[test]
+    fn one_pathological_cell_is_bounded_and_flagged() {
+        let huge = "x".repeat(4000);
+        let bytes = xlsx(&[
+            vec!["id", "note", "qty", "ok"],
+            vec!["7", &huge, "1234", "yes"],
+        ]);
+        let p = preview(&bytes, &PreviewOptions::default()).expect("render");
+        let g = grid(&p);
+
+        assert!(p.truncated);
+        let note = &g.rows[1].cells[1];
+        assert_eq!(note.text.chars().count(), 256);
+        assert!(note.text.chars().all(|c| c == 'x'));
+        // Its neighbours are untouched — one big cell costs only itself.
+        assert_eq!(texts(&g.rows[1]), ["7", note.text.as_str(), "1234", "yes"]);
     }
 
     #[test]
@@ -1316,209 +1069,6 @@ mod tests {
             matches!(&detected, Detected::Spreadsheet { format, .. } if format == "xlsx"),
             "got {detected:?}"
         );
-    }
-
-    // ----------------------------------------------------------- widths
-
-    /// The shape of the sheet from the bug report: a short id, two prose
-    /// columns, a number column and a note. Its natural width is around 90
-    /// characters, which is what makes it interesting both above and below.
-    fn vietnamese() -> Vec<u8> {
-        xlsx(&[
-            vec!["STT", "Hoạt động", "Kết quả (giờ quy đổi)", "Ghi chú"],
-            vec!["1.3", "Đứng lớp hướng dẫn thực hành", "47.3", ""],
-            vec![
-                "8",
-                "Các hoạt động hỗ trợ khác",
-                "12",
-                "Hỗ trợ lễ bảo vệ khóa luận",
-            ],
-        ])
-    }
-
-    fn preview_at(bytes: &[u8], width: Option<usize>) -> Preview {
-        let opts = PreviewOptions {
-            text_width: width,
-            ..PreviewOptions::default()
-        };
-        preview(bytes, &opts).expect("render")
-    }
-
-    fn widest(p: &Preview) -> usize {
-        lines(p)
-            .iter()
-            .map(|l| plain(l).chars().count())
-            .max()
-            .unwrap_or(0)
-    }
-
-    /// The user's actual complaint: a table that needs ~90 characters was cut
-    /// to 62 in a window with room for 200.
-    #[test]
-    fn a_wide_pane_leaves_the_table_whole() {
-        let p = preview_at(&vietnamese(), Some(200));
-        let rendered: Vec<String> = lines(&p).iter().map(plain).collect();
-
-        assert!(
-            !rendered.iter().any(|l| l.contains('…')),
-            "nothing should be elided with 200 characters to spend:\n{}",
-            rendered.join("\n")
-        );
-        assert!(!p.truncated, "nothing was cut, so nothing to own up to");
-        // Every cell, in full.
-        for cell in [
-            "Kết quả (giờ quy đổi)",
-            "Đứng lớp hướng dẫn thực hành",
-            "Hỗ trợ lễ bảo vệ khóa luận",
-        ] {
-            assert!(
-                rendered.iter().any(|l| l.contains(cell)),
-                "{cell:?} is missing from:\n{}",
-                rendered.join("\n")
-            );
-        }
-        // …and the table still stops where its content does rather than being
-        // padded across the whole window.
-        assert!(
-            widest(&p) < 200,
-            "the table was padded out to the full pane: {} characters",
-            widest(&p)
-        );
-    }
-
-    /// The same sheet in a pane that genuinely cannot hold it: the number
-    /// column keeps every digit, the prose gives the width up.
-    #[test]
-    fn a_narrow_pane_takes_the_width_from_the_prose_not_the_numbers() {
-        let p = preview_at(&vietnamese(), Some(60));
-        let rendered: Vec<String> = lines(&p).iter().map(plain).collect();
-        let body = rendered.join("\n");
-
-        assert!(p.truncated, "eliding a cell is a cap biting");
-        assert!(
-            rendered.iter().all(|l| l.chars().count() <= 60),
-            "a line ran past the 60-character pane:\n{body}"
-        );
-        assert!(body.contains('…'), "something had to give:\n{body}");
-        // The numbers are three and four characters wide and must survive
-        // whole — losing a digit is losing the value.
-        for number in ["47.3", "12"] {
-            assert!(
-                rendered.iter().any(|l| l.contains(number)),
-                "the number {number:?} was elided to make room for prose:\n{body}"
-            );
-        }
-        // The id column, too.
-        assert!(rendered.iter().any(|l| l.contains("1.3")), "{body}");
-        // And the prose is what paid for it.
-        assert!(
-            rendered
-                .iter()
-                .any(|l| l.contains("Đứng lớp") && l.contains('…')),
-            "the prose column should be the one elided:\n{body}"
-        );
-    }
-
-    /// One 64-character note beside three tiny columns: the note is ceilinged
-    /// rather than being handed the entire line, and the tiny columns are
-    /// untouched.
-    #[test]
-    fn one_pathological_cell_does_not_consume_the_line() {
-        let huge = "x".repeat(4000);
-        let bytes = xlsx(&[
-            vec!["id", "note", "qty", "ok"],
-            vec!["7", &huge, "1234", "yes"],
-        ]);
-        let p = preview_at(&bytes, Some(200));
-        let rendered: Vec<String> = lines(&p).iter().map(plain).collect();
-        let body = rendered.join("\n");
-
-        // The cell is capped at MAX_CELL_CHARS when read and the column at
-        // MAX_COL_WIDTH when laid out, so the whole line stays modest even in
-        // a very wide pane.
-        assert!(
-            widest(&p) <= 60,
-            "one cell took the line out to {} characters:\n{body}",
-            widest(&p)
-        );
-        let xs = rendered
-            .iter()
-            .find(|l| l.contains("xxx"))
-            .expect("the wide row must be painted");
-        assert!(
-            xs.matches('x').count() <= 40,
-            "the wide column was not ceilinged: {xs:?}"
-        );
-        // The columns beside it are complete.
-        assert!(xs.contains("1234"), "{xs:?}");
-        assert!(xs.contains("yes"), "{xs:?}");
-    }
-
-    /// Forty characters is about as narrow as a preview pane ever gets. It has
-    /// to stay a table: no panic, no zero-width columns, nothing past the edge.
-    #[test]
-    fn a_forty_character_pane_still_lays_out_a_table() {
-        let bytes = xlsx(&[
-            vec!["STT", "Hoạt động", "Kết quả", "Ghi chú", "Thêm"],
-            vec!["1", "Trợ giảng lý thuyết", "47.3", "abc", "def"],
-        ]);
-        let p = preview_at(&bytes, Some(40));
-        let rendered: Vec<String> = lines(&p).iter().map(plain).collect();
-        let body = rendered.join("\n");
-
-        // The sheet-name header is one long label and is not a column, so skip
-        // it; every line of the table proper fits.
-        for line in &rendered[1..] {
-            assert!(
-                line.chars().count() <= 40,
-                "{line:?} runs past a 40-character pane:\n{body}"
-            );
-        }
-        // Column letters are still aligned over real columns.
-        assert!(
-            rendered[1].contains('A') && rendered[1].contains('B'),
-            "{body}"
-        );
-        assert!(rendered.iter().any(|l| l.contains("47.3")), "{body}");
-        assert!(p.truncated);
-    }
-
-    /// Down to nothing at all: absurd widths must not panic or underflow.
-    #[test]
-    fn absurd_widths_do_not_panic() {
-        let bytes = vietnamese();
-        for width in [0usize, 1, 2, 5, 11, 19, 20, 21, 4096] {
-            let p = preview_at(&bytes, Some(width));
-            assert!(!lines(&p).is_empty(), "width {width} produced nothing");
-        }
-    }
-
-    /// The hint is optional, and leaving it out has to behave like the default
-    /// every existing caller already gets.
-    #[test]
-    fn no_hint_lays_out_exactly_like_the_default_width() {
-        let bytes = vietnamese();
-        let unhinted: Vec<String> = lines(&preview_at(&bytes, None)).iter().map(plain).collect();
-        let defaulted: Vec<String> = lines(&preview_at(&bytes, Some(crate::DEFAULT_TEXT_WIDTH)))
-            .iter()
-            .map(plain)
-            .collect();
-        assert_eq!(unhinted, defaulted);
-    }
-
-    /// The hint really is what decides the layout: wider in, wider table out.
-    #[test]
-    fn a_wider_hint_produces_a_wider_table() {
-        let bytes = vietnamese();
-        let narrow = preview_at(&bytes, Some(50));
-        let wide = preview_at(&bytes, Some(200));
-        assert!(
-            widest(&wide) > widest(&narrow),
-            "50 chars gave {} and 200 gave {}",
-            widest(&narrow),
-            widest(&wide)
-        );
-        assert!(widest(&narrow) <= 50);
     }
 
     #[test]

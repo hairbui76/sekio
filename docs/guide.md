@@ -44,7 +44,7 @@ time and degrade gracefully without it.
 | PDF | The page, as an image | built in | The installers ship pdfium, so pages render — scans included. Built from source without it, you get the extracted text instead. |
 | Images | Image | built in | PNG, JPEG, GIF, WebP, BMP, ICO, TIFF. EXIF shown and orientation applied, so phone photos are not sideways. |
 | SVG | Image | built in | Rasterised at the size actually needed. |
-| Spreadsheets | Aligned table | built in | xlsx, xlsm, xlsb, xls, ods — with sheet names and column letters. |
+| Spreadsheets | A real table | built in | xlsx, xlsm, xlsb, xls, ods — sheet names, column letters, a row-number gutter. The GUI scrolls a wide sheet sideways instead of eliding it. |
 | Documents | Text | built in | docx, and pptx with slides in order. |
 | Archives | Listing | built in | zip, tar, tar.gz, gz. Streamed — a huge archive is not unpacked to list it. |
 | Audio | Facts + cover art | built in | Tags, duration, codec, sample rate, embedded artwork. |

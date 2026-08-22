@@ -185,6 +185,39 @@ impl MetaField {
     }
 }
 
+/// What a table cell holds. Frontends colour and align by this rather than
+/// re-deriving it from the text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellKind {
+    Text,
+    Number,
+    Bool,
+    Date,
+    Error,
+}
+
+impl CellKind {
+    /// Numbers and dates read better flush right, so columns of them line up
+    /// on the decimal point rather than the first digit.
+    pub fn align_right(self) -> bool {
+        matches!(self, CellKind::Number | CellKind::Date)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TableCell {
+    pub text: String,
+    pub kind: CellKind,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TableRow {
+    /// Shown in the gutter — the spreadsheet's own row number.
+    pub label: String,
+    /// One entry per column in `columns`; absent cells are empty strings.
+    pub cells: Vec<TableCell>,
+}
+
 /// The frontend-neutral intermediate representation.
 #[derive(Debug)]
 pub enum PreviewContent {
@@ -213,6 +246,21 @@ pub enum PreviewContent {
     Metadata {
         fields: Vec<MetaField>,
         thumbnail: Option<image::RgbaImage>,
+    },
+    /// A real grid, kept structured so each frontend can lay it out for the
+    /// space it actually has — egui columns, a ratatui table, box drawing —
+    /// instead of core guessing a width and baking ellipses into text.
+    Table {
+        /// Column headings: a spreadsheet's letters, A/B/C.
+        columns: Vec<String>,
+        rows: Vec<TableRow>,
+        /// Sheet or tab names, empty when the format has none.
+        sheets: Vec<String>,
+        /// Index into `sheets` of the one being shown.
+        active_sheet: usize,
+        /// The full extent, so a frontend can say how much is not shown.
+        total_rows: u64,
+        total_cols: u64,
     },
     HexDump {
         data: Vec<u8>,

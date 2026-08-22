@@ -8,6 +8,7 @@
 
 mod app;
 mod config;
+mod table;
 mod ui;
 mod worker;
 

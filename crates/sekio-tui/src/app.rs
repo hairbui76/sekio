@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use sekio_core::{CancelToken, ListEntry, Preview, PreviewContent, Reflow};
 
+use crate::table;
 use crate::worker::{Kind, Request, Response};
 
 /// How many columns the pane has to gain or lose before the preview is worth
@@ -22,6 +23,10 @@ const REFLOW_THRESHOLD: usize = 4;
 /// enough that dragging a terminal's edge across fifty columns costs one
 /// render rather than fifty, short enough that letting go feels immediate.
 const REFLOW_SETTLE: Duration = Duration::from_millis(120);
+
+/// Pane width assumed before a frame has ever measured one. Only reached on the
+/// tick between the first preview landing and the first paint.
+const DEFAULT_PANE_WIDTH: usize = 80;
 
 /// Tracks the newest request issued for one pane and the token that cancels it.
 ///
@@ -105,8 +110,10 @@ pub struct App {
     /// frame so scroll clamping matches what is actually on screen.
     pub viewport: usize,
     /// Width of the preview viewport in columns, refreshed the same way. Core
-    /// lays a spreadsheet's columns out for this, so a resized terminal has to
-    /// re-request the preview — see [`App::poll_reflow_at`].
+    /// still lays *text* out for this, so a resized terminal has to re-request
+    /// the preview — see [`App::poll_reflow_at`]. A table is laid out by the
+    /// renderer instead, per frame, so for that variant this width is only what
+    /// [`content_len`] measures the scrollback against.
     preview_width: Option<usize>,
     /// Decides when a width change is worth a new render.
     reflow: Reflow,
@@ -388,9 +395,16 @@ impl App {
     /// and never scroll.
     pub fn content_len(&self) -> usize {
         match &self.preview {
-            PreviewState::Ready(preview) => content_len(preview),
+            PreviewState::Ready(preview) => content_len(preview, self.pane_width()),
             _ => 0,
         }
+    }
+
+    /// The pane width the last frame measured. Only a table's height depends on
+    /// it (a narrow pane drops columns, which adds the note row saying so), and
+    /// before the first frame there is nothing on screen to scroll anyway.
+    fn pane_width(&self) -> usize {
+        self.preview_width.unwrap_or(DEFAULT_PANE_WIDTH)
     }
 
     /// Largest valid scroll offset: always keep at least one row on screen.
@@ -451,10 +465,17 @@ impl App {
             return false;
         };
         // Nothing on screen to re-lay-out.
-        if !matches!(self.preview, PreviewState::Ready(_)) {
+        let PreviewState::Ready(preview) = &self.preview else {
             return false;
-        }
-        if self.reflow.observe(width, now).is_none() {
+        };
+        // A table is laid out by the renderer against the pane it actually has,
+        // per frame, so a resize needs no new preview at all. Re-reading the
+        // workbook would produce byte-identical IR — the widths are decided in
+        // `crate::table`, not in core. Still fed through `observe`, which
+        // records the new width, so nothing fires the moment the reader moves
+        // on to a file core *does* lay out.
+        let is_table = matches!(preview.content, PreviewContent::Table { .. });
+        if self.reflow.observe(width, now).is_none() || is_table {
             return false;
         }
         self.request_reflow();
@@ -467,9 +488,34 @@ impl App {
 }
 
 /// Rows the preview would occupy if fully painted.
-pub fn content_len(preview: &Preview) -> usize {
+///
+/// `width` is the preview pane's width in columns. Only a table needs it: how
+/// many of its columns fit decides whether there is a note under it saying what
+/// was left out, and that note is a row like any other. Deriving the table's
+/// chrome here from the same helpers the painter uses is what keeps the two
+/// from disagreeing about where the last scrollable row is.
+pub fn content_len(preview: &Preview, width: usize) -> usize {
     let extra = usize::from(preview.truncated);
     match &preview.content {
+        PreviewContent::Table {
+            columns,
+            rows,
+            sheets,
+            total_rows,
+            total_cols,
+            ..
+        } => {
+            let gutter = table::gutter_width(rows);
+            let seated = table::seated_columns(columns.len(), width, gutter);
+            let note = table::note(
+                rows.len(),
+                seated,
+                *total_rows,
+                *total_cols,
+                preview.truncated,
+            );
+            table::chrome_rows(sheets, note.as_ref()) + rows.len()
+        }
         PreviewContent::Text { lines, .. } => lines.len() + extra,
         PreviewContent::Listing { entries } => entries.len() + extra,
         PreviewContent::Metadata { fields, .. } => fields.len(),
@@ -509,7 +555,7 @@ fn absolutise(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sekio_core::{Span, StyledLine};
+    use sekio_core::{CellKind, Span, StyledLine, TableCell, TableRow};
 
     fn entry(name: &str, is_dir: bool) -> ListEntry {
         ListEntry {
@@ -937,7 +983,7 @@ mod tests {
             truncated: true,
         };
         // 33 bytes is three 16-byte rows, plus the "truncated" marker row.
-        assert_eq!(content_len(&hex), 4);
+        assert_eq!(content_len(&hex, 80), 4);
 
         let img = Preview {
             content: PreviewContent::Image {
@@ -949,7 +995,111 @@ mod tests {
             },
             truncated: false,
         };
-        assert_eq!(content_len(&img), 0);
+        assert_eq!(content_len(&img, 80), 0);
+    }
+
+    fn table(rows: usize, cols: usize, total_rows: u64, truncated: bool) -> Preview {
+        Preview {
+            content: PreviewContent::Table {
+                columns: (0..cols).map(|i| format!("C{i}")).collect(),
+                rows: (0..rows)
+                    .map(|r| TableRow {
+                        label: (r + 1).to_string(),
+                        cells: (0..cols)
+                            .map(|c| TableCell {
+                                text: format!("r{r}c{c}"),
+                                kind: CellKind::Text,
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+                sheets: vec!["Data".to_owned(), "Notes".to_owned()],
+                active_sheet: 0,
+                total_rows,
+                total_cols: cols as u64,
+            },
+            truncated,
+        }
+    }
+
+    /// The whole sheet is on screen: a sheet strip and a heading row of chrome,
+    /// no note.
+    #[test]
+    fn a_whole_table_costs_its_rows_plus_two_chrome_rows() {
+        let preview = table(20, 3, 20, false);
+        assert_eq!(content_len(&preview, 80), 22);
+    }
+
+    /// A sheet that goes on past what core gave us gets a note row, and that
+    /// row is part of the scrollback like any other.
+    #[test]
+    fn a_truncated_table_reserves_a_row_for_the_note() {
+        let preview = table(20, 3, 5_000, true);
+        assert_eq!(content_len(&preview, 80), 23);
+    }
+
+    /// A pane too narrow to seat every column also needs the note — the height
+    /// of a table is not a property of the table alone.
+    #[test]
+    fn a_narrow_pane_adds_the_note_row_a_wide_one_does_not_need() {
+        let wide = table(20, 6, 20, false);
+        assert_eq!(content_len(&wide, 120), 22, "everything fits: no note");
+        assert_eq!(
+            content_len(&wide, 16),
+            23,
+            "columns dropped for width must be reported"
+        );
+    }
+
+    /// Scrolling a table is scrolling like every other content type: the keys
+    /// in `main.rs` do not know a table from a hexdump.
+    #[test]
+    fn a_table_scrolls_and_clamps_like_any_other_preview() {
+        let mut app = app_showing(table(500, 4, 500, false), 25);
+        app.set_preview_width(100);
+        // 500 rows + 2 chrome rows, in a 25-row pane.
+        assert_eq!(app.content_len(), 502);
+        assert_eq!(app.max_scroll(), 477);
+        app.scroll_by(10_000);
+        assert_eq!(app.scroll, 477);
+        app.scroll_to_top();
+        assert_eq!(app.scroll, 0);
+        app.scroll_by(app.page());
+        assert_eq!(app.scroll, 24);
+        app.scroll_to_bottom();
+        assert_eq!(app.scroll, 477);
+    }
+
+    /// A ragged sheet — rows shorter than the column list, an empty sheet, no
+    /// sheet names at all — must be measurable without panicking.
+    #[test]
+    fn a_ragged_or_empty_table_is_measured_without_panicking() {
+        let ragged = Preview {
+            content: PreviewContent::Table {
+                columns: vec!["A".to_owned(), "B".to_owned(), "C".to_owned()],
+                rows: vec![
+                    TableRow {
+                        label: "1".to_owned(),
+                        cells: vec![TableCell {
+                            text: "only one".to_owned(),
+                            kind: CellKind::Text,
+                        }],
+                    },
+                    TableRow::default(),
+                ],
+                sheets: Vec::new(),
+                active_sheet: 9,
+                total_rows: 0,
+                total_cols: 0,
+            },
+            truncated: false,
+        };
+        assert_eq!(content_len(&ragged, 40), 3, "no sheet strip, no note");
+        assert_eq!(
+            content_len(&ragged, 0),
+            3,
+            "a zero-width pane is survivable"
+        );
     }
 
     // ---- reflow on resize ----
@@ -1091,6 +1241,41 @@ mod tests {
         assert_eq!(app.scroll, 10, "a resize must not scroll the reader away");
         // Moving to another file still starts at the top — see
         // `selecting_another_file_resets_the_scroll`.
+    }
+
+    /// Core no longer lays a table out, so re-reading the workbook on every
+    /// resize would cost a full parse to produce byte-identical IR. The pane
+    /// re-lays it out itself, for free, every frame.
+    #[test]
+    fn resizing_a_table_re_lays_it_out_without_re_reading_the_workbook() {
+        let mut app = app_at_width(100);
+        let id = app.preview_req.latest();
+        app.on_response(Response {
+            id,
+            kind: Kind::Preview,
+            result: Ok(table(20, 3, 20, false)),
+        });
+        app.take_requests();
+
+        let start = Instant::now();
+        app.set_preview_width(200);
+        assert!(!app.poll_reflow_at(start));
+        assert!(!app.poll_reflow_at(start + Duration::from_millis(150)));
+        assert!(
+            app.take_requests().is_empty(),
+            "a table must not be re-requested for a resize"
+        );
+
+        // The new width was still recorded, so a text file opened at that width
+        // does not immediately fire a reflow of its own.
+        let id = app.preview_req.latest();
+        app.on_response(Response {
+            id,
+            kind: Kind::Preview,
+            result: Ok(text(50)),
+        });
+        assert!(!app.poll_reflow_at(start + Duration::from_secs(5)));
+        assert!(app.take_requests().is_empty());
     }
 
     #[test]

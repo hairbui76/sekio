@@ -3997,6 +3997,7 @@ dependencies = [
  "crossterm",
  "image",
  "sekio-core",
+ "unicode-width",
 ]
 
 [[package]]
@@ -4054,6 +4055,7 @@ dependencies = [
  "sekio-core",
  "serde",
  "toml",
+ "unicode-width",
 ]
 
 [[package]]

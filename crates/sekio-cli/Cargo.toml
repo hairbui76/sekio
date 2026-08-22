@@ -23,6 +23,7 @@ image = { workspace = true }
 # usually not exported to us. Already a workspace dependency (sekio-tui), pure
 # Rust on both targets, so this costs the no-C-toolchain rule nothing.
 crossterm = { workspace = true }
+unicode-width = "0.2.2"
 
 # ---------------------------------------------------------------------------
 # Linux packaging.

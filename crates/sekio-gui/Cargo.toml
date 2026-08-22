@@ -24,11 +24,12 @@ path = "src/main.rs"
 # runners. See the module docs in tests/render.rs. Dev-only: it must never
 # reach the shipped binary (`cargo tree -p sekio-gui -e normal`).
 egui_kittest = { version = "0.35", default-features = false }
-# Only to build a real .xlsx in-memory for the width tests, so the "a wider
-# window lays the table out wider" assertion runs through core's actual
+# Only to build a real .xlsx in-memory for the one end-to-end table test, so
+# "every cell arrives whole and is painted whole" runs through core's actual
 # spreadsheet renderer rather than a hand-made stand-in — and so no binary
-# fixture lands in the repo. Dev-only, and already in this workspace's
-# lockfile via sekio-core.
+# fixture lands in the repo. Every other table test builds the `Table` IR
+# directly, because that IR is the contract this crate paints. Dev-only, and
+# already in this workspace's lockfile via sekio-core.
 zip = { workspace = true }
 
 [dependencies]
