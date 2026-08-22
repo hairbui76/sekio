@@ -17,13 +17,13 @@ Releases ship three installers, all x86_64:
 **Debian / Ubuntu**
 
 ```sh
-sudo apt install ./sekio_0.5.0-1_amd64.deb
+sudo apt install ./sekio_0.6.0-1_amd64.deb
 ```
 
 **Fedora / RHEL / openSUSE**
 
 ```sh
-sudo dnf install ./sekio-0.5.0-1.x86_64.rpm
+sudo dnf install ./sekio-0.6.0-1.x86_64.rpm
 ```
 
 Both install all three binaries, an "Open with" desktop entry, and a systemd

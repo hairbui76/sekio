@@ -1,6 +1,6 @@
 # Maintainer: sekio contributors
 pkgname=sekio
-pkgver=0.5.0
+pkgver=0.6.0
 pkgrel=1
 pkgdesc="Fast quick-view for any filetype (CLI, TUI, and GUI previewer)"
 arch=('x86_64' 'aarch64')
@@ -13,7 +13,7 @@ optdepends=(
   'ffmpeg: video frame previews (fallback)'
 )
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-sha256sums=('f00e07c98947d6328888c6d8504d80c681b6a9ec9a6c805cea80064a73c52f2d')
+sha256sums=('SKIP')  # filled in after the v0.6.0 release publishes
 
 prepare() {
   cd "$pkgname-$pkgver"

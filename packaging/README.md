@@ -1,7 +1,7 @@
 # Packaging
 
 Release artifacts are produced by `.github/workflows/release.yml` when a `v*`
-tag is pushed. As of v0.5.0 that is exactly three installers, all x86_64:
+tag is pushed. As of v0.6.0 that is exactly three installers, all x86_64:
 
 | Asset | Contents |
 |---|---|
@@ -16,7 +16,7 @@ pdfium, so PDFs preview as page images out of the box — see [Vendored
 pdfium](#vendored-pdfium).
 
 Portable archives, the `install.sh` curl-pipe-sh script and the Scoop manifest
-were removed after v0.5.0: the three native installers are the supported paths,
+were removed after v0.6.0: the three native installers are the supported paths,
 and everything else builds from source with `cargo install`. That also removed
 the whole cross-platform archive-building job from the release workflow, since
 the `.deb`/`.rpm` and `.msi` jobs each build their own binaries.
@@ -96,8 +96,8 @@ Both are built from the same metadata in `crates/sekio-cli/Cargo.toml` — one
 from the release page, then:
 
 ```sh
-sudo apt install ./sekio_0.5.0-1_amd64.deb     # Debian/Ubuntu
-sudo dnf install ./sekio-0.5.0-1.x86_64.rpm    # Fedora/RHEL/openSUSE
+sudo apt install ./sekio_0.6.0-1_amd64.deb     # Debian/Ubuntu
+sudo dnf install ./sekio-0.6.0-1.x86_64.rpm    # Fedora/RHEL/openSUSE
 ```
 
 Layout:
