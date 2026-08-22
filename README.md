@@ -122,9 +122,10 @@ Unsupported or malformed files degrade to a hexdump rather than failing.
 fzf --preview 'sekio --color --width $FZF_PREVIEW_COLUMNS {}'
 ```
 
-See [docs/integration.md](docs/integration.md) for lf, yazi, ranger, and
-Neovim recipes, and [docs/desktop.md](docs/desktop.md) for binding the GUI to
-a key in Nautilus, Dolphin, Thunar, or your window manager.
+See [docs/guide.md](docs/guide.md) for every feature and how it works,
+[docs/integration.md](docs/integration.md) for lf, yazi, ranger, and Neovim
+recipes, and [docs/desktop.md](docs/desktop.md) for binding the GUI to a key in
+Nautilus, Dolphin, Thunar, or your window manager.
 
 ## Design
 
