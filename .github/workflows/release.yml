@@ -8,6 +8,23 @@ on:
 permissions:
   contents: write
 
+# The pdfium build the packages vendor, pinned to one upstream release.
+#
+# pdfium is a dlopen'd native library that neither Debian nor Fedora package and
+# Windows has no package manager for, so "install pdfium yourself" is not an
+# instruction anyone who installed a .deb/.rpm/.msi can follow. Without it a
+# scanned PDF - images all the way down, no text layer to fall back to - has no
+# preview at all. So a copy ships inside each package.
+#
+# Pinned to a tag, never `latest`: re-running this workflow on an older tag must
+# produce the same installer, and upstream cuts a release most weeks. The
+# checksums are the pin that actually bites, since a tag can be moved.
+# packaging/README.md documents how to bump all four values together.
+env:
+  PDFIUM_TAG: chromium/8009
+  PDFIUM_SHA256_LINUX: be513e8021a5bf8eb2116e00d78c3bacb82c5a02b3785156ae14fe5e33084385
+  PDFIUM_SHA256_WINDOWS: c78a8cd51b48abafcb266d868e401afefda1d189aa01ebbe743dc1d144e06031
+
 jobs:
   linux-packages:
     name: deb + rpm (x86_64)
@@ -25,11 +42,38 @@ jobs:
       - name: Install cargo-deb and cargo-generate-rpm
         run: cargo install cargo-deb cargo-generate-rpm --locked
 
+      # The tarball is a whole SDK (headers, cmake config, static import libs);
+      # only the shared library and pdfium's own license go into the packages.
+      # Both are listed in the `assets` tables in crates/sekio-cli/Cargo.toml,
+      # which resolve them from this directory.
+      - name: Fetch pdfium (linux-x64)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p packaging/vendor/pdfium
+          cd packaging/vendor
+          curl -fsSL -o pdfium.tgz \
+            "https://github.com/bblanchon/pdfium-binaries/releases/download/$PDFIUM_TAG/pdfium-linux-x64.tgz"
+          echo "$PDFIUM_SHA256_LINUX  pdfium.tgz" | sha256sum -c -
+          tar -xzf pdfium.tgz -C pdfium --strip-components=1 lib/libpdfium.so licenses/pdfium.txt
+          rm pdfium.tgz
+          mv pdfium/pdfium.txt pdfium/LICENSE-pdfium.txt
+          # A shared library is data, not a program: 644, or lintian complains.
+          chmod 644 pdfium/libpdfium.so pdfium/LICENSE-pdfium.txt
+          ls -l pdfium
+
       # Both packagers run with --no-build against these artifacts, so all
       # three binaries have to exist before either one runs.
+      #
+      # `sekio-core/pdf-render` is on here and not in the crate's default
+      # features on purpose: it is what turns the pdfium fetched above into a
+      # rendered page, and a `cargo install` build - which has no bundled
+      # library - must still get the text/metadata fallback rather than a
+      # dependency it cannot satisfy.
       - name: Build binaries
         run: |
-          cargo build --release --features sekio-core/video \
+          cargo build --release \
+            --features sekio-core/video,sekio-core/pdf-render \
             -p sekio-cli -p sekio-tui -p sekio-gui
 
       # --no-strip because [profile.release] already sets strip = true.
@@ -92,12 +136,38 @@ jobs:
       - name: Install cargo-wix
         run: cargo install cargo-wix --locked
 
+      # Same vendored pdfium as the Linux packages, from the same pinned tag.
+      # packaging/wix/main.wxs installs pdfium.dll into the bin directory beside
+      # the three exes, which is where the loader and sekio itself look first.
+      # bash, not pwsh: the runner has git bash, curl, tar and sha256sum, so
+      # this step reads identically to its Linux twin above.
+      - name: Fetch pdfium (win-x64)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p packaging/vendor/pdfium
+          # Relative paths throughout: $RUNNER_TEMP on this runner is a
+          # backslash path, which git bash's coreutils only mostly agree about.
+          cd packaging/vendor
+          curl -fsSL -o pdfium.tgz \
+            "https://github.com/bblanchon/pdfium-binaries/releases/download/$PDFIUM_TAG/pdfium-win-x64.tgz"
+          echo "$PDFIUM_SHA256_WINDOWS  pdfium.tgz" | sha256sum -c -
+          tar -xzf pdfium.tgz -C pdfium --strip-components=1 bin/pdfium.dll licenses/pdfium.txt
+          rm pdfium.tgz
+          mv pdfium/pdfium.txt pdfium/LICENSE-pdfium.txt
+          ls -l pdfium
+
       # The .wxs pulls in all three exes, and [package.metadata.wix] sets
-      # no-build, so they must be built before cargo-wix runs. Kept on default
-      # features to match the .zip for the same release: Windows has no package
-      # manager dependency to pull ffmpeg in with.
+      # no-build, so they must be built before cargo-wix runs.
+      #
+      # `sekio-core/pdf-render` matches the .deb/.rpm: the installer ships
+      # pdfium.dll, so the renderer it compiles in has a library to bind to.
+      # `video` stays off - Windows has no package manager dependency to pull
+      # ffmpeg in with, and unlike pdfium ffmpeg is not ours to vendor.
       - name: Build binaries
-        run: cargo build --release -p sekio-cli -p sekio-tui -p sekio-gui
+        run: >-
+          cargo build --release --features sekio-core/pdf-render
+          -p sekio-cli -p sekio-tui -p sekio-gui
 
       # --nocapture so candle/light diagnostics land in the job log; without it
       # a WiX error surfaces only as an exit code.

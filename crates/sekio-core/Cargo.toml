@@ -19,9 +19,15 @@ office = ["dep:calamine", "dep:quick-xml", "dep:zip"]
 # `-sys` crate), so it costs nothing at build time and PDFs — one of the most
 # common things anyone quick-looks — preview out of the box.
 pdf = ["dep:pdf-extract"]
-# PDF page image, opt-in: pdfium is a native library most machines lack, so it
-# is a runtime dependency exactly like `video`'s ffmpeg. With it compiled in but
-# pdfium missing at runtime the renderer falls through to `pdf`'s text.
+# PDF page image. Not a default, because pdfium is a native library `cargo
+# install` cannot provide and a source build must not require — with it compiled
+# in but pdfium missing at runtime the renderer falls through to `pdf`'s text.
+#
+# It is on in every *package*, though: the .deb/.rpm/.msi are built with it and
+# ship a copy of pdfium beside the binaries, which is what render/pdf.rs's
+# bundled-library lookup finds. A scanned PDF has no text layer to fall back to,
+# so for that file the page image is the only preview there is. See
+# packaging/README.md.
 pdf-render = ["dep:pdfium-render"]
 # Heavy / external-dependency formats, opt-in.
 video = []

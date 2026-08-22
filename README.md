@@ -60,6 +60,7 @@ cargo run -p sekio-cli -- src/main.rs        # syntax-highlighted code
 cargo run -p sekio-cli -- photo.jpg          # image, rendered in the terminal
 cargo run -p sekio-cli -- README.md          # markdown, rendered for reading
 cargo run -p sekio-cli -- archive.tar.gz     # archive contents
+cargo run -p sekio-cli -- report.pdf         # the page, rendered
 cargo run -p sekio-cli -- track.mp3          # tags, duration, cover art
 cargo run -p sekio-cli -- some/directory     # directory listing
 cargo run -p sekio-cli -- /bin/ls            # mime + hexdump fallback
@@ -109,7 +110,7 @@ Windows) for themes and default limits; see
 | Documents | Formatted text | docx, and pptx with slides in order |
 | Audio | Metadata + cover art | Tags, duration, codec, sample rate |
 | Directories | Listing | |
-| PDF | Text, or first page as an image | Text works out of the box; `--features pdf-render` plus pdfium renders the page instead |
+| PDF | The page, as an image | The `.deb`, `.rpm` and `.msi` ship pdfium, so pages render — including scans, which have no text to extract. A `cargo install` build falls back to extracting text. |
 | Video | Frame grab | Needs `--features video` and ffmpeg/ffmpegthumbnailer |
 | Legacy `.doc`/`.ppt` | Converted text | Needs `--features office-legacy` and LibreOffice |
 | Anything else | Hexdump | With the detected mime type |
@@ -151,13 +152,13 @@ Nautilus, Dolphin, Thunar, or your window manager.
 ## Building
 
 Pure-Rust formats are on by default, so no C toolchain is required and Windows
-builds work out of the box. The two formats with external dependencies are
-opt-in:
+builds work out of the box. Three renderers need an external program at preview
+time and are opt-in in a source build — the installers already enable
+`pdf-render` and `video` and ship pdfium themselves:
 
 ```sh
-cargo build --release                                # everything default
-# Opt-in formats, each needing an external program at runtime:
-cargo build --release --features sekio-core/pdf            # pdfium
+cargo build --release                                      # everything default
+cargo build --release --features sekio-core/pdf-render     # pdfium
 cargo build --release --features sekio-core/video          # ffmpeg
 cargo build --release --features sekio-core/office-legacy  # LibreOffice
 ```

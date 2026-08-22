@@ -41,7 +41,7 @@ time and degrade gracefully without it.
 |---|---|---|---|
 | Code & text | Highlighted text | built in | bat's extended syntax set — TOML, TypeScript, Dockerfile and the rest — with ~30 themes. Legacy encodings are decoded, not mangled. |
 | Markdown | Formatted text | built in | Rendered for reading — headings, lists, quotes, tables — not highlighted as source. |
-| PDF | Text | built in | Text extraction. Add `pdf-render` plus pdfium to see page one as an image instead. |
+| PDF | The page, as an image | built in | The installers ship pdfium, so pages render — scans included. Built from source without it, you get the extracted text instead. |
 | Images | Image | built in | PNG, JPEG, GIF, WebP, BMP, ICO, TIFF. EXIF shown and orientation applied, so phone photos are not sideways. |
 | SVG | Image | built in | Rasterised at the size actually needed. |
 | Spreadsheets | Aligned table | built in | xlsx, xlsm, xlsb, xls, ods — with sheet names and column letters. |
@@ -60,7 +60,7 @@ Prints a preview to standard output and exits.
 ```sh
 sekio src/main.rs        # highlighted code
 sekio photo.jpg          # the image, drawn in the terminal
-sekio report.pdf         # the document's text
+sekio report.pdf         # the page, or its text in a source build
 sekio archive.tar.gz     # what's inside
 sekio ~/Downloads        # a directory listing
 ```
@@ -206,7 +206,7 @@ rest need a build.
 | Feature | Adds | Requires |
 |---|---|---|
 | `video` | A frame from a video file | ffmpegthumbnailer or ffmpeg |
-| `pdf-render` | PDF page one as an image, instead of its text | the pdfium library |
+| `pdf-render` | PDF page one as an image, instead of its text | the pdfium library — **already included in the `.deb`, `.rpm` and `.msi`** |
 | `office-legacy` | Old binary `.doc` and `.ppt` | LibreOffice |
 
 ```sh

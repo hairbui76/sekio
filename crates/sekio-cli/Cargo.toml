@@ -25,10 +25,11 @@ image = { workspace = true }
 # the crate that owns the `sekio` binary rather than being split three ways.
 # sekio-tui and sekio-gui carry no packaging metadata on purpose.
 #
-# Build both from the workspace root, after building the binaries:
+# Build both from the workspace root, after building the binaries and fetching
+# pdfium into packaging/vendor/pdfium (see .github/workflows/release.yml):
 #
 #   cargo build --release -p sekio-cli -p sekio-tui -p sekio-gui \
-#       --features sekio-core/video
+#       --features sekio-core/video,sekio-core/pdf-render
 #   cargo deb -p sekio-cli --no-build --no-strip
 #   cargo generate-rpm -p crates/sekio-cli
 #
@@ -36,8 +37,16 @@ image = { workspace = true }
 # `--features sekio-core/video` because that renderer only shells out to
 # ffmpeg/ffmpegthumbnailer at runtime — compiling it in costs no build-time
 # dependency and is what makes the ffmpeg Recommends below mean anything.
-# The `pdf` feature is deliberately left out: pdfium is not packaged by Debian
-# or Fedora, so there would be nothing for a dependency to point at.
+#
+# `--features sekio-core/pdf-render` is the same idea taken one step further.
+# Neither Debian nor Fedora packages pdfium, so a Recommends has nothing to
+# point at — and a scanned PDF has no text layer to fall back to, so without a
+# page image it has no preview at all. The packages therefore *ship* pdfium, as
+# /usr/lib/sekio/libpdfium.so in the assets below; sekio-core finds it there
+# relative to /usr/bin/sekio with no configuration. It is a private library in
+# a private directory, not a system one: no soname link, no ldconfig, nothing
+# else may link against it. The feature stays out of sekio-core's defaults so
+# `cargo install`, which ships no library, keeps the text/metadata fallback.
 # ---------------------------------------------------------------------------
 
 [package.metadata.deb]
@@ -78,6 +87,12 @@ assets = [
     ["target/release/sekio", "usr/bin/", "755"],
     ["target/release/sekio-tui", "usr/bin/", "755"],
     ["target/release/sekio-gui", "usr/bin/", "755"],
+    # Vendored pdfium, fetched by the release workflow. 644, not 755: a shared
+    # library is data. It goes in a private /usr/lib/sekio rather than beside
+    # the binaries because the FHS allows no shared library under /usr/bin —
+    # sekio-core's bundled-library lookup knows both layouts.
+    ["../../packaging/vendor/pdfium/libpdfium.so", "usr/lib/sekio/", "644"],
+    ["../../packaging/vendor/pdfium/LICENSE-pdfium.txt", "usr/share/doc/sekio/", "644"],
     ["../../packaging/sekio.desktop", "usr/share/applications/", "644"],
     # A *user* unit, not a system one: it is per-session and runs as you.
     # Not enabled by a postinst on purpose — see the systemd-units note below.
@@ -112,6 +127,9 @@ assets = [
     { source = "target/release/sekio", dest = "/usr/bin/sekio", mode = "755" },
     { source = "target/release/sekio-tui", dest = "/usr/bin/sekio-tui", mode = "755" },
     { source = "target/release/sekio-gui", dest = "/usr/bin/sekio-gui", mode = "755" },
+    # Vendored pdfium — same file and same reasoning as the .deb assets above.
+    { source = "packaging/vendor/pdfium/libpdfium.so", dest = "/usr/lib/sekio/libpdfium.so", mode = "644" },
+    { source = "packaging/vendor/pdfium/LICENSE-pdfium.txt", dest = "/usr/share/licenses/sekio/LICENSE-pdfium.txt", mode = "644", doc = true },
     { source = "packaging/sekio.desktop", dest = "/usr/share/applications/sekio.desktop", mode = "644" },
     { source = "packaging/systemd/sekio.service", dest = "/usr/lib/systemd/user/sekio.service", mode = "644" },
     { source = "README.md", dest = "/usr/share/doc/sekio/README.md", mode = "644", doc = true },

@@ -6,3 +6,8 @@
 
 # Personal Claude Code settings (permission mode, model, local hooks).
 /.claude/
+
+# Vendored pdfium, downloaded per build by the release workflow from the tag
+# pinned in .github/workflows/release.yml. A 7 MB prebuilt binary does not
+# belong in git; packaging/README.md documents where it comes from.
+/packaging/vendor/

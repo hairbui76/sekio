@@ -83,6 +83,20 @@
                             KeyPath='yes'/>
                     </Component>
 
+                    <!--
+                        pdfium's own license (BSD-3-Clause, plus the notices of
+                        the libraries it embeds). Shipping the DLL means
+                        shipping this file, so it sits beside sekio's own
+                        license rather than in the bin directory.
+                    -->
+                    <Component Id='PdfiumLicense' Guid='*'>
+                        <File Id='PdfiumLicenseFile'
+                            Name='LICENSE-pdfium.txt'
+                            DiskId='1'
+                            Source='packaging\vendor\pdfium\LICENSE-pdfium.txt'
+                            KeyPath='yes'/>
+                    </Component>
+
                     <Directory Id='Bin' Name='bin'>
                         <!--
                           Adds the bin directory to the system PATH. Guid is
@@ -131,6 +145,32 @@
                                 Name='sekio-gui.exe'
                                 DiskId='1'
                                 Source='$(var.CargoTargetBinDir)\sekio-gui.exe'
+                                KeyPath='yes'/>
+                        </Component>
+
+                        <!--
+                          pdfium, the PDF page renderer. It must sit in this
+                          directory, beside the exes: sekio looks for it next
+                          to the running program first, which is what lets a
+                          scanned PDF - all images, no text layer - preview as
+                          a page image with no configuration.
+
+                          Guid='*' is fine here for the same reason as the
+                          exes above: the File is the KeyPath, so WiX derives a
+                          stable GUID from the install path. Only the
+                          UpgradeCode and the Path component GUID are fixed.
+
+                          Source is resolved through light's second bind path
+                          (the workspace root), like License.rtf. The release
+                          workflow downloads it there from a pinned upstream
+                          tag; see packaging/README.md.
+                        -->
+                        <Component Id='pdfium' Guid='*'>
+                            <File
+                                Id='pdfiumdll'
+                                Name='pdfium.dll'
+                                DiskId='1'
+                                Source='packaging\vendor\pdfium\pdfium.dll'
                                 KeyPath='yes'/>
                         </Component>
                     </Directory>
@@ -189,7 +229,7 @@
         <Feature
             Id='Binaries'
             Title='Application'
-            Description='Installs sekio, sekio-tui and sekio-gui, and the license.'
+            Description='Installs sekio, sekio-tui and sekio-gui, the pdfium PDF renderer, and the licenses.'
             Level='1'
             ConfigurableDirectory='APPLICATIONFOLDER'
             AllowAdvertise='no'
@@ -197,9 +237,15 @@
             Absent='disallow'>
 
             <ComponentRef Id='License'/>
+            <ComponentRef Id='PdfiumLicense'/>
             <ComponentRef Id='binary0'/>
             <ComponentRef Id='binary1'/>
             <ComponentRef Id='binary2'/>
+            <!--
+              Not a separate, unstickable feature: without pdfium a scanned PDF
+              has no preview at all, so it is part of the application.
+            -->
+            <ComponentRef Id='pdfium'/>
 
             <Feature
                 Id='Environment'

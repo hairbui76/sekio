@@ -5,11 +5,15 @@ tag is pushed. As of v0.3.0 that is exactly three installers, all x86_64:
 
 | Asset | Contents |
 |---|---|
-| `sekio_<version>-1_amd64.deb` | all three binaries + desktop entry + systemd user unit |
+| `sekio_<version>-1_amd64.deb` | all three binaries + pdfium + desktop entry + systemd user unit |
 | `sekio-<version>-1.x86_64.rpm` | same as the `.deb` |
-| `sekio-x86_64-pc-windows-msvc.msi` | all three `.exe`, PATH entry, Start Menu shortcut |
+| `sekio-x86_64-pc-windows-msvc.msi` | all three `.exe` + `pdfium.dll`, PATH entry, Start Menu shortcut |
 
 Each is published with a `.sha256` beside it containing the bare hash.
+
+Every package is built with `sekio-core/pdf-render` on and ships a copy of
+pdfium, so PDFs preview as page images out of the box — see [Vendored
+pdfium](#vendored-pdfium).
 
 Portable archives, the `install.sh` curl-pipe-sh script and the Scoop manifest
 were removed after v0.3.0: the three native installers are the supported paths,
@@ -27,6 +31,64 @@ the `.deb`/`.rpm` and `.msi` jobs each build their own binaries.
 | Arch | AUR `PKGBUILD` in this directory |
 | Anything else | `cargo install --path crates/sekio-cli` (and `-tui`, `-gui`) |
 
+## Vendored pdfium
+
+Every package ships a copy of pdfium, the PDF page renderer.
+
+| | |
+|---|---|
+| Upstream | [`bblanchon/pdfium-binaries`](https://github.com/bblanchon/pdfium-binaries) — prebuilt pdfium from the Chromium project |
+| Pinned tag | `chromium/8009` (pdfium 153.0.8009.0) |
+| Files taken | `lib/libpdfium.so` (linux-x64), `bin/pdfium.dll` (win-x64), `licenses/pdfium.txt` |
+| Licence | BSD-3-Clause, shipped as `LICENSE-pdfium.txt` in every package |
+| Cost | `.deb` +2.5 MB, `.rpm` +2.9 MB, `.msi` +3.5 MB; 7.7 MB on disk |
+| Fetched by | the `Fetch pdfium` step in `.github/workflows/release.yml`, into `packaging/vendor/` (gitignored) |
+
+### Why it is vendored
+
+pdfium is a *dynamically loaded* native library. Debian and Fedora do not
+package it, Windows has no package manager to pull it from, and building it
+means a Chromium checkout — so "install pdfium" is not an instruction anyone
+who just installed a `.deb`, `.rpm` or `.msi` can act on. Without it a scanned
+PDF, which is images all the way down with no text layer to fall back to, has
+no preview at all: sekio can only show a metadata card saying so. Shipping
+~2.5 MB of compressed library is the cheaper answer.
+
+The binaries are dropped in place with no fixup — no `patchelf`, no rpath, no
+`ldconfig`. sekio loads them by absolute path at runtime, trying in order:
+
+1. `$SEKIO_PDFIUM_PATH` (a file, or a directory holding it) — always wins;
+2. the directory of the running executable — the `.msi` layout;
+3. `../lib/sekio/` relative to that — the `.deb`/`.rpm` layout, since the FHS
+   allows no shared library under `/usr/bin`;
+4. the system library, for anyone who has one.
+
+Every step fails soft into the next, so a package with the library removed
+behaves exactly like a `cargo install` build: text or a metadata card, never a
+crash. The search lives in `bind()` in `crates/sekio-core/src/render/pdf.rs`.
+
+### Bumping it
+
+Upstream cuts a release most weeks; there is no reason to follow it closely.
+When you do bump, in `.github/workflows/release.yml` change `PDFIUM_TAG` **and
+both checksums together** — a tag alone is not a pin, since a tag can be moved:
+
+```sh
+tag=chromium/8009            # the new one
+for p in linux win; do
+  curl -fsSL "https://github.com/bblanchon/pdfium-binaries/releases/download/$tag/pdfium-$p-x64.tgz" \
+    | sha256sum
+done
+```
+
+Then update the tag in this file's table and in the two command blocks below,
+and dispatch the release workflow: the `msi` job is the only place WiX runs and
+the only proof the new DLL packages cleanly.
+
+Note `pdfium-render`, the Rust binding, is version-sensitive about the pdfium
+ABI. If a bump makes page rendering start failing at load time on all
+platforms at once, that is the pairing to check first — not the packaging.
+
 ## Debian/Ubuntu (`.deb`) and Fedora/RHEL (`.rpm`)
 
 Both are built from the same metadata in `crates/sekio-cli/Cargo.toml` — one
@@ -42,12 +104,22 @@ Layout:
 
 ```
 /usr/bin/sekio, sekio-tui, sekio-gui
+/usr/lib/sekio/libpdfium.so                the PDF page renderer (private copy)
 /usr/share/applications/sekio.desktop      "Open with" entry in file managers
 /usr/lib/systemd/user/sekio.service        the preview daemon (NOT auto-enabled)
 /usr/share/doc/sekio/                      README, integration.md, desktop.md
 /usr/share/doc/sekio/copyright             (deb)
+/usr/share/doc/sekio/LICENSE-pdfium.txt    (deb)
 /usr/share/licenses/sekio/LICENSE-MIT      (rpm)
+/usr/share/licenses/sekio/LICENSE-pdfium.txt  (rpm)
 ```
+
+`/usr/lib/sekio/` rather than `/usr/lib/`: this is a private library for one
+program, with no soname symlink and no `ldconfig` entry, and nothing else may
+link against it. sekio finds it there by looking one level up and over from its
+own executable path — `/usr/bin/sekio` → `/usr/lib/sekio/` — which is why the
+directory name has to keep matching `LIBDIR` in
+`crates/sekio-core/src/render/pdf.rs`.
 
 ### The preview daemon
 
@@ -79,7 +151,15 @@ From the workspace root:
 ```sh
 cargo install cargo-deb cargo-generate-rpm --locked
 
-cargo build --release --features sekio-core/video \
+# Both packagers expect the vendored library to already be there.
+mkdir -p packaging/vendor/pdfium
+curl -fsSL -o /tmp/pdfium.tgz \
+  https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/8009/pdfium-linux-x64.tgz
+tar -xzf /tmp/pdfium.tgz -C packaging/vendor/pdfium --strip-components=1 \
+  lib/libpdfium.so licenses/pdfium.txt
+mv packaging/vendor/pdfium/pdfium.txt packaging/vendor/pdfium/LICENSE-pdfium.txt
+
+cargo build --release --features sekio-core/video,sekio-core/pdf-render \
   -p sekio-cli -p sekio-tui -p sekio-gui
 cargo deb -p sekio-cli --no-build --no-strip
 cargo generate-rpm -p crates/sekio-cli
@@ -94,13 +174,15 @@ rpm -qlp target/generate-rpm/*.rpm ; rpm -qpR target/generate-rpm/*.rpm
 
 Two things worth knowing about that build line:
 
-- `--features sekio-core/video` is on for the packages but **not** for the
-  portable archives. The video renderer only shells out to
-  ffmpegthumbnailer/ffmpeg at runtime, so compiling it in adds no build
-  dependency — and it is what makes `Recommends: ffmpegthumbnailer | ffmpeg`
-  honest. A tarball cannot express an optional dependency, so it stays on
-  defaults. `pdf-render` is left out of both: pdfium is not packaged by Debian or
-  Fedora, so a dependency would have nothing to point at.
+- `--features sekio-core/video` compiles in a renderer that only shells out to
+  ffmpegthumbnailer/ffmpeg at runtime, so it adds no build dependency — and it
+  is what makes `Recommends: ffmpegthumbnailer | ffmpeg` honest.
+- `--features sekio-core/pdf-render` is on for the same reason and one more.
+  Neither Debian nor Fedora packages pdfium, so a `Recommends` would point at
+  nothing — which is exactly why the package carries its own copy instead. It
+  stays out of `sekio-core`'s default features so that `cargo install`, which
+  ships no library, still gets the pure-Rust text/metadata fallback rather than
+  a dependency it cannot satisfy.
 - `--no-strip` because `[profile.release]` already sets `strip = true`.
 
 The dependency lists are partly hand-written, which is unusual and deliberate.
@@ -124,14 +206,28 @@ msiexec /i sekio-x86_64-pc-windows-msvc.msi /quiet    # unattended
 msiexec /x sekio-x86_64-pc-windows-msvc.msi           # uninstall
 ```
 
-It installs all three `.exe` into `C:\Program Files\sekio\bin`, and offers two
-things the user can untick in the feature tree:
+Layout:
+
+```
+C:\Program Files\sekio\bin\sekio.exe, sekio-tui.exe, sekio-gui.exe
+C:\Program Files\sekio\bin\pdfium.dll        the PDF page renderer
+C:\Program Files\sekio\License.rtf           sekio's own licence, shown by the installer
+C:\Program Files\sekio\LICENSE-pdfium.txt    pdfium's
+```
+
+`pdfium.dll` sits in `bin`, beside the executables, because that is the first
+place sekio looks — and the first place Windows' own loader looks. Do not move
+it to the install root.
+
+Two things the user can untick in the feature tree:
 
 - **PATH Environment Variable** — adds that `bin` directory to the system PATH.
-- **Start Menu Shortcut** — a "sekio" entry that opens `sekio-tui`. It points
-  at the TUI rather than the GUI because `sekio-gui` requires a path argument,
-  so a no-argument menu entry for it would open and immediately fail. The GUI
-  is reached from Explorer's "Open with" instead — see `docs/desktop.md`.
+- **Start Menu Shortcut** — a "sekio" entry that opens `sekio-gui`, the
+  graphical previewer, which is what someone clicking a Start Menu entry
+  expects. It used to point at `sekio-tui`, back when `sekio-gui` required a
+  path argument and a no-argument launch failed immediately; it now opens to a
+  file browser. `sekio-gui` is also wired into Explorer's "Open with" — see
+  `docs/desktop.md`.
 
 ### `packaging/wix/main.wxs` is checked in, on purpose
 
@@ -157,7 +253,16 @@ the workspace root, on Windows:
 choco install wixtoolset -y          # v3.x. NOT `dotnet tool install wix` (v4/v5)
 cargo install cargo-wix --locked
 
-cargo build --release -p sekio-cli -p sekio-tui -p sekio-gui
+# main.wxs references both of these; light fails late without them.
+mkdir packaging\vendor\pdfium
+curl.exe -fsSL -o $env:TEMP\pdfium.tgz `
+  https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/8009/pdfium-win-x64.tgz
+tar -xzf $env:TEMP\pdfium.tgz -C packaging\vendor\pdfium --strip-components=1 `
+  bin/pdfium.dll licenses/pdfium.txt
+move packaging\vendor\pdfium\pdfium.txt packaging\vendor\pdfium\LICENSE-pdfium.txt
+
+cargo build --release --features sekio-core/pdf-render `
+  -p sekio-cli -p sekio-tui -p sekio-gui
 cargo wix -p sekio-cli --no-build --nocapture
 ```
 
@@ -179,6 +284,12 @@ cutting a release.
 
 `PKGBUILD` builds all three binaries with `--all-features` and installs
 `sekio.desktop` so file managers can offer sekio under "Open with".
+
+`--all-features` includes `pdf-render`, but the AUR package vendors no pdfium
+of its own — unlike the `.deb`/`.rpm`/`.msi` it relies on the system library,
+which on Arch means the `pdfium-binaries` AUR package. Without it PDFs fall
+back to text, and a scanned one to the metadata card. Adding
+`pdfium-binaries: PDF page previews` to `optdepends` would say so properly.
 
 To publish: clone the AUR repo, copy `PKGBUILD`, then
 

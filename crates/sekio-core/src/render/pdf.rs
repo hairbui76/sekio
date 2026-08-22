@@ -5,9 +5,17 @@
 //!   time and no library at run time, which is why it can be on by default:
 //!   a PDF is one of the most common things anyone quick-looks, so it has to
 //!   work out of the box.
-//! * **`pdf-render` (opt-in).** pdfium draws page 1 to a
-//!   `PreviewContent::Image`. pdfium is a *dynamically loaded* native library
-//!   most machines lack, so this cannot be a default.
+//! * **`pdf-render` (opt-in at build time, on in every package).** pdfium
+//!   draws page 1 to a `PreviewContent::Image`. pdfium is a *dynamically
+//!   loaded* native library, so it cannot be a default for `cargo install` —
+//!   but the `.deb`, `.rpm` and `.msi` are built with this feature and ship a
+//!   copy of the library, so an installed sekio renders pages out of the box.
+//!   `bind()` finds that copy beside the executable or in `../lib/sekio/`
+//!   without any configuration; `SEKIO_PDFIUM_PATH` overrides it.
+//!
+//!   This matters most for the file the text tier cannot help with at all: a
+//!   scan is images all the way down, so "here is the page" is the only real
+//!   preview it has.
 //!
 //! The chain, in order, and the reason for each step:
 //!
@@ -613,9 +621,11 @@ mod imp {
             opts: &PreviewOptions,
             cancel: &CancelToken,
         ) -> Result<Preview, PreviewError> {
+            // Not "malformed PDF": pdfium refuses a password-protected file
+            // here too, and that document is perfectly well-formed.
             let document = pdfium
                 .load_pdf_from_file(path, None)
-                .map_err(|e| PreviewError::Format(format!("malformed PDF: {e}")))?;
+                .map_err(|e| PreviewError::Format(format!("could not open the document: {e}")))?;
             cancel.check()?;
 
             // Facts worth showing next to the page image. `metadata()` is a
@@ -685,9 +695,20 @@ mod imp {
             })
         }
 
-        /// Bind to pdfium at runtime. `SEKIO_PDFIUM_PATH` wins if it resolves;
-        /// otherwise the system library, whose filename pdfium-render derives
-        /// per platform (`libpdfium.so`, `pdfium.dll`, ...) — never hardcoded.
+        /// Bind to pdfium at runtime, in four steps that fail soft into one
+        /// another — a candidate that is absent or will not load is simply the
+        /// next one's turn, and only the last step's error is ever reported:
+        ///
+        /// 1. `SEKIO_PDFIUM_PATH`, which always wins.
+        /// 2. The directory the running program sits in. This is the Windows
+        ///    package layout: `pdfium.dll` beside `sekio-gui.exe`.
+        /// 3. `../lib/sekio/` relative to that directory — the `.deb`/`.rpm`
+        ///    layout, see [`bundled_candidates`].
+        /// 4. The system library.
+        ///
+        /// Steps 2 and 3 are what make a packaged install render pages with no
+        /// configuration at all. The filename is never hardcoded: pdfium-render
+        /// derives it per platform (`libpdfium.so`, `pdfium.dll`, ...).
         fn bind() -> Result<Box<dyn PdfiumLibraryBindings>, PdfiumError> {
             if let Some(dir_or_file) = std::env::var_os(LIB_PATH_VAR) {
                 if !dir_or_file.is_empty() {
@@ -704,7 +725,101 @@ mod imp {
                     }
                 }
             }
+
+            // `current_exe` can fail (a deleted or unreadable image); that is
+            // not fatal, it just means there is no bundled copy to find.
+            if let Ok(exe) = std::env::current_exe() {
+                for candidate in bundled_candidates(&exe) {
+                    if let Ok(bindings) = Pdfium::bind_to_library(&candidate) {
+                        return Ok(bindings);
+                    }
+                }
+            }
+
             Pdfium::bind_to_system_library()
+        }
+
+        /// Where a pdfium shipped with sekio may sit, in search order, for a
+        /// program whose executable is `exe`.
+        ///
+        /// Two layouts, because the two package formats cannot agree on one:
+        ///
+        /// * beside the executable — `C:\Program Files\sekio\bin\pdfium.dll`,
+        ///   which is how the `.msi` installs it and how a private library is
+        ///   normally shipped on Windows;
+        /// * `<prefix>/lib/sekio/` — `/usr/bin/sekio` → `/usr/lib/sekio/`,
+        ///   because the FHS forbids a shared library under a `bin` directory,
+        ///   so the `.deb`/`.rpm` cannot use the first layout.
+        ///
+        /// Pure, and takes the executable path rather than reading it, so both
+        /// layouts are testable from either platform.
+        fn bundled_candidates(exe: &Path) -> Vec<std::path::PathBuf> {
+            let dir = match exe.parent() {
+                // A bare `sekio` has an empty parent rather than none: a
+                // candidate built from it would be a relative path resolved
+                // against the working directory, which is nobody's layout.
+                Some(dir) if !dir.as_os_str().is_empty() => dir,
+                _ => return Vec::new(),
+            };
+            let mut dirs = vec![dir.to_path_buf()];
+            if let Some(prefix) = dir.parent() {
+                dirs.push(prefix.join("lib").join(LIBDIR));
+            }
+            dirs.iter()
+                .map(Pdfium::pdfium_platform_library_name_at_path)
+                .collect()
+        }
+
+        /// The private-library directory name under `<prefix>/lib`. Matches the
+        /// `assets` entries in `crates/sekio-cli/Cargo.toml`.
+        const LIBDIR: &str = "sekio";
+
+        #[cfg(test)]
+        mod tests {
+            use super::*;
+
+            /// The name pdfium-render expects on *this* platform, so the
+            /// assertions below read the same on Linux and Windows.
+            fn lib_name() -> String {
+                Pdfium::pdfium_platform_library_name()
+                    .to_string_lossy()
+                    .into_owned()
+            }
+
+            #[test]
+            fn the_executables_own_directory_comes_first() {
+                let candidates = bundled_candidates(Path::new("/opt/sekio/bin/sekio-gui"));
+                assert_eq!(
+                    candidates.first().map(|p| p.to_string_lossy().into_owned()),
+                    Some(format!("/opt/sekio/bin/{}", lib_name())),
+                    "{candidates:?}"
+                );
+            }
+
+            /// The `.deb`/`.rpm` layout: the library lives in `/usr/lib/sekio`
+            /// because it may not live in `/usr/bin`.
+            #[test]
+            fn a_libdir_beside_the_bindir_is_searched_too() {
+                let candidates = bundled_candidates(Path::new("/usr/bin/sekio"));
+                let rendered: Vec<String> = candidates
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect();
+                assert_eq!(
+                    rendered,
+                    [
+                        format!("/usr/bin/{}", lib_name()),
+                        format!("/usr/lib/sekio/{}", lib_name()),
+                    ]
+                );
+            }
+
+            /// A bare name has no parent directory to search: the list is empty
+            /// rather than a panic or a lookup at the filesystem root.
+            #[test]
+            fn an_exe_path_with_no_directory_yields_nothing_to_try() {
+                assert!(bundled_candidates(Path::new("sekio")).is_empty());
+            }
         }
     }
 
@@ -734,6 +849,10 @@ mod imp {
         if let Some(note) = text_note {
             fields.push(MetaField::new("Text", note));
         }
+        // The hints below assume the normal case is that pdfium *is* there: the
+        // packages ship it beside the program. So a missing library is
+        // described as the exception it now is, and the way out leads with the
+        // install that fits — never "recompile this yourself" first.
         match why {
             #[cfg(feature = "pdf-render")]
             NoImage::Library(e) => {
@@ -744,23 +863,34 @@ mod imp {
                 fields.push(MetaField::new(
                     "Hint",
                     format!(
-                        "install pdfium (libpdfium.so / pdfium.dll) on the library path, \
-                         or point {LIB_PATH_VAR} at it"
+                        "the .deb, .rpm and .msi packages ship pdfium beside the program; \
+                         in a build from source, point {LIB_PATH_VAR} at a libpdfium.so / \
+                         pdfium.dll or install one on the library path"
                     ),
                 ));
             }
+            // pdfium is loaded and working — the document is the problem, and
+            // there is nothing for the reader to install.
             #[cfg(feature = "pdf-render")]
             NoImage::Document(e) => {
-                fields.push(MetaField::new("Page preview", format!("unavailable: {e}")));
+                fields.push(MetaField::new(
+                    "Page preview",
+                    format!("unavailable: pdfium loaded but could not draw page 1 ({e})"),
+                ));
             }
             #[cfg(not(feature = "pdf-render"))]
             NoImage::NotCompiled => {
                 fields.push(MetaField::new(
+                    "Page preview",
+                    "unavailable: this build has no page renderer compiled in",
+                ));
+                fields.push(MetaField::new(
                     "Hint",
                     format!(
-                        "build with `--features pdf-render` and install pdfium \
-                         (libpdfium.so / pdfium.dll, or point {LIB_PATH_VAR} at it) \
-                         to see the page itself"
+                        "install the .deb, .rpm or .msi package — each enables the page \
+                         renderer and ships pdfium — or rebuild with \
+                         `--features sekio-core/pdf-render` and point {LIB_PATH_VAR} at a \
+                         libpdfium.so / pdfium.dll"
                     ),
                 ));
             }
@@ -1212,11 +1342,20 @@ mod tests {
             assert!(dump.contains("Pages=2"), "{dump}");
             assert!(dump.contains("Size="), "{dump}");
             assert!(dump.contains("no extractable text"), "{dump}");
-            // The way out is always spelled: build with `pdf-render` when it is
-            // not compiled in, install the library when it is.
+            // The way out is always spelled, and it leads with an install
+            // rather than a recompile: the packages ship pdfium.
             assert!(dump.contains("pdfium"), "{dump}");
             #[cfg(not(feature = "pdf-render"))]
-            assert!(dump.contains("--features pdf-render"), "{dump}");
+            {
+                assert!(dump.contains(".msi package"), "{dump}");
+                assert!(dump.contains("sekio-core/pdf-render"), "{dump}");
+                let hint = dump.split("Hint=").nth(1).unwrap_or_default();
+                assert!(
+                    hint.find("package").unwrap_or(usize::MAX)
+                        < hint.find("rebuild").unwrap_or(usize::MAX),
+                    "the hint must lead with the install, not the rebuild: {hint}"
+                );
+            }
         }
 
         /// The file-size guard: a 900-page report must not be parsed whole just
