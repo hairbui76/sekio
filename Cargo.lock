@@ -3994,6 +3994,7 @@ version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
+ "crossterm",
  "image",
  "sekio-core",
 ]
@@ -4037,6 +4038,7 @@ dependencies = [
  "sekio-core",
  "signal-hook",
  "windows 0.62.2",
+ "zip",
 ]
 
 [[package]]

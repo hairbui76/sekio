@@ -6,8 +6,10 @@ this use:
 
 - `--color` forces ANSI escapes even though stdout is a pipe. Without it sekio
   detects the pipe and emits plain text.
-- `--width <cols>` sets the width used for image rendering. Preview panes are
-  narrower than the terminal, so pass the pane width, not the terminal width.
+- `--width <cols>` sets the width the preview is laid out for: how wide an
+  image is rendered, and how a spreadsheet's columns are shared out. Preview
+  panes are narrower than the terminal, so pass the pane width, not the
+  terminal width. Without it sekio asks the terminal itself.
 
 sekio exits cleanly when the reader closes the pipe, so there is no need to
 guard against broken-pipe noise in these recipes.
@@ -121,7 +123,8 @@ Previews are capped so nothing stalls on a huge file. Raise or lower the caps
 per invocation:
 
 - `--lines N` — how many lines of text to emit (default 200)
-- `--width N` — columns used for image rendering
+- `--width N` — columns the preview is laid out for: image scaling and
+  spreadsheet column widths (default: the terminal's width)
 - `--theme NAME` — syntax theme; `--list-themes` prints the 30-odd available
   (Catppuccin, Solarized, Nord, gruvbox, base16 variants, …)
 

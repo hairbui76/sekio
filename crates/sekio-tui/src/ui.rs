@@ -140,6 +140,9 @@ fn draw_preview(frame: &mut Frame, app: &mut App, ui: &mut Ui, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
     app.set_viewport(inner.height as usize);
+    // Core lays a spreadsheet's columns out for this; the event loop decides
+    // when a change is worth re-requesting the preview for.
+    app.set_preview_width(inner.width as usize);
 
     if inner.width == 0 || inner.height == 0 {
         return;

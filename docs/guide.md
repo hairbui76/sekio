@@ -70,7 +70,7 @@ sekio ~/Downloads        # a directory listing
 | Flag | What it does |
 |---|---|
 | `--lines N` | How many lines of text to emit. Default 200. |
-| `--width N` | Columns to use when drawing an image. Defaults to the terminal width. |
+| `--width N` | Columns the preview is laid out for: image scaling and spreadsheet column widths. Defaults to the terminal width. |
 | `--theme NAME` | Syntax theme. |
 | `--list-themes` | Print the ~30 available themes and exit. |
 | `--color` | Force colour even when output is a pipe. Needed for preview panes. |

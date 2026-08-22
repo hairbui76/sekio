@@ -6,10 +6,22 @@
 //! only translates key events into these calls and drains [`App::take_requests`].
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
-use sekio_core::{CancelToken, ListEntry, Preview, PreviewContent};
+use sekio_core::{CancelToken, ListEntry, Preview, PreviewContent, Reflow};
 
 use crate::worker::{Kind, Request, Response};
+
+/// How many columns the pane has to gain or lose before the preview is worth
+/// laying out again. Under four characters the difference is at most a
+/// character or two spread over a handful of columns — invisible — while a
+/// one-column threshold would re-render on every step of a window drag.
+const REFLOW_THRESHOLD: usize = 4;
+
+/// How long a new pane width has to hold still before we act on it. Long
+/// enough that dragging a terminal's edge across fifty columns costs one
+/// render rather than fifty, short enough that letting go feels immediate.
+const REFLOW_SETTLE: Duration = Duration::from_millis(120);
 
 /// Tracks the newest request issued for one pane and the token that cancels it.
 ///
@@ -92,6 +104,15 @@ pub struct App {
     /// Height of the preview viewport in rows, refreshed by the renderer each
     /// frame so scroll clamping matches what is actually on screen.
     pub viewport: usize,
+    /// Width of the preview viewport in columns, refreshed the same way. Core
+    /// lays a spreadsheet's columns out for this, so a resized terminal has to
+    /// re-request the preview — see [`App::poll_reflow_at`].
+    preview_width: Option<usize>,
+    /// Decides when a width change is worth a new render.
+    reflow: Reflow,
+    /// The in-flight preview is a re-layout of the file already on screen, not
+    /// a move to another one: keep the scroll position when it lands.
+    reflowing: bool,
 
     pub listing_req: RequestTracker,
     pub preview_req: RequestTracker,
@@ -117,6 +138,9 @@ impl App {
             preview_seq: 0,
             scroll: 0,
             viewport: 1,
+            preview_width: None,
+            reflow: Reflow::new(REFLOW_THRESHOLD, REFLOW_SETTLE),
+            reflowing: false,
             listing_req: RequestTracker::default(),
             preview_req: RequestTracker::default(),
             select_after_load: select,
@@ -237,6 +261,8 @@ impl App {
             kind: Kind::Listing,
             path,
             cancel,
+            // A listing has no columns to lay out.
+            text_width: None,
         });
     }
 
@@ -244,20 +270,46 @@ impl App {
         self.reset_scroll();
         match self.selected_path() {
             Some(path) => {
-                let (id, cancel) = self.preview_req.issue();
+                self.reflowing = false;
                 self.preview = PreviewState::Loading;
-                self.outbox.push(Request {
-                    id,
-                    kind: Kind::Preview,
-                    path,
-                    cancel,
-                });
+                self.send_preview(path);
             }
             None => {
                 self.preview_req.cancel_inflight();
                 self.preview = PreviewState::Empty;
             }
         }
+    }
+
+    /// Re-request the file already on screen because the pane changed width.
+    ///
+    /// Deliberately *not* `request_preview`: the user has not moved, so the
+    /// scroll position stays and the pane keeps painting what it has instead of
+    /// flashing "loading…" behind a resize. It still goes through
+    /// `RequestTracker::issue`, so a render already in flight is cancelled and
+    /// its result discarded like any other superseded one.
+    fn request_reflow(&mut self) {
+        let Some(path) = self.selected_path() else {
+            return;
+        };
+        self.reflowing = true;
+        self.send_preview(path);
+    }
+
+    fn send_preview(&mut self, path: PathBuf) {
+        let (id, cancel) = self.preview_req.issue();
+        // Whatever width we asked for is now the one on screen, so the next
+        // resize is measured against it.
+        if let Some(width) = self.preview_width {
+            self.reflow.issued(width);
+        }
+        self.outbox.push(Request {
+            id,
+            kind: Kind::Preview,
+            path,
+            cancel,
+            text_width: self.preview_width,
+        });
     }
 
     /// Feed a worker result back in. Stale results are discarded here.
@@ -293,11 +345,17 @@ impl App {
                     return;
                 }
                 self.preview_seq += 1;
-                self.reset_scroll();
+                // A re-layout of the same file keeps the reader where they
+                // were; moving to another file starts at the top.
+                if !std::mem::take(&mut self.reflowing) {
+                    self.reset_scroll();
+                }
                 self.preview = match response.result {
                     Ok(preview) => PreviewState::Ready(Box::new(preview)),
                     Err(msg) => PreviewState::Failed(msg),
                 };
+                // The re-laid-out preview may be shorter than the old one.
+                self.scroll = self.scroll.min(self.max_scroll());
             }
         }
     }
@@ -371,6 +429,36 @@ impl App {
     pub fn set_viewport(&mut self, height: usize) {
         self.viewport = height.max(1);
         self.scroll = self.scroll.min(self.max_scroll());
+    }
+
+    /// Called by the renderer with the real pane width. Only records it — the
+    /// decision to act belongs to [`App::poll_reflow`], which the event loop
+    /// calls on every tick whether or not a frame was drawn.
+    pub fn set_preview_width(&mut self, width: usize) {
+        self.preview_width = Some(width.max(1));
+    }
+
+    /// Re-request the preview when the pane has settled at a materially
+    /// different width. Called once per event-loop tick; `true` means a
+    /// request went out.
+    pub fn poll_reflow(&mut self) -> bool {
+        self.poll_reflow_at(Instant::now())
+    }
+
+    /// The clock is a parameter so the rule can be tested without a terminal.
+    pub fn poll_reflow_at(&mut self, now: Instant) -> bool {
+        let Some(width) = self.preview_width else {
+            return false;
+        };
+        // Nothing on screen to re-lay-out.
+        if !matches!(self.preview, PreviewState::Ready(_)) {
+            return false;
+        }
+        if self.reflow.observe(width, now).is_none() {
+            return false;
+        }
+        self.request_reflow();
+        true
     }
 
     pub fn is_loading(&self) -> bool {
@@ -862,6 +950,158 @@ mod tests {
             truncated: false,
         };
         assert_eq!(content_len(&img), 0);
+    }
+
+    // ---- reflow on resize ----
+
+    /// An app showing a preview, with the pane already measured at `width`
+    /// and the reflow tracker settled on it.
+    fn app_at_width(width: usize) -> App {
+        let mut app = app_with(&[("sheet.xlsx", false)]);
+        app.set_preview_width(width);
+        // Re-request so the tracker records the width we just measured, the
+        // way the first real frame does.
+        app.reload();
+        let id = app.take_requests()[0].id;
+        app.on_response(Response {
+            id,
+            kind: Kind::Listing,
+            result: Ok(listing(&[("sheet.xlsx", false)])),
+        });
+        let id = app.take_requests()[0].id;
+        app.on_response(Response {
+            id,
+            kind: Kind::Preview,
+            result: Ok(text(50)),
+        });
+        app.set_viewport(20);
+        app
+    }
+
+    /// The requested width really is the pane width the renderer measured —
+    /// that is the whole point of the hint.
+    #[test]
+    fn a_preview_request_carries_the_pane_width() {
+        let mut app = app_with(&[("a.xlsx", false), ("b.xlsx", false)]);
+        app.set_preview_width(137);
+        app.move_cursor(1);
+        let reqs = app.take_requests();
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].text_width, Some(137));
+        // A directory listing has no columns and asks for no width.
+        app.reload();
+        let listing = app.take_requests();
+        assert_eq!(listing[0].kind, Kind::Listing);
+        assert_eq!(listing[0].text_width, None);
+    }
+
+    #[test]
+    fn a_small_resize_does_not_re_render() {
+        let mut app = app_at_width(100);
+        let start = Instant::now();
+        app.set_preview_width(103);
+        assert!(!app.poll_reflow_at(start));
+        assert!(!app.poll_reflow_at(start + Duration::from_secs(5)));
+        assert!(
+            app.take_requests().is_empty(),
+            "three columns is not worth a render"
+        );
+    }
+
+    #[test]
+    fn a_real_resize_re_renders_once_it_settles() {
+        let mut app = app_at_width(100);
+        let start = Instant::now();
+        app.set_preview_width(200);
+
+        assert!(!app.poll_reflow_at(start), "not settled yet");
+        assert!(app.take_requests().is_empty());
+
+        assert!(app.poll_reflow_at(start + Duration::from_millis(150)));
+        let reqs = app.take_requests();
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].kind, Kind::Preview);
+        assert_eq!(
+            reqs[0].text_width,
+            Some(200),
+            "the new request must carry the new width"
+        );
+        assert!(reqs[0].path.ends_with("sheet.xlsx"));
+
+        // Exactly once: the pane has not moved again.
+        assert!(!app.poll_reflow_at(start + Duration::from_secs(5)));
+        assert!(app.take_requests().is_empty());
+    }
+
+    /// The re-render goes through the same generation counter as everything
+    /// else, so a render still in flight is abandoned rather than painted.
+    #[test]
+    fn a_reflow_cancels_the_render_it_supersedes() {
+        let mut app = app_at_width(100);
+        app.move_cursor(0); // no-op; keeps the outbox clean
+        app.take_requests();
+
+        let start = Instant::now();
+        app.set_preview_width(200);
+        assert!(!app.poll_reflow_at(start), "the clock starts here");
+        assert!(app.poll_reflow_at(start + Duration::from_millis(150)));
+        let first = app.take_requests().remove(0);
+        assert!(!first.cancel.is_cancelled());
+
+        app.set_preview_width(60);
+        assert!(!app.poll_reflow_at(start + Duration::from_millis(300)));
+        assert!(app.poll_reflow_at(start + Duration::from_millis(500)));
+        assert!(
+            first.cancel.is_cancelled(),
+            "the superseded render must be cancelled, not left running"
+        );
+        // …and its result, if it lands anyway, is dropped.
+        app.on_response(Response {
+            id: first.id,
+            kind: Kind::Preview,
+            result: Ok(text(1)),
+        });
+        assert_eq!(
+            app.content_len(),
+            50,
+            "the stale result must not be painted"
+        );
+    }
+
+    /// Resizing is not navigating: the reader stays where they were reading.
+    #[test]
+    fn a_reflow_keeps_the_scroll_position() {
+        let mut app = app_at_width(100);
+        app.scroll_by(10);
+        assert_eq!(app.scroll, 10);
+
+        let start = Instant::now();
+        app.set_preview_width(200);
+        assert!(!app.poll_reflow_at(start), "the clock starts here");
+        assert!(app.poll_reflow_at(start + Duration::from_millis(150)));
+        let id = app.take_requests()[0].id;
+        // Still painting the old preview while the new one renders.
+        assert!(matches!(app.preview, PreviewState::Ready(_)));
+
+        app.on_response(Response {
+            id,
+            kind: Kind::Preview,
+            result: Ok(text(50)),
+        });
+        assert_eq!(app.scroll, 10, "a resize must not scroll the reader away");
+        // Moving to another file still starts at the top — see
+        // `selecting_another_file_resets_the_scroll`.
+    }
+
+    #[test]
+    fn nothing_reflows_before_there_is_a_preview_to_reflow() {
+        let mut app = App::new(PathBuf::from("/tmp/root"), None);
+        app.take_requests();
+        app.set_preview_width(300);
+        let start = Instant::now();
+        assert!(!app.poll_reflow_at(start));
+        assert!(!app.poll_reflow_at(start + Duration::from_secs(1)));
+        assert!(app.take_requests().is_empty());
     }
 
     #[test]

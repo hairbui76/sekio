@@ -17,6 +17,12 @@ sekio-core = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 image = { workspace = true }
+# Only for `terminal::size()`. `--width` now decides the table layout as well
+# as the image scaling, so the fallback when nobody passes it has to be the
+# real terminal width rather than a guess — $COLUMNS is a shell variable and is
+# usually not exported to us. Already a workspace dependency (sekio-tui), pure
+# Rust on both targets, so this costs the no-C-toolchain rule nothing.
+crossterm = { workspace = true }
 
 # ---------------------------------------------------------------------------
 # Linux packaging.

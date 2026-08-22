@@ -39,6 +39,11 @@ pub struct Request {
     pub kind: Kind,
     pub path: PathBuf,
     pub cancel: CancelToken,
+    /// Characters the preview pane can paint, as of the moment this request
+    /// was issued. Per-request rather than per-worker because it changes every
+    /// time the terminal is resized; `None` for a listing, which has no
+    /// columns to lay out.
+    pub text_width: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -105,7 +110,13 @@ fn run(
             continue;
         }
 
-        let result = match previewer.preview(&req.path, opts, &req.cancel) {
+        // Everything but the width is fixed for the life of the process; the
+        // width is whatever the pane was when the request went out.
+        let opts = PreviewOptions {
+            text_width: req.text_width,
+            ..opts.clone()
+        };
+        let result = match previewer.preview(&req.path, &opts, &req.cancel) {
             Ok(preview) => Ok(preview),
             // Cancellation is how the design is supposed to work, not a
             // failure. Swallow it: the UI is already waiting on a newer id.

@@ -36,6 +36,10 @@ pub struct Request {
     pub path: PathBuf,
     pub cancel: CancelToken,
     pub kind: Kind,
+    /// Characters the text area could paint when this request was issued.
+    /// Per-request rather than per-worker because the window can be resized at
+    /// any moment; `None` means "no hint", and core falls back to its default.
+    pub text_width: Option<usize>,
 }
 
 /// A finished preview plus its image already converted to egui's pixel layout.
@@ -169,7 +173,13 @@ fn serve(
     }
 
     let started = std::time::Instant::now();
-    let outcome = match previewer.preview(&req.path, opts, &req.cancel) {
+    // Everything but the width is fixed for the life of the process; the width
+    // is whatever the text area was when the request went out.
+    let opts = PreviewOptions {
+        text_width: req.text_width,
+        ..opts.clone()
+    };
+    let outcome = match previewer.preview(&req.path, &opts, &req.cancel) {
         Ok(preview) => {
             let image = egui_image(&preview.content);
             Outcome::Ready(Box::new(Loaded { preview, image }))

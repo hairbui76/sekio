@@ -11,6 +11,16 @@ pub use detect::Detected;
 pub use paths::{canonical, plain};
 
 use std::path::Path;
+use std::time::{Duration, Instant};
+
+/// Line width assumed when a frontend gives no `text_width` hint. Wide enough
+/// that an ordinary spreadsheet lays out unsqueezed, narrow enough to still be
+/// readable in a default-sized terminal.
+pub const DEFAULT_TEXT_WIDTH: usize = 120;
+
+/// Narrowest width any layout will lay out for. Below this a table stops being
+/// a table, and pretending otherwise only produces columns one character wide.
+pub const MIN_TEXT_WIDTH: usize = 20;
 
 /// Limits baked into the core so every frontend inherits them.
 /// A preview must never stall on a huge file: cap the work, not just the output.
@@ -24,6 +34,14 @@ pub struct PreviewOptions {
     pub image_max_dim: u32,
     /// Max entries in a directory/archive listing.
     pub max_entries: usize,
+    /// How many characters wide the frontend's text surface is.
+    ///
+    /// Only renderers that lay out *columns* — spreadsheets today — read it;
+    /// ordinary text keeps its own line breaks and is scrolled sideways by the
+    /// frontend. `None` means "no hint", and layout falls back to
+    /// [`DEFAULT_TEXT_WIDTH`]: a preview must render sensibly for a caller that
+    /// has no idea how wide it is.
+    pub text_width: Option<usize>,
 }
 
 impl Default for PreviewOptions {
@@ -33,6 +51,98 @@ impl Default for PreviewOptions {
             max_lines: 500,
             image_max_dim: 1024,
             max_entries: 1000,
+            text_width: None,
+        }
+    }
+}
+
+impl PreviewOptions {
+    /// The line width a column layout should spend: the frontend's hint when
+    /// there is one, [`DEFAULT_TEXT_WIDTH`] when there is not, never narrower
+    /// than [`MIN_TEXT_WIDTH`].
+    pub fn line_width(&self) -> usize {
+        self.text_width
+            .unwrap_or(DEFAULT_TEXT_WIDTH)
+            .max(MIN_TEXT_WIDTH)
+    }
+}
+
+/// Decides when a resized preview surface is different enough to be worth
+/// re-rendering at.
+///
+/// A preview is rendered once, so without this a window dragged wider keeps the
+/// table it was laid out for until the user opens another file. Re-requesting
+/// on every frame of a drag is the other extreme: each one costs a full render
+/// and cancels the last. So a new request needs two things — the width must
+/// have moved by at least `threshold` characters from the one the visible
+/// preview was rendered at, and it must then hold still for `settle`.
+///
+/// It lives here, beside [`PreviewOptions::text_width`], because it is the rule
+/// for producing that value and both the GUI and the TUI need it to be the
+/// same rule. It is pure: the caller passes the clock in, so the decision is
+/// testable without an event loop.
+#[derive(Debug, Clone)]
+pub struct Reflow {
+    threshold: usize,
+    settle: Duration,
+    /// Width the preview on screen was requested at.
+    current: usize,
+    /// A different width we are waiting to see hold still, and when we first
+    /// saw it.
+    pending: Option<(usize, Instant)>,
+}
+
+impl Reflow {
+    /// `threshold` is in characters, `settle` is how long a new width must hold
+    /// before it is acted on.
+    pub fn new(threshold: usize, settle: Duration) -> Self {
+        Self {
+            threshold: threshold.max(1),
+            settle,
+            current: DEFAULT_TEXT_WIDTH,
+            pending: None,
+        }
+    }
+
+    /// Record the width a request was just issued at, so the next resize is
+    /// measured against what is actually being rendered.
+    pub fn issued(&mut self, width: usize) {
+        self.current = width;
+        self.pending = None;
+    }
+
+    /// The width the visible preview was requested at.
+    pub fn current(&self) -> usize {
+        self.current
+    }
+
+    /// Feed in the surface width for this frame. `Some(width)` means "re-request
+    /// the preview at this width"; the width is recorded as current, so the
+    /// caller does not have to call [`Reflow::issued`] again.
+    pub fn observe(&mut self, width: usize, now: Instant) -> Option<usize> {
+        if width.abs_diff(self.current) < self.threshold {
+            // Back where we started (or never really left): whatever we were
+            // waiting on is moot.
+            self.pending = None;
+            return None;
+        }
+        match self.pending {
+            // Still hovering around the width we are waiting on — keep the
+            // original timestamp, so a slow drag does not reset the clock
+            // forever.
+            Some((pending, since)) if pending.abs_diff(width) < self.threshold => {
+                if now.duration_since(since) >= self.settle {
+                    self.issued(width);
+                    Some(width)
+                } else {
+                    None
+                }
+            }
+            // A new target: start the clock again.
+            _ => {
+                self.pending = Some((width, now));
+                None
+            }
         }
     }
 }
@@ -234,5 +344,119 @@ impl Previewer {
 impl Default for Previewer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_width_hint_means_the_default_width() {
+        assert_eq!(PreviewOptions::default().text_width, None);
+        assert_eq!(PreviewOptions::default().line_width(), DEFAULT_TEXT_WIDTH);
+    }
+
+    #[test]
+    fn a_supplied_width_is_honoured_but_never_below_the_floor() {
+        let at = |w| {
+            PreviewOptions {
+                text_width: Some(w),
+                ..PreviewOptions::default()
+            }
+            .line_width()
+        };
+        assert_eq!(at(200), 200);
+        assert_eq!(at(40), 40);
+        // A pane two characters wide is not a width anything can lay out for.
+        assert_eq!(at(2), MIN_TEXT_WIDTH);
+        assert_eq!(at(0), MIN_TEXT_WIDTH);
+    }
+
+    fn reflow() -> Reflow {
+        Reflow::new(4, Duration::from_millis(120))
+    }
+
+    #[test]
+    fn a_small_resize_never_asks_for_a_new_render() {
+        let mut r = reflow();
+        r.issued(100);
+        let start = Instant::now();
+        // Three characters is under the threshold, so it never even starts the
+        // clock — however long it holds.
+        assert_eq!(r.observe(103, start), None);
+        assert_eq!(r.observe(103, start + Duration::from_secs(5)), None);
+        assert_eq!(r.observe(97, start + Duration::from_secs(10)), None);
+        assert_eq!(r.current(), 100);
+    }
+
+    #[test]
+    fn a_real_resize_asks_once_the_width_holds_still() {
+        let mut r = reflow();
+        r.issued(100);
+        let start = Instant::now();
+        // Past the threshold, but not settled yet.
+        assert_eq!(r.observe(200, start), None);
+        assert_eq!(r.observe(200, start + Duration::from_millis(119)), None);
+        assert_eq!(
+            r.observe(200, start + Duration::from_millis(120)),
+            Some(200),
+            "a width that held for the settle period must be re-requested"
+        );
+        assert_eq!(r.current(), 200);
+        // …and exactly once: the new width is now the current one.
+        assert_eq!(r.observe(200, start + Duration::from_secs(1)), None);
+    }
+
+    #[test]
+    fn a_drag_that_keeps_moving_keeps_resetting_the_clock() {
+        let mut r = reflow();
+        r.issued(100);
+        let start = Instant::now();
+        // One frame every 16 ms, ten characters wider each time: the width
+        // never holds still, so not one request goes out.
+        for step in 0..30u32 {
+            let now = start + Duration::from_millis(u64::from(step) * 16);
+            assert_eq!(
+                r.observe(110 + step as usize * 10, now),
+                None,
+                "a drag in progress must not re-render at step {step}"
+            );
+        }
+        // Let go, and it fires once for where the drag ended.
+        let end = start + Duration::from_millis(30 * 16);
+        let width = 110 + 29 * 10;
+        assert_eq!(r.observe(width, end), None);
+        assert_eq!(
+            r.observe(width, end + Duration::from_millis(200)),
+            Some(width)
+        );
+    }
+
+    #[test]
+    fn snapping_back_to_the_old_width_cancels_the_pending_request() {
+        let mut r = reflow();
+        r.issued(100);
+        let start = Instant::now();
+        assert_eq!(r.observe(200, start), None);
+        // The user dragged back; nothing needs re-rendering after all.
+        assert_eq!(r.observe(100, start + Duration::from_millis(50)), None);
+        assert_eq!(r.observe(100, start + Duration::from_secs(5)), None);
+        assert_eq!(r.current(), 100);
+    }
+
+    /// Before anything has been requested the tracker assumes core's default,
+    /// because that is exactly what a request with no hint is rendered at.
+    #[test]
+    fn a_fresh_tracker_starts_at_the_default_width() {
+        let mut r = reflow();
+        assert_eq!(r.current(), DEFAULT_TEXT_WIDTH);
+        let start = Instant::now();
+        assert_eq!(r.observe(DEFAULT_TEXT_WIDTH + 1, start), None);
+        assert_eq!(
+            r.observe(DEFAULT_TEXT_WIDTH + 1, start + Duration::from_secs(1)),
+            None,
+            "a pane that happens to match the default needs no second render"
+        );
     }
 }

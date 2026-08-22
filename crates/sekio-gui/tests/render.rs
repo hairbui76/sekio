@@ -92,6 +92,10 @@ struct AppUi {
 
 impl AppUi {
     fn new(path: Option<PathBuf>, mode: Mode) -> Self {
+        Self::sized(path, mode, SIZE)
+    }
+
+    fn sized(path: Option<PathBuf>, mode: Mode, size: [f32; 2]) -> Self {
         isolate_state_dir();
 
         let (req_tx, requests) = mpsc::channel::<Request>();
@@ -125,7 +129,7 @@ impl AppUi {
         let mut frame = eframe::Frame::_new_kittest();
 
         let harness = Harness::builder()
-            .with_size(SIZE)
+            .with_size(size)
             // Nothing here loads images through egui's async loaders, and
             // waiting for them would sleep a quarter-second per frame.
             .with_wait_for_pending_images(false)
@@ -1418,4 +1422,235 @@ fn the_verbatim_prefix_helper_handles_both_platforms_shapes_on_either_host() {
     assert_eq!(strip_verbatim(r"C:\x"), r"C:\x");
     assert_eq!(strip_verbatim("/home/x"), "/home/x");
     assert_eq!(strip_verbatim(r"\\server\share"), r"\\server\share");
+}
+
+// ---------------------------------------------------------------------------
+// Laying the preview out for the window it is actually in
+// ---------------------------------------------------------------------------
+
+/// A spreadsheet whose natural layout wants about ninety characters: wide
+/// enough that a small window has to squeeze it, narrow enough that a big one
+/// does not. Built here rather than committed as a binary fixture.
+fn xlsx() -> Vec<u8> {
+    use std::io::Write as _;
+
+    let rows: [[&str; 4]; 3] = [
+        ["STT", "Hoạt động", "Kết quả (giờ quy đổi)", "Ghi chú"],
+        ["1.3", "Đứng lớp hướng dẫn thực hành", "47.3", ""],
+        [
+            "8",
+            "Các hoạt động hỗ trợ khác",
+            "12",
+            "Hỗ trợ lễ bảo vệ khóa luận",
+        ],
+    ];
+    let mut sheet = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>"#,
+    );
+    for (r, row) in rows.iter().enumerate() {
+        sheet.push_str(&format!(r#"<row r="{}">"#, r + 1));
+        for (c, value) in row.iter().enumerate() {
+            if value.is_empty() {
+                continue;
+            }
+            let column = (b'A' + c as u8) as char;
+            let reference = format!("{column}{}", r + 1);
+            if value.parse::<f64>().is_ok() {
+                sheet.push_str(&format!(r#"<c r="{reference}"><v>{value}</v></c>"#));
+            } else {
+                sheet.push_str(&format!(
+                    r#"<c r="{reference}" t="inlineStr"><is><t>{value}</t></is></c>"#
+                ));
+            }
+        }
+        sheet.push_str("</row>");
+    }
+    sheet.push_str("</sheetData></worksheet>");
+
+    let parts: [(&str, String); 5] = [
+        (
+            "[Content_Types].xml",
+            r#"<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>"#.to_owned(),
+        ),
+        (
+            "_rels/.rels",
+            r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#.to_owned(),
+        ),
+        (
+            "xl/workbook.xml",
+            r#"<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Tong" sheetId="1" r:id="rId1"/></sheets></workbook>"#.to_owned(),
+        ),
+        (
+            "xl/_rels/workbook.xml.rels",
+            r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#.to_owned(),
+        ),
+        ("xl/worksheets/sheet1.xml", sheet),
+    ];
+
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    for (name, body) in parts {
+        writer.start_file(name, options).expect("start part");
+        writer.write_all(body.as_bytes()).expect("write part");
+    }
+    writer.finish().expect("finish zip").into_inner()
+}
+
+/// The painted table itself — the body galley, not the chrome around it. The
+/// header and the "Open…" button both carry an ellipsis of their own, so the
+/// whole frame's text cannot answer "was a cell elided?".
+fn painted_table(ui: &AppUi) -> String {
+    let table: Vec<String> = ui
+        .painted()
+        .iter()
+        .filter(|painted| painted.text.contains("STT"))
+        .map(|painted| painted.text.clone())
+        .collect();
+    assert!(
+        !table.is_empty(),
+        "no table was painted; the frame said:\n{}",
+        ui.text()
+    );
+    table.join("\n")
+}
+
+/// Widest row of the painted table, in characters.
+fn painted_table_width(table: &str) -> usize {
+    table
+        .lines()
+        .map(|line| line.chars().count())
+        .max()
+        .unwrap_or(0)
+}
+
+/// Run one window size end to end: render the workbook through core at the
+/// width this window asked for, paint it, and report what came out.
+fn table_in_a_window(
+    previewer: &sekio_core::Previewer,
+    path: &Path,
+    size: [f32; 2],
+) -> (usize, usize, String) {
+    let mut ui = AppUi::sized(Some(path.to_path_buf()), Mode::App, size);
+    ui.run();
+    // Something text-shaped has to be on screen before a resize means
+    // anything — the app does not re-lay-out an image or a home screen.
+    ui.deliver(FIRST, path, text_content());
+
+    // The window is not the width core assumed when `main` fired the first
+    // request with no hint, so once it holds still the app re-requests.
+    std::thread::sleep(Duration::from_millis(200));
+    ui.run();
+
+    let request = ui
+        .requests
+        .try_iter()
+        .filter(|request| request.kind == Kind::Preview)
+        .last()
+        .unwrap_or_else(|| panic!("a {size:?} window must re-request its preview"));
+    let asked = request
+        .text_width
+        .expect("a preview request must carry the width the pane measured");
+
+    // Core's real spreadsheet renderer, at exactly that width.
+    let opts = sekio_core::PreviewOptions {
+        text_width: Some(asked),
+        ..Default::default()
+    };
+    let preview = previewer
+        .preview(path, &opts, &sekio_core::CancelToken::new())
+        .expect("the workbook must render");
+    ui.deliver(request.id, path, preview.content);
+
+    let table = painted_table(&ui);
+    (asked, painted_table_width(&table), table)
+}
+
+/// The bug, end to end: a spreadsheet in a wide window has to use the window.
+///
+/// Both halves are real — the width comes from the running UI's own
+/// measurement of its text area, and the table comes from core's spreadsheet
+/// renderer laying out for it.
+#[test]
+fn a_wide_window_lays_a_spreadsheet_out_wider_than_a_narrow_one() {
+    let dir = std::env::temp_dir().join(format!("sekio-gui-width-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create the fixture directory");
+    let path = dir.join("bang-cong.xlsx");
+    std::fs::write(&path, xlsx()).expect("write the fixture workbook");
+
+    let previewer = sekio_core::Previewer::new();
+    let (narrow_ask, narrow_table, narrow_text) =
+        table_in_a_window(&previewer, &path, [500.0, 620.0]);
+    let (wide_ask, wide_table, wide_text) = table_in_a_window(&previewer, &path, [1500.0, 620.0]);
+
+    assert!(
+        wide_ask > narrow_ask * 2,
+        "a 1500px window measured {wide_ask} characters and a 500px one \
+         {narrow_ask}: the pane width is not reaching the request"
+    );
+    assert!(
+        wide_table > narrow_table,
+        "the table came out {wide_table} characters wide in the big window and \
+         {narrow_table} in the small one — the width never reached the layout"
+    );
+    // The whole complaint: in the wide window nothing is elided at all…
+    assert!(
+        !wide_text.contains('…'),
+        "a table that needs ~90 characters was still elided in a window with \
+         room for {wide_ask}:\n{wide_text}"
+    );
+    assert!(
+        wide_text.contains("Đứng lớp hướng dẫn thực hành"),
+        "the longest cell should be whole in a wide window:\n{wide_text}"
+    );
+    // …while the small window, which genuinely cannot fit it, still says so.
+    assert!(
+        narrow_text.contains('…'),
+        "a 500px window cannot fit a 90-character table, so something must be \
+         elided:\n{narrow_text}"
+    );
+    // And the numbers survive at both sizes: they are the cheapest thing to
+    // elide and the most expensive thing to lose.
+    for text in [&narrow_text, &wide_text] {
+        assert!(text.contains("47.3"), "a value lost a digit:\n{text}");
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A resize that changes nothing worth re-laying-out must not cost a render.
+/// The threshold is what keeps a window drag from queueing one preview per
+/// frame; without it this test would see a request every time.
+#[test]
+fn a_window_that_is_not_resized_never_re_requests_its_preview() {
+    let path = PathBuf::from("/tmp/steady.rs");
+    // 900px is nowhere near core's 120-character default, so this window does
+    // re-request once — and then must settle down and stop.
+    let mut ui = ui_with_path("/tmp/steady.rs");
+    ui.deliver(FIRST, &path, text_content());
+    std::thread::sleep(Duration::from_millis(200));
+    ui.run();
+
+    let first: Vec<Request> = ui
+        .requests
+        .try_iter()
+        .filter(|request| request.kind == Kind::Preview)
+        .collect();
+    assert_eq!(
+        first.len(),
+        1,
+        "one re-layout for the window's real width, no more"
+    );
+    ui.deliver(first[0].id, &path, text_content());
+
+    // Nothing moves from here on, however long we wait.
+    std::thread::sleep(Duration::from_millis(300));
+    ui.run();
+    ui.run();
+    assert!(
+        ui.requests
+            .try_iter()
+            .all(|request| request.kind != Kind::Preview),
+        "a window sitting still must not keep re-rendering its preview"
+    );
 }

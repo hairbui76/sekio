@@ -163,6 +163,10 @@ impl Settings {
             max_lines: self.lines,
             image_max_dim: self.image_max_dim,
             max_entries: self.max_entries,
+            // Not a setting: the preview pane's width is whatever the terminal
+            // is right now, so it rides on each `Request` instead (see
+            // `worker::Request::text_width`).
+            text_width: None,
         }
     }
 }

@@ -6,6 +6,11 @@
 //! column letters, then the cells. Frontends paint it exactly like source code,
 //! so no frontend has to learn what a spreadsheet is.
 //!
+//! Column widths are laid out for `PreviewOptions::text_width` — how many
+//! characters the frontend says it has room for. Nothing is elided while the
+//! columns' natural widths fit inside it; past that the shortfall comes out of
+//! the widest columns first. See `plan` for the rule.
+//!
 //! Only the *first* sheet is previewed, and only its first `max_lines` rows.
 //! For xlsx that cap is a real read bound: `Xlsx::worksheet_cells_reader`
 //! streams cells straight out of the sheet XML, so a 200 MB workbook costs the
@@ -69,8 +74,14 @@ mod imp {
     /// Characters kept from one cell. A cell can legally hold 32 767 of them;
     /// a preview pane can show a few dozen.
     const MAX_CELL_CHARS: usize = 64;
-    /// Widest a column is padded to before its contents get elided.
-    const MAX_COL_WIDTH: usize = 20;
+    /// Hard ceiling on one column's printed width, however much room the pane
+    /// has. Without it a single 4 000-character note would be the only thing on
+    /// the line.
+    const MAX_COL_WIDTH: usize = 40;
+    /// Narrowest a squeezed column is allowed to get: two characters and the
+    /// `…` that says there were more. A column that cannot have this much is
+    /// dropped instead, and reported in the summary.
+    const MIN_COL_WIDTH: usize = 3;
     /// Spaces between two columns.
     const COL_GAP: &str = "  ";
     /// Lines spent on the sheet list and the column letters.
@@ -516,18 +527,17 @@ mod imp {
             .unwrap_or(min_col);
 
         let spread = (max_col.saturating_sub(min_col) as usize) + 1;
-        let shown_cols = spread.clamp(1, MAX_COLS);
-        let col_truncated = spread > shown_cols || sheet.total_cols > shown_cols as u64;
+        let scanned_cols = spread.clamp(1, MAX_COLS);
 
-        // Dense window over the sparse rows: only the columns we will paint.
+        // Dense window over the sparse rows: only the columns we might paint.
         let grid: Vec<Vec<Option<&CellText>>> = sheet
             .rows
             .iter()
             .map(|(_, cells)| {
-                let mut row: Vec<Option<&CellText>> = vec![None; shown_cols];
+                let mut row: Vec<Option<&CellText>> = vec![None; scanned_cols];
                 for (c, cell) in cells {
                     if let Some(i) = c.checked_sub(min_col).map(|d| d as usize) {
-                        if i < shown_cols {
+                        if i < scanned_cols {
                             row[i] = Some(cell);
                         }
                     }
@@ -536,7 +546,8 @@ mod imp {
             })
             .collect();
 
-        let mut widths: Vec<usize> = (0..shown_cols)
+        // What each column would need to show everything in it, unelided.
+        let mut natural: Vec<usize> = (0..scanned_cols)
             .map(|i| {
                 column_label(min_col.saturating_add(i as u32))
                     .chars()
@@ -544,7 +555,7 @@ mod imp {
             })
             .collect();
         for row in &grid {
-            for (width, cell) in widths.iter_mut().zip(row.iter()) {
+            for (width, cell) in natural.iter_mut().zip(row.iter()) {
                 if let Some(cell) = cell {
                     *width = (*width).max(cell.text.chars().count().min(MAX_COL_WIDTH));
                 }
@@ -554,6 +565,15 @@ mod imp {
         // Row numbers are 1-based like every spreadsheet UI.
         let last_row_number = sheet.rows.last().map_or(1, |(r, _)| r.saturating_add(1));
         let gutter = last_row_number.to_string().len().max(3);
+
+        // Now spend the frontend's width on those columns.
+        let widths = plan(&natural, opts.line_width(), gutter);
+        let shown_cols = widths.len();
+        let squeezed = widths
+            .iter()
+            .zip(natural.iter())
+            .any(|(shown, wanted)| shown < wanted);
+        let col_truncated = spread > shown_cols || sheet.total_cols > shown_cols as u64;
 
         let mut lines = Vec::with_capacity(sheet.rows.len() + HEADER_LINES + 1);
         let (sheet_line, names_truncated) = sheet_header(names, opts);
@@ -576,12 +596,88 @@ mod imp {
 
         // Safety net: the row cap already reserved room for the header and the
         // summary, but a pathological `max_lines` of 1 must still be honoured.
-        let mut truncated = sheet.truncated || col_truncated || names_truncated;
+        let mut truncated = sheet.truncated || col_truncated || names_truncated || squeezed;
         if lines.len() > opts.max_lines {
             lines.truncate(opts.max_lines);
             truncated = true;
         }
         (lines, truncated)
+    }
+
+    /// Decide a printed width for every column, spending the `budget`
+    /// characters the frontend says it has.
+    ///
+    /// Two rules, in order:
+    ///
+    /// 1. **A column is never padded past what it needs.** `natural[i]` is the
+    ///    widest thing in column `i` (already ceilinged at [`MAX_COL_WIDTH`]),
+    ///    and no column is ever given more than that — a `STT` column stays
+    ///    three characters wide however much room is going spare. So when the
+    ///    natural widths fit the budget, they are used unchanged and nothing is
+    ///    elided at all.
+    /// 2. **When they do not fit, the shortfall comes out of the widest
+    ///    columns.** A single cap is chosen by water-filling: every column
+    ///    narrower than the cap keeps its full width, and every column above it
+    ///    is cut to the cap. A three-character number column therefore never
+    ///    loses a character so a prose column can keep one — the width comes
+    ///    out of whoever has the most of it, which is also where a `…` costs
+    ///    the least of the meaning. The handful of characters the integer
+    ///    division leaves over go to the cut columns, left to right, so the
+    ///    line fills the pane exactly rather than stopping short of it.
+    ///
+    /// Returns *fewer* widths than `natural` when the budget cannot seat every
+    /// column at [`MIN_COL_WIDTH`]: past that point another column would show
+    /// nothing but an ellipsis. The caller reports the dropped ones in the
+    /// trailing summary, exactly as it does for the [`MAX_COLS`] cap.
+    fn plan(natural: &[usize], budget: usize, gutter: usize) -> Vec<usize> {
+        // Everything to the right of the row-number gutter.
+        let room = budget.saturating_sub(gutter);
+        // A column costs its own width plus the gap in front of it, so that is
+        // what one has to be worth before it is shown at all. At least one is
+        // always shown: a table with no columns is not a preview.
+        let seats = (room / (COL_GAP.len() + MIN_COL_WIDTH)).max(1);
+        let shown = natural.len().min(seats);
+        let natural = &natural[..shown];
+        // `.max(shown)` keeps the pathological case (a pane narrower than
+        // `MIN_TEXT_WIDTH` can be) off the zero-width path below; every column
+        // still gets at least one character.
+        let content = room.saturating_sub(COL_GAP.len() * shown).max(shown);
+
+        // Water level: walk the columns narrowest first, letting each keep its
+        // natural width for as long as everything still to come could be capped
+        // at that width and fit.
+        let mut sorted: Vec<usize> = natural.to_vec();
+        sorted.sort_unstable();
+        let mut spent = 0usize;
+        let mut rest = shown;
+        for &width in &sorted {
+            if spent + rest * width > content {
+                break;
+            }
+            spent += width;
+            rest -= 1;
+        }
+        if rest == 0 {
+            // Everything fits at its natural width: nothing is elided.
+            return natural.to_vec();
+        }
+
+        let left = content - spent;
+        let cap = (left / rest).max(1);
+        let mut spare = left.saturating_sub(cap * rest);
+        natural
+            .iter()
+            .map(|&width| {
+                if width <= cap {
+                    width
+                } else if spare > 0 {
+                    spare -= 1;
+                    cap + 1
+                } else {
+                    cap
+                }
+            })
+            .collect()
     }
 
     /// `Sheets: [Data]  Notes  Q3` — the previewed one bracketed and bold.
@@ -755,6 +851,111 @@ mod imp {
         fn cells_are_flattened_to_one_line() {
             assert_eq!(clean("a\nb\tc"), "a b c");
             assert_eq!(clean(&"x".repeat(500)).chars().count(), MAX_CELL_CHARS);
+        }
+
+        // ------------------------------------------------------ width plan
+
+        /// What one line of the table costs: the gutter plus a gap and a
+        /// column for each width.
+        fn line_cost(widths: &[usize], gutter: usize) -> usize {
+            gutter + widths.iter().map(|w| w + COL_GAP.len()).sum::<usize>()
+        }
+
+        #[test]
+        fn columns_that_fit_are_never_squeezed_or_padded() {
+            // The user's sheet, roughly: a 3-char id, two prose columns and a
+            // number column, in a 200-character window.
+            let natural = [3, 20, 24, 30];
+            let widths = plan(&natural, 200, 3);
+            assert_eq!(
+                widths,
+                natural.to_vec(),
+                "everything fits, so every column keeps exactly what it needs"
+            );
+            assert!(line_cost(&widths, 3) <= 200);
+        }
+
+        #[test]
+        fn spare_room_is_not_handed_to_columns_that_do_not_want_it() {
+            // 1 000 characters of pane and four narrow columns: the table stays
+            // narrow rather than sprawling across the window.
+            assert_eq!(plan(&[3, 4, 5, 6], 1000, 3), vec![3, 4, 5, 6]);
+        }
+
+        #[test]
+        fn a_shortfall_comes_out_of_the_widest_columns_only() {
+            // gutter 3 + 4 gaps of 2 leaves 40 characters of columns; the
+            // natural widths want 78.
+            let natural = [3, 5, 30, 40];
+            let widths = plan(&natural, 51, 3);
+            assert_eq!(line_cost(&widths, 3), 51, "the whole budget is spent");
+            assert_eq!(
+                &widths[..2],
+                &[3, 5],
+                "narrow columns must not lose a character to a prose column"
+            );
+            // The two wide ones share what is left equally: 40 - 3 - 5 = 32,
+            // so 16 each.
+            assert_eq!(&widths[2..], &[16, 16]);
+        }
+
+        /// Water-filling, not equal-shares: a column only loses width down to
+        /// the level of the *next* widest, so a middling column that fits under
+        /// the cap keeps everything while the giant beside it pays.
+        #[test]
+        fn only_the_columns_above_the_water_line_are_cut() {
+            // Same budget as above, but the third column is 15 rather than 30 —
+            // narrow enough to survive whole once the 40 has been cut back.
+            let widths = plan(&[3, 5, 15, 40], 51, 3);
+            assert_eq!(widths, vec![3, 5, 15, 17]);
+            assert_eq!(line_cost(&widths, 3), 51);
+        }
+
+        #[test]
+        fn the_leftover_characters_of_the_split_are_not_thrown_away() {
+            // 3 + 5 = 8 spent, 33 left over two columns: 16 each with 1 spare,
+            // which goes to the first column that was cut.
+            let natural = [3, 5, 20, 40];
+            let widths = plan(&natural, 52, 3);
+            assert_eq!(widths, vec![3, 5, 17, 16]);
+            assert_eq!(line_cost(&widths, 3), 52);
+        }
+
+        #[test]
+        fn a_column_is_dropped_rather_than_shown_as_an_ellipsis() {
+            // 40 characters of pane: gutter 3 leaves 37, and a column costs at
+            // least 2 + 3, so seven columns is all that will seat.
+            let natural = [8; 20];
+            let widths = plan(&natural, 40, 3);
+            assert_eq!(widths.len(), 7);
+            assert!(
+                widths.iter().all(|w| *w >= MIN_COL_WIDTH),
+                "a shown column must be wide enough to say something: {widths:?}"
+            );
+            assert!(line_cost(&widths, 3) <= 40, "{widths:?}");
+        }
+
+        #[test]
+        fn a_pane_too_narrow_for_even_one_column_still_lays_out() {
+            for budget in 0..12usize {
+                for gutter in [0usize, 3, 9] {
+                    let widths = plan(&[3, 30, 7], budget, gutter);
+                    assert_eq!(widths.len().min(1), 1, "at least one column survives");
+                    assert!(
+                        widths.iter().all(|w| *w >= 1),
+                        "budget {budget}, gutter {gutter}: {widths:?} has a zero-width column"
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn one_column_never_swallows_the_whole_line() {
+            // One column of 40 (the ceiling) beside three tiny ones, in a pane
+            // with room to spare: the tiny ones keep every character.
+            let widths = plan(&[40, 3, 3, 3], 80, 3);
+            assert_eq!(&widths[1..], &[3, 3, 3]);
+            assert!(widths[0] <= MAX_COL_WIDTH);
         }
     }
 }
@@ -1115,6 +1316,209 @@ mod tests {
             matches!(&detected, Detected::Spreadsheet { format, .. } if format == "xlsx"),
             "got {detected:?}"
         );
+    }
+
+    // ----------------------------------------------------------- widths
+
+    /// The shape of the sheet from the bug report: a short id, two prose
+    /// columns, a number column and a note. Its natural width is around 90
+    /// characters, which is what makes it interesting both above and below.
+    fn vietnamese() -> Vec<u8> {
+        xlsx(&[
+            vec!["STT", "Hoạt động", "Kết quả (giờ quy đổi)", "Ghi chú"],
+            vec!["1.3", "Đứng lớp hướng dẫn thực hành", "47.3", ""],
+            vec![
+                "8",
+                "Các hoạt động hỗ trợ khác",
+                "12",
+                "Hỗ trợ lễ bảo vệ khóa luận",
+            ],
+        ])
+    }
+
+    fn preview_at(bytes: &[u8], width: Option<usize>) -> Preview {
+        let opts = PreviewOptions {
+            text_width: width,
+            ..PreviewOptions::default()
+        };
+        preview(bytes, &opts).expect("render")
+    }
+
+    fn widest(p: &Preview) -> usize {
+        lines(p)
+            .iter()
+            .map(|l| plain(l).chars().count())
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// The user's actual complaint: a table that needs ~90 characters was cut
+    /// to 62 in a window with room for 200.
+    #[test]
+    fn a_wide_pane_leaves_the_table_whole() {
+        let p = preview_at(&vietnamese(), Some(200));
+        let rendered: Vec<String> = lines(&p).iter().map(plain).collect();
+
+        assert!(
+            !rendered.iter().any(|l| l.contains('…')),
+            "nothing should be elided with 200 characters to spend:\n{}",
+            rendered.join("\n")
+        );
+        assert!(!p.truncated, "nothing was cut, so nothing to own up to");
+        // Every cell, in full.
+        for cell in [
+            "Kết quả (giờ quy đổi)",
+            "Đứng lớp hướng dẫn thực hành",
+            "Hỗ trợ lễ bảo vệ khóa luận",
+        ] {
+            assert!(
+                rendered.iter().any(|l| l.contains(cell)),
+                "{cell:?} is missing from:\n{}",
+                rendered.join("\n")
+            );
+        }
+        // …and the table still stops where its content does rather than being
+        // padded across the whole window.
+        assert!(
+            widest(&p) < 200,
+            "the table was padded out to the full pane: {} characters",
+            widest(&p)
+        );
+    }
+
+    /// The same sheet in a pane that genuinely cannot hold it: the number
+    /// column keeps every digit, the prose gives the width up.
+    #[test]
+    fn a_narrow_pane_takes_the_width_from_the_prose_not_the_numbers() {
+        let p = preview_at(&vietnamese(), Some(60));
+        let rendered: Vec<String> = lines(&p).iter().map(plain).collect();
+        let body = rendered.join("\n");
+
+        assert!(p.truncated, "eliding a cell is a cap biting");
+        assert!(
+            rendered.iter().all(|l| l.chars().count() <= 60),
+            "a line ran past the 60-character pane:\n{body}"
+        );
+        assert!(body.contains('…'), "something had to give:\n{body}");
+        // The numbers are three and four characters wide and must survive
+        // whole — losing a digit is losing the value.
+        for number in ["47.3", "12"] {
+            assert!(
+                rendered.iter().any(|l| l.contains(number)),
+                "the number {number:?} was elided to make room for prose:\n{body}"
+            );
+        }
+        // The id column, too.
+        assert!(rendered.iter().any(|l| l.contains("1.3")), "{body}");
+        // And the prose is what paid for it.
+        assert!(
+            rendered
+                .iter()
+                .any(|l| l.contains("Đứng lớp") && l.contains('…')),
+            "the prose column should be the one elided:\n{body}"
+        );
+    }
+
+    /// One 64-character note beside three tiny columns: the note is ceilinged
+    /// rather than being handed the entire line, and the tiny columns are
+    /// untouched.
+    #[test]
+    fn one_pathological_cell_does_not_consume_the_line() {
+        let huge = "x".repeat(4000);
+        let bytes = xlsx(&[
+            vec!["id", "note", "qty", "ok"],
+            vec!["7", &huge, "1234", "yes"],
+        ]);
+        let p = preview_at(&bytes, Some(200));
+        let rendered: Vec<String> = lines(&p).iter().map(plain).collect();
+        let body = rendered.join("\n");
+
+        // The cell is capped at MAX_CELL_CHARS when read and the column at
+        // MAX_COL_WIDTH when laid out, so the whole line stays modest even in
+        // a very wide pane.
+        assert!(
+            widest(&p) <= 60,
+            "one cell took the line out to {} characters:\n{body}",
+            widest(&p)
+        );
+        let xs = rendered
+            .iter()
+            .find(|l| l.contains("xxx"))
+            .expect("the wide row must be painted");
+        assert!(
+            xs.matches('x').count() <= 40,
+            "the wide column was not ceilinged: {xs:?}"
+        );
+        // The columns beside it are complete.
+        assert!(xs.contains("1234"), "{xs:?}");
+        assert!(xs.contains("yes"), "{xs:?}");
+    }
+
+    /// Forty characters is about as narrow as a preview pane ever gets. It has
+    /// to stay a table: no panic, no zero-width columns, nothing past the edge.
+    #[test]
+    fn a_forty_character_pane_still_lays_out_a_table() {
+        let bytes = xlsx(&[
+            vec!["STT", "Hoạt động", "Kết quả", "Ghi chú", "Thêm"],
+            vec!["1", "Trợ giảng lý thuyết", "47.3", "abc", "def"],
+        ]);
+        let p = preview_at(&bytes, Some(40));
+        let rendered: Vec<String> = lines(&p).iter().map(plain).collect();
+        let body = rendered.join("\n");
+
+        // The sheet-name header is one long label and is not a column, so skip
+        // it; every line of the table proper fits.
+        for line in &rendered[1..] {
+            assert!(
+                line.chars().count() <= 40,
+                "{line:?} runs past a 40-character pane:\n{body}"
+            );
+        }
+        // Column letters are still aligned over real columns.
+        assert!(
+            rendered[1].contains('A') && rendered[1].contains('B'),
+            "{body}"
+        );
+        assert!(rendered.iter().any(|l| l.contains("47.3")), "{body}");
+        assert!(p.truncated);
+    }
+
+    /// Down to nothing at all: absurd widths must not panic or underflow.
+    #[test]
+    fn absurd_widths_do_not_panic() {
+        let bytes = vietnamese();
+        for width in [0usize, 1, 2, 5, 11, 19, 20, 21, 4096] {
+            let p = preview_at(&bytes, Some(width));
+            assert!(!lines(&p).is_empty(), "width {width} produced nothing");
+        }
+    }
+
+    /// The hint is optional, and leaving it out has to behave like the default
+    /// every existing caller already gets.
+    #[test]
+    fn no_hint_lays_out_exactly_like_the_default_width() {
+        let bytes = vietnamese();
+        let unhinted: Vec<String> = lines(&preview_at(&bytes, None)).iter().map(plain).collect();
+        let defaulted: Vec<String> = lines(&preview_at(&bytes, Some(crate::DEFAULT_TEXT_WIDTH)))
+            .iter()
+            .map(plain)
+            .collect();
+        assert_eq!(unhinted, defaulted);
+    }
+
+    /// The hint really is what decides the layout: wider in, wider table out.
+    #[test]
+    fn a_wider_hint_produces_a_wider_table() {
+        let bytes = vietnamese();
+        let narrow = preview_at(&bytes, Some(50));
+        let wide = preview_at(&bytes, Some(200));
+        assert!(
+            widest(&wide) > widest(&narrow),
+            "50 chars gave {} and 200 gave {}",
+            widest(&narrow),
+            widest(&wide)
+        );
+        assert!(widest(&narrow) <= 50);
     }
 
     #[test]

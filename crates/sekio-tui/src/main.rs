@@ -243,6 +243,13 @@ fn run(
             dirty = true;
         }
 
+        // Every tick, not only on a frame we drew: a resize has to be seen
+        // holding still for a moment before it costs a re-render, and the loop
+        // stops drawing as soon as it has caught up.
+        if app.poll_reflow() {
+            dirty = true;
+        }
+
         for request in app.take_requests() {
             worker.send(request);
         }

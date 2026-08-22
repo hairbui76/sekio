@@ -20,7 +20,12 @@ struct Args {
     #[arg(long, default_value_t = 200)]
     lines: usize,
 
-    /// Output width in terminal columns (images); defaults to terminal width
+    /// Output width in terminal columns; defaults to the terminal width
+    ///
+    /// Governs both the image rendering and the column layout of table
+    /// previews (spreadsheets). Preview panes are narrower than the terminal,
+    /// so pass the pane width — which is exactly what the fzf/lf/yazi recipes
+    /// in docs/integration.md already do.
     #[arg(long)]
     width: Option<u32>,
 
@@ -56,9 +61,13 @@ fn main() -> Result<()> {
     }
 
     let color = args.color || (!args.no_color && std::io::stdout().is_terminal());
+    // One width for the whole output: the same number that scales an image is
+    // the number a table has to lay its columns out inside.
+    let width = resolve_width(args.width, term_width());
 
     let opts = PreviewOptions {
         max_lines: args.lines,
+        text_width: Some(width as usize),
         ..Default::default()
     };
 
@@ -78,7 +87,7 @@ fn main() -> Result<()> {
     let stdout = std::io::stdout();
     let mut out = BufWriter::new(stdout.lock());
     // A closed pipe (fzf/lf/head stopped reading) is a normal exit, not an error.
-    if let Err(e) = paint(&mut out, &preview, color, args.width).and_then(|_| Ok(out.flush()?)) {
+    if let Err(e) = paint(&mut out, &preview, color, width).and_then(|_| Ok(out.flush()?)) {
         if let Some(io) = e.downcast_ref::<std::io::Error>() {
             if io.kind() == std::io::ErrorKind::BrokenPipe {
                 return Ok(());
@@ -89,7 +98,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn paint(out: &mut impl Write, preview: &Preview, color: bool, width: Option<u32>) -> Result<()> {
+fn paint(out: &mut impl Write, preview: &Preview, color: bool, width: u32) -> Result<()> {
     match &preview.content {
         PreviewContent::Text { lines, language } => {
             for line in lines {
@@ -123,8 +132,7 @@ fn paint(out: &mut impl Write, preview: &Preview, color: bool, width: Option<u32
             format,
             fields,
         } => {
-            let cols = width.unwrap_or_else(term_width).max(2);
-            paint_halfblocks(out, image, cols, color)?;
+            paint_halfblocks(out, image, width, color)?;
             writeln!(out, "{format} · {original_width}×{original_height}")?;
             paint_fields(out, fields, color)?;
         }
@@ -142,8 +150,7 @@ fn paint(out: &mut impl Write, preview: &Preview, color: bool, width: Option<u32
         }
         PreviewContent::Metadata { fields, thumbnail } => {
             if let Some(thumb) = thumbnail {
-                let cols = width.unwrap_or_else(term_width).max(2);
-                paint_halfblocks(out, thumb, cols.min(40), color)?;
+                paint_halfblocks(out, thumb, width.min(40), color)?;
             }
             paint_fields(out, fields, color)?;
         }
@@ -251,12 +258,33 @@ fn paint_fields(out: &mut impl Write, fields: &[sekio_core::MetaField], color: b
     Ok(())
 }
 
-fn term_width() -> u32 {
-    // Portable enough without a crate: honor $COLUMNS, else 80.
-    std::env::var("COLUMNS")
-        .ok()
-        .and_then(|c| c.parse().ok())
-        .unwrap_or(80)
+/// Columns the terminal actually has, or `None` when there is no terminal to
+/// ask (a cron job, a `sekio x.xlsx > out.txt` with no tty anywhere).
+///
+/// `$COLUMNS` alone is not enough now that this number decides the table
+/// layout too: it is a shell *variable*, not an exported one, so a child
+/// process almost never sees it. crossterm asks the tty directly and falls back
+/// to `$COLUMNS` only when it cannot.
+fn term_width() -> Option<u32> {
+    if let Ok((columns, _)) = crossterm::terminal::size() {
+        if columns > 0 {
+            return Some(u32::from(columns));
+        }
+    }
+    std::env::var("COLUMNS").ok().and_then(|c| c.parse().ok())
+}
+
+/// The one width the whole preview is laid out for.
+///
+/// `--width` wins when it is given — that is the pane width the fzf/lf/yazi
+/// recipes pass, and a preview pane is narrower than its terminal. Otherwise
+/// the terminal's own width, and 80 when there is no terminal to ask.
+///
+/// Pure so the precedence is testable without a tty; the floor keeps the
+/// halfblock resizer off a zero-width image.
+fn resolve_width(explicit: Option<u32>, terminal: Option<u32>) -> u32 {
+    const FALLBACK: u32 = 80;
+    explicit.or(terminal).unwrap_or(FALLBACK).max(2)
 }
 
 fn human_size(bytes: u64) -> String {
@@ -271,5 +299,51 @@ fn human_size(bytes: u64) -> String {
         format!("{bytes} B")
     } else {
         format!("{size:.1} {}", UNITS[unit])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_clap_definition_is_well_formed() {
+        use clap::CommandFactory;
+        Args::command().debug_assert();
+    }
+
+    /// `--width` is the pane width the integration recipes pass, and it now
+    /// governs the table layout as well as the image scaling — so it has to
+    /// beat the terminal's own width, which is bigger than the pane.
+    #[test]
+    fn an_explicit_width_beats_the_terminal() {
+        assert_eq!(resolve_width(Some(62), Some(200)), 62);
+        assert_eq!(resolve_width(Some(62), None), 62);
+    }
+
+    #[test]
+    fn without_the_flag_the_terminal_decides() {
+        assert_eq!(resolve_width(None, Some(200)), 200);
+        // Nothing to ask (no tty, no $COLUMNS): the classic default.
+        assert_eq!(resolve_width(None, None), 80);
+    }
+
+    /// A zero or one column width would make the halfblock resizer produce a
+    /// zero-width image; core clamps its own layout separately.
+    #[test]
+    fn absurd_widths_are_floored() {
+        assert_eq!(resolve_width(Some(0), None), 2);
+        assert_eq!(resolve_width(None, Some(1)), 2);
+    }
+
+    /// The flag reaches core as a hint, so the same number lays the table out.
+    #[test]
+    fn the_width_becomes_the_layout_hint() {
+        let width = resolve_width(Some(140), None);
+        let opts = PreviewOptions {
+            text_width: Some(width as usize),
+            ..Default::default()
+        };
+        assert_eq!(opts.line_width(), 140);
     }
 }

@@ -230,6 +230,10 @@ fn start_preview(
             path: path.to_path_buf(),
             cancel,
             kind: worker::Kind::Preview,
+            // Fired before the window exists, so there is no width to measure
+            // yet: core lays out for `DEFAULT_TEXT_WIDTH`, and the first frame
+            // re-requests if the real text area turns out to differ.
+            text_width: None,
         });
         timing.log("first request queued");
     }
@@ -484,6 +488,8 @@ fn probe_daemon(
                     path: path.clone(),
                     cancel,
                     kind: worker::Kind::Preview,
+                    // `--daemon` with no window attached: nothing to measure.
+                    text_width: None,
                 });
                 let outcome = match worker.wait() {
                     Some(response) if tracker.accept(response.id) => {

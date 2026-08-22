@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
-use egui::{RichText, TextureHandle, TextureOptions, Vec2, ViewportCommand};
-use sekio_core::{ListEntry, MetaField, PreviewContent};
+use egui::{FontId, RichText, TextureHandle, TextureOptions, Vec2, ViewportCommand};
+use sekio_core::{ListEntry, MetaField, PreviewContent, Reflow};
 
 use crate::browser::{self, Activate, Browser};
 use crate::dialog;
@@ -27,6 +27,19 @@ use sekio_core::paths;
 const ZOOM_STEP: f32 = 1.25;
 const ZOOM_MIN: f32 = 0.05;
 const ZOOM_MAX: f32 = 20.0;
+
+/// How many characters the text area has to gain or lose before the preview is
+/// worth laying out again. Under four characters the difference is at most a
+/// character or two spread over a handful of columns — invisible — while a
+/// one-character threshold would fire on almost every frame of a window drag.
+/// At `MONO_SIZE` four characters is roughly 30 px.
+const REFLOW_THRESHOLD: usize = 4;
+
+/// How long a new width has to hold still before we act on it. Long enough
+/// that dragging a window edge across half a screen costs one render rather
+/// than one per frame, short enough that letting go of the mouse feels
+/// immediate.
+const REFLOW_SETTLE: Duration = Duration::from_millis(120);
 
 /// What the central panel is currently showing.
 enum View {
@@ -139,6 +152,14 @@ pub struct SekioApp {
     /// changes rather than stat-ing ten paths every frame.
     recent_shown: Vec<PathBuf>,
     recent_store: recent::Store,
+    /// Characters the central panel could paint on the last frame, measured
+    /// from the monospace font's own advance (see [`text_columns`]).
+    text_columns: Option<usize>,
+    /// Decides when a resize is worth re-requesting the preview for.
+    reflow: Reflow,
+    /// The in-flight preview is a re-layout of the file already on screen, so
+    /// keep painting what we have rather than flashing "loading…".
+    reflowing: bool,
 }
 
 impl SekioApp {
@@ -206,6 +227,12 @@ impl SekioApp {
             // Spawns one thread and returns; the list arrives on whichever
             // frame the read finishes, so the home screen paints immediately.
             recent_store: recent::Store::spawn(ctx.clone()),
+            // Nothing has been laid out yet: `Reflow` starts at core's default
+            // width, which is exactly what the first request (issued before
+            // this window existed, with no hint) is rendered at.
+            text_columns: None,
+            reflow: Reflow::new(REFLOW_THRESHOLD, REFLOW_SETTLE),
+            reflowing: false,
         }
     }
 
@@ -438,12 +465,35 @@ impl SekioApp {
 
     /// Cancel whatever is in flight and ask the worker for `self.path`.
     fn request_current(&mut self) {
+        self.reflowing = false;
+        self.send_preview();
+    }
+
+    /// Re-request the file already on screen because the window changed width.
+    ///
+    /// Deliberately *not* `request_current`: the user has not navigated, so the
+    /// pane keeps painting what it has instead of flashing "loading…" behind a
+    /// drag. It still goes through `RequestTracker::begin`, so a render already
+    /// in flight is cancelled and its result discarded like any other
+    /// superseded one.
+    fn request_reflow(&mut self) {
+        self.reflowing = true;
+        self.send_preview();
+    }
+
+    fn send_preview(&mut self) {
         let (id, cancel) = self.tracker.begin();
+        // Whatever width we asked for is now the one on screen, so the next
+        // resize is measured against it.
+        if let Some(width) = self.text_columns {
+            self.reflow.issued(width);
+        }
         self.worker.request(Request {
             id,
             path: self.path.clone(),
             cancel,
             kind: Kind::Preview,
+            text_width: self.text_columns,
         });
     }
 
@@ -456,7 +506,46 @@ impl SekioApp {
             path: self.browser.dir().to_path_buf(),
             cancel,
             kind: Kind::Browse,
+            // A listing has no columns to lay out.
+            text_width: None,
         });
+    }
+
+    /// Re-request the preview when the text area has settled at a materially
+    /// different width.
+    ///
+    /// Only for text: an image or a hexdump lays out the same at any width, and
+    /// re-decoding a photo on every window drag would cost a decode, a GPU
+    /// upload and a visible flicker for nothing.
+    ///
+    /// `true` means a request went out. The clock is a parameter so the rule is
+    /// testable without an event loop.
+    fn poll_reflow(&mut self, ctx: &egui::Context, now: std::time::Instant) -> bool {
+        let Some(width) = self.text_columns else {
+            return false;
+        };
+        let reflowable = matches!(
+            &self.view,
+            View::Ready(shown) if matches!(
+                shown.loaded.preview.content,
+                PreviewContent::Text { .. }
+            )
+        );
+        if !reflowable {
+            return false;
+        }
+        if self.reflow.observe(width, now).is_some() {
+            self.request_reflow();
+            return true;
+        }
+        // egui stops painting once nothing is changing, and the last frame of a
+        // drag is exactly when the settle timer starts — so ask for one more
+        // frame after it expires, or the resize would sit there unrendered
+        // until the user happened to move the mouse.
+        if width.abs_diff(self.reflow.current()) >= REFLOW_THRESHOLD {
+            ctx.request_repaint_after(REFLOW_SETTLE);
+        }
+        false
     }
 
     fn browse(&mut self, dir: PathBuf) {
@@ -540,6 +629,7 @@ impl SekioApp {
         if !self.tracker.accept(response.id) {
             return;
         }
+        let reflowing = std::mem::take(&mut self.reflowing);
         match response.outcome {
             Outcome::Ready(loaded) => {
                 // One upload per preview; the handle lives until the next
@@ -566,8 +656,11 @@ impl SekioApp {
             }
             Outcome::Failed(message) => self.view = View::Failed(message),
             // Cancelled results are normal control flow: a newer request
-            // is already on its way, so keep showing "loading…".
-            Outcome::Cancelled => self.view = View::Loading,
+            // is already on its way, so keep showing "loading…" — or, when the
+            // cancelled render was only a re-layout of what is already on
+            // screen, keep showing that rather than blanking it.
+            Outcome::Cancelled if !reflowing => self.view = View::Loading,
+            Outcome::Cancelled => {}
         }
         ctx.send_viewport_cmd(ViewportCommand::Title(format!(
             "sekio — {}",
@@ -853,31 +946,62 @@ impl SekioApp {
             dialog_open: self.dialog_open,
         };
         let view = &mut self.view;
-        egui::CentralPanel::default()
-            .show(ui, |ui| match view {
-                View::Home => paint_home(ui, &home),
-                View::Loading => {
-                    ui.centered_and_justified(|ui| {
-                        ui.label(RichText::new("loading…").color(style::DIM));
-                    });
-                    None
-                }
-                // A failed preview is a message in the window, never a crash;
-                // the header still names the file it belongs to.
-                View::Failed(message) => {
-                    let color = ui.visuals().error_fg_color;
-                    ui.centered_and_justified(|ui| {
-                        ui.label(RichText::new(format!("cannot preview: {message}")).color(color));
-                    });
-                    None
-                }
-                View::Ready(shown) => {
-                    paint_content(ui, shown, zoom);
-                    None
+        // How wide the preview surface really is, in characters. Measured here
+        // rather than from the window, because the browser pane and the
+        // scrollbar both eat into it.
+        let mut columns = None;
+        let action = egui::CentralPanel::default()
+            .show(ui, |ui| {
+                columns = Some(text_columns(ui));
+                match view {
+                    View::Home => paint_home(ui, &home),
+                    View::Loading => {
+                        ui.centered_and_justified(|ui| {
+                            ui.label(RichText::new("loading…").color(style::DIM));
+                        });
+                        None
+                    }
+                    // A failed preview is a message in the window, never a
+                    // crash; the header still names the file it belongs to.
+                    View::Failed(message) => {
+                        let color = ui.visuals().error_fg_color;
+                        ui.centered_and_justified(|ui| {
+                            ui.label(
+                                RichText::new(format!("cannot preview: {message}")).color(color),
+                            );
+                        });
+                        None
+                    }
+                    View::Ready(shown) => {
+                        paint_content(ui, shown, zoom);
+                        None
+                    }
                 }
             })
-            .inner
+            .inner;
+        self.text_columns = columns;
+        action
     }
+}
+
+/// How many monospace characters fit across `ui`.
+///
+/// Measured from the font itself: `glyph_width` is the advance epaint will
+/// actually lay the galley out with, so this stays right if the font or
+/// [`MONO_SIZE`] ever changes — which a pixels-per-character constant would
+/// not. `'0'` is representative because the face is monospace: every glyph in
+/// it has the same advance.
+fn text_columns(ui: &egui::Ui) -> usize {
+    let advance = ui
+        .ctx()
+        .fonts_mut(|f| f.glyph_width(&FontId::monospace(MONO_SIZE), '0'));
+    if !advance.is_finite() || advance <= 0.0 {
+        return sekio_core::DEFAULT_TEXT_WIDTH;
+    }
+    // Leave the vertical scrollbar its lane, so a table that only just fits
+    // does not also raise a horizontal one.
+    let usable = ui.available_width() - ui.spacing().scroll.bar_width - 2.0;
+    (usable / advance).floor().clamp(1.0, 4096.0) as usize
 }
 
 struct Keys {
@@ -923,6 +1047,9 @@ impl eframe::App for SekioApp {
         self.handle_close_request(ctx);
         self.handle_keys(ctx);
         self.handle_wheel_zoom(ctx);
+        // Last, and against the width the previous frame measured: a window
+        // that has settled at a new size needs the preview laid out for it.
+        self.poll_reflow(ctx, std::time::Instant::now());
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
