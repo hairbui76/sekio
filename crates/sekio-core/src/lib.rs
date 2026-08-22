@@ -3,10 +3,12 @@
 
 mod cancel;
 mod detect;
+pub mod paths;
 mod render;
 
 pub use cancel::CancelToken;
 pub use detect::Detected;
+pub use paths::{canonical, plain};
 
 use std::path::Path;
 

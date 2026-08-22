@@ -17,12 +17,12 @@ use crate::browser::{self, Activate, Browser};
 use crate::dialog;
 use crate::fonts;
 use crate::hotkey::{self, Action as PressAction};
-use crate::paths;
 use crate::recent::{self, Recent};
 use crate::state::{close_action, human_size, Close, Mode, RequestTracker, Siblings};
 use crate::style::{self, MONO_SIZE};
 use crate::timing::Timing;
 use crate::worker::{Kind, Loaded, Outcome, Request, Response, Worker};
+use sekio_core::paths;
 
 const ZOOM_STEP: f32 = 1.25;
 const ZOOM_MIN: f32 = 0.05;

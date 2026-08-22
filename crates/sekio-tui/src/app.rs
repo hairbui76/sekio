@@ -412,7 +412,10 @@ pub fn start_location(path: &Path) -> std::io::Result<(PathBuf, Option<String>)>
 }
 
 fn absolutise(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    // Through core rather than `fs::canonicalize` directly: on Windows the raw
+    // call returns a verbatim `\\?\C:\...` path, and this one is rendered in
+    // the pane header.
+    sekio_core::paths::canonical(path).unwrap_or_else(|_| sekio_core::paths::plain(path))
 }
 
 #[cfg(test)]

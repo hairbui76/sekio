@@ -46,6 +46,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context as _, Result};
 use clap::Parser;
+use sekio_core::paths;
 use sekio_core::PreviewOptions;
 
 use sekio_gui::app::{SekioApp, Startup};
@@ -54,7 +55,7 @@ use sekio_gui::daemon;
 use sekio_gui::state::{Mode, RequestTracker};
 use sekio_gui::timing::Timing;
 use sekio_gui::worker::Worker;
-use sekio_gui::{console, dialog, hotkey, paths, recent, selection, worker};
+use sekio_gui::{console, dialog, hotkey, recent, selection, worker};
 
 /// sekio — instant preview popup for any file.
 #[derive(Parser)]

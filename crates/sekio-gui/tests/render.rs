@@ -1385,7 +1385,7 @@ fn the_window_never_paints_a_windows_verbatim_path_prefix() {
     // What `Path::canonicalize` hands back on Windows. `paths::plain` is the
     // one place that rewrites it, and it works on the string form, so this
     // runs the same on either host.
-    let previewed = sekio_gui::paths::plain(Path::new(r"\\?\C:\Users\Admin\Downloads\note.txt"));
+    let previewed = sekio_core::paths::plain(Path::new(r"\\?\C:\Users\Admin\Downloads\note.txt"));
     assert_eq!(
         previewed,
         PathBuf::from(r"C:\Users\Admin\Downloads\note.txt")
@@ -1408,7 +1408,7 @@ fn the_window_never_paints_a_windows_verbatim_path_prefix() {
 /// paths, trailing dots) live beside the helper in `src/paths.rs`.
 #[test]
 fn the_verbatim_prefix_helper_handles_both_platforms_shapes_on_either_host() {
-    use sekio_gui::paths::strip_verbatim;
+    use sekio_core::paths::strip_verbatim;
 
     assert_eq!(strip_verbatim(r"\\?\C:\x"), r"C:\x");
     assert_eq!(strip_verbatim(r"\\?\UNC\srv\share"), r"\\srv\share");
