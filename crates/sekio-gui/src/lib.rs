@@ -10,6 +10,7 @@
 
 pub mod app;
 pub mod browser;
+pub mod console;
 #[cfg(unix)]
 pub mod daemon;
 pub mod dialog;

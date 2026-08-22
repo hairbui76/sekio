@@ -29,6 +29,18 @@
 //! "spacebar" flows call `sekio-gui <path>`, which is the fast path above on
 //! Linux and a plain process spawn on Windows, where a shell hook resolves the
 //! selection instead.
+//!
+//! Windows note: this is a *windowed* binary, so clicking it opens the app and
+//! nothing else — no console window beside it. The console-shaped entry points
+//! above still print, because the first thing `main` does is reattach to the
+//! terminal that started the process when there is one. `console.rs` explains
+//! both halves; the attribute below is the half that removes the window.
+
+// Declared unconditionally, and not as the usual
+// `cfg_attr(not(debug_assertions), ...)`: users run release builds, so the
+// conditional form would leave the stray console exactly where it is for
+// everyone who is not building this themselves. Nothing on Linux reads it.
+#![windows_subsystem = "windows"]
 
 use std::path::{Path, PathBuf};
 
@@ -42,7 +54,7 @@ use sekio_gui::daemon;
 use sekio_gui::state::{Mode, RequestTracker};
 use sekio_gui::timing::Timing;
 use sekio_gui::worker::Worker;
-use sekio_gui::{dialog, hotkey, paths, recent, selection, worker};
+use sekio_gui::{console, dialog, hotkey, paths, recent, selection, worker};
 
 /// sekio — instant preview popup for any file.
 #[derive(Parser)]
@@ -104,6 +116,11 @@ struct Args {
 type Binding = Option<(String, hotkey::HotKey)>;
 
 fn main() -> Result<()> {
+    // Before anything that can print, which on Windows means before
+    // `Args::parse()`: `--help`, `--version` and clap's usage errors are all
+    // written from inside it, and until this runs a windows-subsystem process
+    // has no standard handles to write them to. A no-op on Linux.
+    let output = console::attach();
     let args = Args::parse();
     let timing = Timing::start(args.timing);
     // A `--hotkey` that cannot be parsed is a startup error in every mode,
@@ -111,7 +128,7 @@ fn main() -> Result<()> {
     let binding = binding(&args)?;
 
     if args.doctor {
-        doctor(&args, binding.as_ref())
+        doctor(&args, binding.as_ref(), output)
     } else if args.daemon {
         run_daemon(args, binding, timing)
     } else {
@@ -554,9 +571,14 @@ fn hint(lines: &[&str]) {
 ///
 /// Exits 0 whatever it finds — this is a report, not a test — and every row
 /// that says "no" is followed by the next thing to try.
-fn doctor(args: &Args, binding: Option<&(String, hotkey::HotKey)>) -> Result<()> {
+fn doctor(
+    args: &Args,
+    binding: Option<&(String, hotkey::HotKey)>,
+    output: console::Attached,
+) -> Result<()> {
     println!("sekio-gui {} — doctor", env!("CARGO_PKG_VERSION"));
     println!();
+    doctor_console(output);
     doctor_selection();
     println!();
     // Asked first: a daemon that is running is the most likely owner of the
@@ -569,6 +591,29 @@ fn doctor(args: &Args, binding: Option<&(String, hotkey::HotKey)>) -> Result<()>
     doctor_daemon(running);
     Ok(())
 }
+
+/// Where this report is going — a question only Windows can get wrong.
+///
+/// A windowed binary has no console of its own, so `--doctor` printing nothing
+/// is a real thing that can happen there, and this row says whether it did.
+/// Prints nothing on any other platform, where the answer has always been "the
+/// terminal you ran it in" and a row saying so would be noise.
+#[cfg(windows)]
+fn doctor_console(output: console::Attached) {
+    println!("console");
+    row("output", console::describe(output));
+    if output != console::Attached::Parent {
+        hint(&[
+            "nothing is reading this. Run `sekio-gui --doctor` from",
+            "PowerShell, cmd or Windows Terminal — started from there, the",
+            "app reattaches to that window and prints into it.",
+        ]);
+    }
+    println!();
+}
+
+#[cfg(not(windows))]
+fn doctor_console(_output: console::Attached) {}
 
 /// Whether "Open file…" will show a native dialog here, and what it looked at.
 ///

@@ -45,13 +45,20 @@ rfd = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.3"
 
-# Reading the file manager's current selection. On Windows this is a COM call
-# into Explorer; on Linux there is no universal API, so the fallbacks live
-# behind the same trait (see src/selection/).
+# Two Windows-only jobs. Reading the file manager's current selection: on
+# Windows that is a COM call into Explorer, while on Linux there is no
+# universal API, so the fallbacks live behind the same trait (see
+# src/selection/). And reattaching a windowed binary to the console that
+# launched it, so `--doctor` still prints (see src/console.rs).
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
+    # HANDLE itself, and GetHandleInformation — which is how a standard handle
+    # that was never set up is told from one the shell redirected.
     "Win32_Foundation",
     "Win32_System_Com",
+    # AttachConsole/GetStdHandle/SetStdHandle: what lets a windows-subsystem
+    # binary print to the terminal that launched it instead of nowhere at all.
+    "Win32_System_Console",
     # IShellBrowser, IFolderView2 and VARIANT itself are all gated behind this;
     # without it there is no path from a window handle to a shell selection.
     "Win32_System_Ole",
