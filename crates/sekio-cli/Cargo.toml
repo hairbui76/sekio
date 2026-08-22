@@ -98,6 +98,7 @@ assets = [
     # Not enabled by a postinst on purpose — see the systemd-units note below.
     ["../../packaging/systemd/sekio.service", "usr/lib/systemd/user/", "644"],
     ["../../README.md", "usr/share/doc/sekio/README.md", "644"],
+    ["../../docs/guide.md", "usr/share/doc/sekio/guide.md", "644"],
     ["../../docs/integration.md", "usr/share/doc/sekio/integration.md", "644"],
     ["../../docs/desktop.md", "usr/share/doc/sekio/desktop.md", "644"],
 ]
@@ -133,6 +134,7 @@ assets = [
     { source = "packaging/sekio.desktop", dest = "/usr/share/applications/sekio.desktop", mode = "644" },
     { source = "packaging/systemd/sekio.service", dest = "/usr/lib/systemd/user/sekio.service", mode = "644" },
     { source = "README.md", dest = "/usr/share/doc/sekio/README.md", mode = "644", doc = true },
+    { source = "docs/guide.md", dest = "/usr/share/doc/sekio/guide.md", mode = "644", doc = true },
     { source = "docs/integration.md", dest = "/usr/share/doc/sekio/integration.md", mode = "644", doc = true },
     { source = "docs/desktop.md", dest = "/usr/share/doc/sekio/desktop.md", mode = "644", doc = true },
     { source = "LICENSE-MIT", dest = "/usr/share/licenses/sekio/LICENSE-MIT", mode = "644", doc = true },

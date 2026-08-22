@@ -3990,7 +3990,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "sekio-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4000,7 +4000,7 @@ dependencies = [
 
 [[package]]
 name = "sekio-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "calamine",
  "chardetng",
@@ -4024,7 +4024,7 @@ dependencies = [
 
 [[package]]
 name = "sekio-gui"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4041,7 +4041,7 @@ dependencies = [
 
 [[package]]
 name = "sekio-tui"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
