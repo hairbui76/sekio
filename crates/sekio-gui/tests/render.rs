@@ -1395,10 +1395,13 @@ fn the_window_never_paints_a_windows_verbatim_path_prefix() {
     ui.run();
     ui.deliver(FIRST, &previewed, text_content());
 
-    ui.assert_shows(
-        r"C:\Users\Admin\Downloads\note.txt",
-        "the path in the header",
-    );
+    // Only the negative is asserted about the frame. The header paints the
+    // file *name*, not the whole path, so asserting the full path appears is
+    // wrong on Windows and passes on Linux only because Linux cannot split a
+    // `C:\...` path into components and hands back the entire string as the
+    // file name. That host dependence is exactly the trap CLAUDE.md records;
+    // the rewrite itself is covered by the unit tests beside the helper.
+    ui.assert_shows("note.txt", "the file name in the header");
     ui.assert_hides(r"\\?\", "the extended-length prefix must never be painted");
 }
 
