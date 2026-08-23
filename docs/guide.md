@@ -160,24 +160,60 @@ built-in browser, which needs nothing installed and therefore always works.
 ### Staying resident
 
 Opening a window costs a fresh process every time. Keep one alive instead and
-each preview becomes a socket handoff of roughly five milliseconds:
+each preview becomes a handoff of roughly five milliseconds — over a Unix
+socket on Linux, a named pipe on Windows.
+
+**The installers set this up for you.** The `.deb` and `.rpm` enable the
+systemd user unit for every account, and the MSI writes one `Run` entry; either
+way a daemon is there from your next login, with a tray icon to prove it. To
+run one by hand instead — a source build, or a second one for testing:
 
 ```sh
 sekio-gui --daemon &
-
-# or, if you installed the .deb or .rpm:
-systemctl --user enable --now sekio
 ```
+
+Turning it off again:
+
+```sh
+sudo systemctl --global disable sekio   # Linux, machine-wide
+systemctl --user mask sekio             # Linux, this account only
+```
+
+On Windows, clear the checkbox during setup, or switch **sekio** off under
+Task Manager → Startup apps.
 
 The daemon is only ever an optimisation. With none running, `sekio-gui <path>`
 simply opens a window itself, and a socket left behind by a crashed daemon is
 detected and cleaned up.
 
+### The tray icon
+
+A resident daemon has no visible window, so it puts an icon in the system tray
+— that is how you know it is there, and how you reach it without one. The menu
+offers **Open a file…**, a **Recent** submenu of what you have previewed, a
+**Hotkey** submenu for changing the combination, and **Quit**.
+
+Choosing a hotkey from the menu rewrites `gui.toml` in place, so it survives a
+restart. Set `tray = false` there if you would rather not have an icon at all;
+the socket and the hotkey do not depend on it.
+
+Some sessions have nowhere to put an icon, and that is not a failure — the
+daemon carries on regardless. On Linux the icon is a StatusNotifierItem, which
+KDE, XFCE and Cinnamon host natively; **stock GNOME does not**, and needs the
+AppIndicator extension. `--doctor` reports what is hosting it, or that nothing
+is.
+
 ### The hotkey
 
 A running daemon answers a global hotkey — `Ctrl+Shift+Space` by default — and
-previews whatever your file manager currently has selected. Change it with
-`--hotkey "Super+P"`, or turn it off with `--no-hotkey`.
+previews whatever your file manager currently has selected.
+
+There are three ways to change it, and they are ranked in that order: the
+`--hotkey "Super+P"` flag, a `hotkey = "Super+P"` line in `gui.toml`, and the
+tray's **Hotkey** submenu (which writes that line for you). `--no-hotkey` turns
+it off for one run. The config file is the one that matters in practice: a
+hotkey passed as a flag has to be repeated in every autostart entry and
+shortcut that starts the daemon, and cannot be changed from the tray at all.
 
 **Why not just Space, like macOS?** Grabbing an unmodified Space globally would
 take it away from every other application on the system — you could no longer
@@ -196,6 +232,42 @@ Reading the selection also differs by platform:
 
 Linux needs `wl-clipboard`, `xclip` or `xsel` installed. `--doctor` says so when
 none is found. See [desktop.md](desktop.md) for binding it in a file manager.
+
+### Light, dark, and following the desktop
+
+The window paints in whichever mode your desktop is set to, and **changes with
+it while it is open** — switch your desktop to light and sekio is light on the
+next frame. Force one with `--theme dark`, `--theme light`, or pin the
+following-behaviour explicitly with `--theme system`.
+
+This is not one palette inverted. Syntax colours do not come from the window at
+all: they are baked into the preview by the core library, using a syntax theme
+chosen for the background they will be drawn on. Switching modes rebuilds that,
+so code is always coloured for the surface it is sitting on rather than
+washed out on the wrong one.
+
+### Configuration
+
+`sekio-gui` reads `gui.toml` from `$XDG_CONFIG_HOME/sekio/` (or `~/.config/`)
+on Linux, `%APPDATA%\sekio\` on Windows — a documented copy is
+[`gui.example.toml`](../crates/sekio-gui/gui.example.toml). Five keys:
+`hotkey`, `tray`, `theme`, `lines` and `wrap`.
+
+It is `gui.toml` and not `config.toml` because `sekio-tui` keeps its own
+`config.toml` in the same directory and the two schemas are different.
+
+Three rules worth knowing:
+
+* **Flags beat the file, the file beats the defaults.** Every setting exists at
+  all three layers, and `--doctor` prints which layer each one came from.
+* **A bad file never stops the program.** An unknown key or an unparseable
+  value is a warning on stderr; sekio starts on the layer below. A typo is
+  never silently ignored, and never fatal either.
+* **The file is the one that matters for the hotkey.** A `--hotkey` has to be
+  repeated in every autostart entry and shortcut that starts the daemon; a line
+  in `gui.toml` is read by all of them.
+
+`--config PATH` reads a different file; `--no-config` ignores every file.
 
 ## The optional formats
 

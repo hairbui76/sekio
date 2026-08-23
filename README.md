@@ -41,12 +41,19 @@ sudo dnf install ./sekio-0.8.0-1.x86_64.rpm     # Fedora / RHEL / openSUSE
 programs, adds them to `PATH`, and adds a Start Menu entry.
 
 Everything is on the [releases page](https://github.com/hairbui76/sekio/releases).
-The Linux packages also install an "Open with" desktop entry and a systemd
-**user** unit for the preview daemon, which ships disabled:
+
+All three installers set the preview daemon to start at login, so previews are
+instant and the global hotkey works from a cold desktop. It is one command, or
+one checkbox, to undo:
 
 ```sh
-systemctl --user enable --now sekio
+sudo systemctl --global disable sekio   # Linux, for everyone
+systemctl --user mask sekio             # Linux, for you only
 ```
+
+On Windows it is a single `Run` entry — clear "Start the preview daemon at
+login" during setup, or switch **sekio** off later under Task Manager →
+Startup apps. The Linux packages also install an "Open with" desktop entry.
 
 <details>
 <summary><b>Arch, or building from source</b></summary>
@@ -105,16 +112,22 @@ them, half-blocks everywhere else. Themes and limits come from
 
 <img src="assets/screenshots/gui-home.png" alt="The sekio home screen">
 
-Open a file, drop one on the window, or browse from inside it. Keep an instance
-resident and every preview becomes a socket handoff of about five milliseconds:
+Open a file, drop one on the window, or browse from inside it. It follows your
+desktop's light or dark setting and switches with it while open; `--theme
+dark|light|system` or a line in `gui.toml` overrides that.
 
-```sh
-sekio-gui --daemon &
-```
+The installers leave one resident, so every preview is a handoff of about five
+milliseconds — a Unix socket on Linux, a named pipe on Windows — and there is a
+tray icon to show it is there. Its menu opens a file, reopens a recent one and
+changes the hotkey.
 
-A resident instance also answers a global hotkey — `Ctrl+Shift+Space` by
-default — and previews whatever your file manager has selected. When that does
-nothing, `sekio-gui --doctor` reports exactly why.
+That resident instance answers a global hotkey — `Ctrl+Shift+Space` by default
+— and previews whatever your file manager has selected. When that does nothing,
+`sekio-gui --doctor` reports exactly why, line by line.
+
+Settings live in [`gui.toml`](crates/sekio-gui/gui.example.toml); flags beat the
+file, the file beats the defaults, and a bad value warns rather than refusing
+to start.
 
 ## What it previews
 
@@ -132,6 +145,10 @@ nothing, `sekio-gui --doctor` reports exactly why.
 | Video | A frame | needs ffmpeg or ffmpegthumbnailer |
 | Legacy `.doc` / `.ppt` | Converted text | needs LibreOffice |
 | Anything else | A hexdump | with the detected MIME type |
+
+Light and dark are two designs rather than one inverted: each mode highlights
+with the syntax theme drawn for its own background, so code never sits on a
+surface it was not coloured for.
 
 <img src="assets/screenshots/gui-text.png" alt="Syntax-highlighted source in the sekio window">
 

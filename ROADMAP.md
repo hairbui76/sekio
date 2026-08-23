@@ -113,8 +113,29 @@ for now); heavy dependencies are feature-gated.
 - [x] `--doctor`: reports the selection strategy, what it can currently read
       and from where, whether the hotkey parsed and actually registered, and
       whether a daemon is running — each failure with a suggested next step
-- [ ] Windows daemon mode (the socket daemon is Unix-only today; Win32 also
-      needs a message pump on the hotkey thread for `WM_HOTKEY`)
+- [x] Windows daemon mode: the same `--daemon`, over a named pipe
+      `\\.\pipe\sekio-gui-<sid>-<session>` with an SDDL DACL naming only the
+      current user's SID. `ERROR_ACCESS_DENIED` from `CreateNamedPipeW` — not
+      an "exists" error — is the already-running signal, and a busy pipe is
+      retried once through `WaitNamedPipeW` rather than blocking a popup
+- [x] Tray icon while resident: StatusNotifierItem over D-Bus on Linux
+      (`ksni`, pure Rust — `tray-icon` was rejected for reaching the tray
+      through GTK), `Shell_NotifyIcon` on Windows. Menu offers Open, Recent,
+      Hotkey and Quit; a hotkey chosen there is written back to `gui.toml`.
+      No tray host is an ordinary outcome, not a failure — stock GNOME needs
+      the AppIndicator extension, and the daemon serves its socket regardless
+- [x] Autostart on by default from all three installers: `systemctl --global
+      enable` for the systemd *user* unit from the deb/rpm maintainer scripts
+      (a root postinst cannot reach `--user`), an `HKMU\...\Run` value from
+      the MSI, offered as a checkbox and reversible in one command
+- [x] `gui.toml` (`$XDG_CONFIG_HOME/sekio/`, `%APPDATA%` on Windows):
+      `hotkey`, `tray`, `theme`, `lines`, `wrap`, with `--config` /
+      `--no-config`. Same precedence rules as the TUI's, and writable — the
+      tray's hotkey choice is persisted through it in place, comments kept
+- [x] Light / dark / system theme, following the desktop live. Not one palette
+      inverted: each mode also picks the syntax theme drawn for its own
+      background (core's `base16-ocean.dark`, `Catppuccin Latte` for light),
+      so the worker rebuilds its `Previewer` on a switch
 - [ ] Verify Wayland and X11 on a real desktop — this machine is headless, so
       only the no-display paths have been exercised
 

@@ -4,18 +4,40 @@
 Quick Look feel — select a file, press space, see it — you bind that command
 to a key in your file manager.
 
-Start the daemon once per session first, or every press pays for a fresh
-process:
+A resident daemon is what makes the press feel instant: with one running it
+is a ~5 ms socket handoff, without one the same command still works but pays
+for a fresh process every time.
+
+**Installed from a .deb or .rpm, you already have one.** The package enables
+the systemd user unit for every account, so the daemon starts at your next
+login and a tray icon appears to prove it. Nothing more to do.
+
+To start it in the session you are in right now, without logging out:
+
+```sh
+systemctl --user start sekio
+```
+
+To turn it off for everyone on the machine:
+
+```sh
+sudo systemctl --global disable sekio
+```
+
+To turn it off for yourself only, leaving it on for everyone else:
+
+```sh
+systemctl --user mask sekio
+```
+
+Built from source, there is no package to do this for you. Either run it by
+hand:
 
 ```sh
 sekio-gui --daemon &
 ```
 
-With the daemon running a press is a ~5 ms socket handoff. Without it, the
-same command still works; it just starts a new process each time.
-
-To start the daemon automatically, drop this in
-`~/.config/autostart/sekio-daemon.desktop`:
+or drop this in `~/.config/autostart/sekio-daemon.desktop`:
 
 ```ini
 [Desktop Entry]
