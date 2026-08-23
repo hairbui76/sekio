@@ -169,10 +169,16 @@ installed. Windows needs none of this — Explorer answers directly.
 - [x] Release workflow: x86_64 Linux and Windows. aarch64 was dropped — it
       cross-compiled without the GUI, so it shipped two of three binaries
 - [x] Latency benchmark (`cargo run --release -p sekio-core --example bench`)
-- [x] Packaging templates: AUR `PKGBUILD`, `sekio.desktop`, Scoop manifest
-      with autoupdate, and the winget process (`packaging/README.md`). All
-      carry placeholder owner/hashes until the first release exists.
-- [ ] Publish the first tagged release and fill in the real URLs and checksums
+- [x] Packaging: deb, rpm and msi built in CI, plus an AUR `PKGBUILD`,
+      `sekio.desktop` and the winget process (`packaging/README.md`). The
+      Scoop manifest and `install.sh` were dropped with the portable
+      tar.gz/zip archives — both existed only to fetch assets that are no
+      longer published, so `cargo install` covers what the three installers
+      do not.
+- [x] Publish tagged releases with real URLs. `v0.10.0` ships deb, rpm and
+      msi plus their `.sha256` files; the AUR `PKGBUILD` keeps
+      `sha256sums=('SKIP')` deliberately, so a release needs no follow-up
+      hash commit
 - [ ] Publish `sekio-core` to crates.io once the IR stabilizes
 
 ## Known performance notes
@@ -217,14 +223,13 @@ Remaining ideas, roughly in order of value:
 
 ## Blocked on things a build machine can't provide
 
-The four unchecked items above are not skipped work — each needs something
+The three unchecked items above are not skipped work — each needs something
 this environment doesn't have:
 
 | Item | Needs |
 |---|---|
 | Windows Explorer spacebar hook | A Windows machine to develop and test a shell extension. `docs/desktop.md` documents an AutoHotkey workaround meanwhile. |
-| Wayland/X11 verification | A real display server. Only the no-display error path has been exercised here; the GUI's own logic is covered by 34 headless tests plus `--probe`. |
-| First tagged release | A pushed `v*` tag and its build artifacts. Manifests in `packaging/` carry placeholder checksums until those exist. |
+| Wayland/X11 verification | A real display server. Only the no-display error path has been exercised here; the GUI's own logic is covered by 257 headless tests plus `--probe`. |
 | crates.io publish | Credentials, and a decision that `PreviewContent` is stable. It has changed twice already (adding `Metadata`, then `Image.fields`), so this should wait. |
 
 ## Non-goals (for now)
