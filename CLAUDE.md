@@ -20,6 +20,13 @@ cargo run --release -p sekio-core --example bench   # preview latency per format
 cargo check --target x86_64-pc-windows-msvc --workspace   # verify Windows from Linux
 ```
 
+CI pins `dtolnay/rust-toolchain@stable`, which is ahead of this machine's
+toolchain (`rustc --version` locally vs. whatever stable is today). New clippy
+lints therefore fail CI while passing here — `chunks_exact_to_as_chunks` did
+exactly that. A clean local clippy is necessary but not sufficient; if CI trips
+a lint you have never seen, that is why, and the fix is the lint's own
+suggestion rather than an `allow`.
+
 CI sets `RUSTFLAGS: -D warnings`, so a warning fails the build there but not
 locally. Before pushing, mirror it — especially for the Windows target, where
 `#[cfg]`-gated code produces dead-code warnings that never appear on Linux:

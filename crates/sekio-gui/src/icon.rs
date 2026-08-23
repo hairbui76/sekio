@@ -130,7 +130,13 @@ mod tests {
     #[test]
     fn embedded_icon_has_both_opaque_and_transparent_pixels() {
         let icon = load().expect("the compiled-in icon must decode");
-        let alpha: Vec<u8> = icon.rgba.chunks_exact(4).map(|px| px[3]).collect();
+        let alpha: Vec<u8> = icon
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|px| px[3])
+            .collect();
         assert!(alpha.contains(&0), "no transparent background");
         assert!(alpha.iter().any(|&a| a > 250), "nothing opaque was drawn");
     }
