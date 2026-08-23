@@ -47,6 +47,12 @@ egui = { workspace = true }
 # XGrabKey) behind one API, so the daemon can be summoned from anywhere.
 global-hotkey = "0.8"
 rfd = { workspace = true }
+# The config file. Same pair, same versions and same reasoning as
+# `sekio-tui`: both are pure Rust, so the no-C-toolchain rule holds, and the
+# GUI needs a *writable* config because the tray persists a hotkey change
+# through it.
+serde = { version = "1", features = ["derive"] }
+toml = "1"
 
 # Unix only, and only for the single-instance daemon: `std` cannot install a
 # signal handler at all, so this is what lets SIGTERM/SIGINT unlink the socket
@@ -55,6 +61,15 @@ rfd = { workspace = true }
 # and already in this workspace's lockfile via crossterm.
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.3"
+# The Linux tray, as StatusNotifierItem over D-Bus. Pure Rust on purpose:
+# tray-icon reaches the tray through libappindicator via GTK, and a C
+# dependency would break the rule that keeps the Windows cross-check working.
+# `blocking`: a pure code gate (ksni declares it `blocking = []`, so the
+# lockfile is bit-identical with and without it), and the only usable shape
+# here. The default `tokio` feature leaves `TrayMethods::spawn` async with a
+# `tokio::spawn` inside, which panics outside a runtime — and sekio-gui has no
+# tokio dependency to give it one.
+ksni = { version = "0.3", features = ["blocking"] }
 
 # The Windows icon resource, and nothing else. Under `[target.'cfg(windows)']`
 # rather than a plain `[build-dependencies]` because for *build* dependencies
@@ -95,6 +110,23 @@ windows = { version = "0.62", features = [
     # without it there is no path from a window handle to a shell selection.
     "Win32_System_Ole",
     "Win32_System_Variant",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    # ConvertStringSecurityDescriptorToSecurityDescriptorW / ConvertSidToStringSidW:
+    # the daemon's named pipe is created with an SDDL DACL naming the current
+    # user's SID, which is what keeps another account off it.
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    # GetModuleHandleW, for the tray's window class. One call, but a declared
+    # feature beats a hand-written `link!` import: this is the binding the
+    # crate is built to hand out, and features here are pure cfg gates over
+    # pre-generated code — the lockfile does not move.
+    "Win32_System_LibraryLoader",
+    "Win32_System_Pipes",
+    # ReadFile/WriteFile/ConnectNamedPipe are all gated behind this: their
+    # signatures name OVERLAPPED even when, as here, it is always NULL.
+    "Win32_System_IO",
+    "Win32_System_Threading",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }

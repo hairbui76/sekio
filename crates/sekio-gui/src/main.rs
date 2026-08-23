@@ -13,7 +13,7 @@
 //!   it must never be an error.
 //! * `sekio-gui <path>` — open a window on that path.
 //! * `sekio-gui --daemon` — stay resident with the window hidden, waiting for
-//!   paths on a Unix socket (see `daemon.rs`). Linux/Unix only.
+//!   paths on a Unix socket (Linux) or a named pipe (Windows) — see `daemon/`.
 //! * `sekio-gui --daemon --hotkey <SPEC>` — the same, plus a global hotkey that
 //!   previews whatever is selected right now (see `hotkey.rs`). A hotkey that
 //!   cannot be grabbed is a warning, never a reason not to start.
@@ -47,15 +47,15 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context as _, Result};
 use clap::Parser;
 use sekio_core::paths;
-use sekio_core::PreviewOptions;
 
 use sekio_gui::app::{SekioApp, Startup};
-#[cfg(unix)]
+use sekio_gui::config::{self, Settings};
 use sekio_gui::daemon;
 use sekio_gui::state::{Mode, RequestTracker};
+use sekio_gui::style::{self, Theme};
 use sekio_gui::timing::Timing;
 use sekio_gui::worker::Worker;
-use sekio_gui::{console, dialog, hotkey, icon, recent, selection, worker};
+use sekio_gui::{console, dialog, hotkey, icon, recent, selection, tray, worker};
 
 /// sekio — instant preview popup for any file.
 #[derive(Parser)]
@@ -64,13 +64,34 @@ struct Args {
     /// File or directory to preview [default: open the home screen]
     path: Option<PathBuf>,
 
-    /// Max lines of text to render
-    #[arg(long, default_value_t = 500)]
-    lines: usize,
+    /// Max lines of text to render [default: 500]
+    ///
+    /// Deliberately without a clap default: with one, "the user typed --lines
+    /// 500" and "clap filled in 500" are the same value, and a `lines` in the
+    /// config file would be silently clobbered by a default nobody typed. The
+    /// three layers meet in `config::resolve` instead.
+    #[arg(long)]
+    lines: Option<usize>,
 
     /// Wrap around at the ends when arrowing through the directory
     #[arg(long)]
     wrap: bool,
+
+    /// Colour theme: follow the desktop, or force one [default: system]
+    #[arg(long, value_enum)]
+    theme: Option<Theme>,
+
+    /// Run without a tray icon
+    #[arg(long)]
+    no_tray: bool,
+
+    /// Read this config file instead of the default location
+    #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
+    config: Option<PathBuf>,
+
+    /// Ignore any config file
+    #[arg(long)]
+    no_config: bool,
 
     /// Borderless popup window (drag the header to move it)
     #[arg(long)]
@@ -89,7 +110,8 @@ struct Args {
     probe: bool,
 
     /// Stay resident as the single instance for this session: listen on a Unix
-    /// socket and keep the window hidden until a path arrives. Linux/Unix only.
+    /// socket (Linux) or named pipe (Windows) and keep the window hidden until
+    /// a path arrives
     #[arg(long)]
     daemon: bool,
 
@@ -124,27 +146,61 @@ fn main() -> Result<()> {
     let output = console::attach();
     let args = Args::parse();
     let timing = Timing::start(args.timing);
+    // Warnings, never errors: a config file the user cannot currently fix must
+    // not stop the program starting (see `config`'s module docs, rule 2).
+    let location = config::Location::resolve(
+        args.config.clone(),
+        args.no_config,
+        config::Platform::current(),
+        |key| std::env::var_os(key),
+    );
+    let loaded = config::load(&location);
+    for warning in &loaded.warnings {
+        eprintln!("sekio-gui: {warning}");
+    }
+    let settings = config::resolve(&overrides(&args), &loaded.config);
+    timing.log("config resolved");
     // A `--hotkey` that cannot be parsed is a startup error in every mode,
     // reported before anything is bound, spawned or drawn — and never a panic.
-    let binding = binding(&args)?;
+    // Only the command line can reach here: `validate` already dropped an
+    // unusable spec from the file.
+    let binding = settings
+        .binding()
+        .map_err(|err| anyhow!("invalid --hotkey {:?}: {err}", settings.hotkey.as_deref()))?;
 
     if args.doctor {
-        doctor(&args, binding.as_ref(), output)
+        doctor(
+            &args,
+            &settings,
+            &location,
+            loaded.config.hotkey.is_some(),
+            binding.as_ref(),
+            output,
+        )
     } else if args.daemon {
-        run_daemon(args, binding, timing)
+        run_daemon(args, settings, location, binding, timing)
     } else {
-        run_once(args, timing)
+        run_once(args, settings, timing)
     }
 }
 
-/// Resolve `--hotkey` / `--no-hotkey` into the combination to grab.
-fn binding(args: &Args) -> Result<Binding> {
-    if args.no_hotkey {
-        return Ok(None);
+/// What the user actually typed, in the shape `config::resolve` merges.
+///
+/// The two negative flags are asymmetric on purpose: `--no-hotkey` has no
+/// positive counterpart (its absence is not a preference), while `--no-tray`
+/// does have one in the file, so it is an `Option<bool>` that can say "false"
+/// over a `tray = true`.
+fn overrides(args: &Args) -> config::Overrides {
+    config::Overrides {
+        hotkey: args.hotkey.clone(),
+        no_hotkey: args.no_hotkey,
+        tray: if args.no_tray { Some(false) } else { None },
+        lines: args.lines,
+        // A flag can only be present or absent; absent must defer to the file
+        // rather than override it with `false`.
+        wrap: if args.wrap { Some(true) } else { None },
+        theme: args.theme,
     }
-    let spec = args.hotkey.as_deref().unwrap_or(hotkey::DEFAULT_SPEC);
-    let key = hotkey::parse(spec).map_err(|err| anyhow!("invalid --hotkey {spec:?}: {err}"))?;
-    Ok(Some((spec.to_string(), key)))
 }
 
 /// One window, with or without a path.
@@ -154,7 +210,7 @@ fn binding(args: &Args) -> Result<Binding> {
 /// dock icon, a Start Menu entry — it opens on the home screen, which is the
 /// difference between an application and a command that fails when you click
 /// its icon.
-fn run_once(args: Args, timing: Timing) -> Result<()> {
+fn run_once(args: Args, settings: Settings, timing: Timing) -> Result<()> {
     // Canonicalized *here*, in the client: the daemon's cwd is not ours, so a
     // relative path would mean something different on the other side of the
     // socket. It also fails early, with this process's error message, if the
@@ -177,7 +233,10 @@ fn run_once(args: Args, timing: Timing) -> Result<()> {
     }
 
     let ctx = egui::Context::default();
-    let (worker, tracker) = start_preview(&ctx, &args, timing, path.as_deref());
+    // Before the worker: the theme decides which syntect theme core highlights
+    // with, and the first request is fired inside `start_preview`.
+    style::install(&ctx, settings.theme);
+    let (worker, tracker) = start_preview(&ctx, &settings, timing, path.as_deref());
 
     if args.probe {
         probe(&worker, tracker, timing, path.is_some());
@@ -196,13 +255,18 @@ fn run_once(args: Args, timing: Timing) -> Result<()> {
             tracker,
             path,
             mode,
-            wrap: args.wrap,
+            wrap: settings.wrap,
             borderless: args.borderless,
             timing,
             incoming: None,
             // A one-shot window is gone in a moment; grabbing a system-wide
             // key for its lifetime would be rude and pointless.
             presses: None,
+            // Likewise the tray: an icon that appears for the second a preview
+            // is on screen is worse than none. It belongs to the daemon.
+            tray: None,
+            hotkey_spec: None,
+            config_path: None,
         },
     )
 }
@@ -213,15 +277,14 @@ fn run_once(args: Args, timing: Timing) -> Result<()> {
 /// Nothing expensive happens on this thread before the first frame.
 fn start_preview(
     ctx: &egui::Context,
-    args: &Args,
+    settings: &Settings,
     timing: Timing,
     path: Option<&Path>,
 ) -> (Worker, RequestTracker) {
-    let opts = PreviewOptions {
-        max_lines: args.lines,
-        ..Default::default()
-    };
-    let worker = Worker::spawn(ctx.clone(), opts, timing);
+    let worker = Worker::spawn(ctx.clone(), settings.preview_options(), timing);
+    // Light mode needs core highlighting with a light syntect theme, and the
+    // first request goes out below — so the worker is told before, not after.
+    worker.set_theme(style::Palette::for_theme(ctx.theme()).syntect_theme());
     let mut tracker = RequestTracker::new();
     if let Some(path) = path {
         let (id, cancel) = tracker.begin();
@@ -358,7 +421,6 @@ fn open_window(ctx: egui::Context, startup: Startup) -> Result<()> {
 
 /// Try to let a resident daemon show `path`. `true` means it did, and this
 /// process is done.
-#[cfg(unix)]
 fn hand_off(path: &Path, timing: Timing) -> bool {
     match daemon::try_handoff(path) {
         daemon::Handoff::Delivered => {
@@ -372,19 +434,18 @@ fn hand_off(path: &Path, timing: Timing) -> bool {
     }
 }
 
-/// Non-Unix platforms have no daemon: every invocation opens its own window.
-#[cfg(not(unix))]
-fn hand_off(_path: &Path, _timing: Timing) -> bool {
-    false
-}
-
 /// Run as the single instance for this session.
 ///
 /// Binding comes first and decides everything: if another daemon owns the
 /// socket we do not fight it, we become a client (handing over `path` if we
 /// were given one) and exit.
-#[cfg(unix)]
-fn run_daemon(args: Args, binding: Binding, timing: Timing) -> Result<()> {
+fn run_daemon(
+    args: Args,
+    settings: Settings,
+    location: config::Location,
+    binding: Binding,
+    timing: Timing,
+) -> Result<()> {
     use std::sync::mpsc;
 
     let socket = daemon::socket_path();
@@ -404,7 +465,7 @@ fn run_daemon(args: Args, binding: Binding, timing: Timing) -> Result<()> {
                     // The winner of the race stopped answering in the
                     // meantime: show the file ourselves rather than silently
                     // doing nothing.
-                    return run_once(args, timing);
+                    return run_once(args, settings, timing);
                 }
             }
             return Ok(());
@@ -425,12 +486,16 @@ fn run_daemon(args: Args, binding: Binding, timing: Timing) -> Result<()> {
     };
 
     let ctx = egui::Context::default();
-    let (worker, tracker) = start_preview(&ctx, &args, timing, path.as_deref());
+    style::install(&ctx, settings.theme);
+    let (worker, tracker) = start_preview(&ctx, &settings, timing, path.as_deref());
 
     // Deliberately after the socket is bound and before anything can fail:
     // whatever the hotkey does, this daemon is already serving. A refused
     // grab prints one line and changes nothing else.
-    let presses = start_hotkey(binding, &ctx, timing);
+    // The spec comes back alongside the channel because the tray menu ticks
+    // what was *granted*, not what was asked for: a refused grab must not show
+    // as the live combination.
+    let (presses, hotkey_spec) = start_hotkey(binding, &ctx, timing);
 
     if args.probe {
         // Nothing drains the channel headlessly; dropping it lets the hotkey
@@ -446,6 +511,11 @@ fn run_daemon(args: Args, binding: Binding, timing: Timing) -> Result<()> {
         }
         return probe_daemon(&listener, &guard, &worker, tracker, timing);
     }
+
+    // After the hotkey, so the menu can tick the combination that was actually
+    // grabbed rather than the one that was asked for. `None` is ordinary: no
+    // tray host in this session, or `tray = false`.
+    let tray = start_tray(&settings, hotkey_spec.as_deref(), timing);
 
     let (tx, rx) = mpsc::channel::<PathBuf>();
     let wake = ctx.clone();
@@ -463,11 +533,17 @@ fn run_daemon(args: Args, binding: Binding, timing: Timing) -> Result<()> {
             tracker,
             path,
             mode: Mode::Daemon,
-            wrap: args.wrap,
+            wrap: settings.wrap,
             borderless: args.borderless,
             timing,
             incoming: Some(rx),
             presses,
+            tray,
+            hotkey_spec,
+            // Where the tray writes a hotkey chosen from its menu. `None` for
+            // `--no-config` or an environment with no config directory, in
+            // which case a choice lasts as long as the process.
+            config_path: location.write_target().map(Path::to_path_buf),
         },
     );
     // Explicit, so the socket is gone before the process is.
@@ -479,9 +555,8 @@ fn run_daemon(args: Args, binding: Binding, timing: Timing) -> Result<()> {
 /// line per request instead of opening a window. This is how the daemon path
 /// is exercised on a machine with no display server. Runs until killed —
 /// SIGTERM/SIGINT unlink the socket on the way out.
-#[cfg(unix)]
 fn probe_daemon(
-    listener: &std::os::unix::net::UnixListener,
+    listener: &daemon::Listener,
     guard: &daemon::SocketGuard,
     worker: &Worker,
     mut tracker: RequestTracker,
@@ -534,6 +609,40 @@ fn probe_daemon(
     Ok(())
 }
 
+/// Start the tray icon, if this session wants one and can host one.
+///
+/// Every outcome but "it appeared" is silent-but-for-a-timing-line: a daemon
+/// whose icon could not be placed is still serving its socket and still
+/// answering its hotkey, and saying so on stderr would be noise on the many
+/// desktops that simply have no tray. `--doctor` is where the answer belongs.
+fn start_tray(
+    settings: &Settings,
+    hotkey_spec: Option<&str>,
+    timing: Timing,
+) -> Option<(Box<dyn tray::Tray>, std::sync::mpsc::Receiver<tray::Event>)> {
+    if !settings.tray {
+        timing.log("tray disabled");
+        return None;
+    }
+    let menu = tray::Menu {
+        hotkey: hotkey_spec.map(str::to_owned),
+        hotkey_choices: tray::hotkey_choices(),
+        // Filled in on the first frame, once the recent-files thread has read
+        // the list — the same list the home screen shows.
+        recent: Vec::new(),
+    };
+    match tray::spawn(icon::PNG, menu) {
+        Some(started) => {
+            timing.log("tray icon shown");
+            Some(started)
+        }
+        None => {
+            timing.log("no tray host in this session");
+            None
+        }
+    }
+}
+
 /// Grab the global hotkey for this daemon.
 ///
 /// Returns the channel of resolved paths, or `None` when there is no hotkey —
@@ -542,13 +651,14 @@ fn probe_daemon(
 /// has already bound its socket by the time this runs, and it goes on serving
 /// it whatever happens here. A headless box, a Wayland-only session and a
 /// combination another application already owns all land in that branch.
-#[cfg(unix)]
 fn start_hotkey(
     binding: Binding,
     ctx: &egui::Context,
     timing: Timing,
-) -> Option<std::sync::mpsc::Receiver<PathBuf>> {
-    let (spec, key) = binding?;
+) -> (Option<std::sync::mpsc::Receiver<PathBuf>>, Option<String>) {
+    let Some((spec, key)) = binding else {
+        return (None, None);
+    };
     if let Some(warning) = hotkey::risky(&key) {
         eprintln!("sekio-gui: {warning}");
     }
@@ -562,11 +672,11 @@ fn start_hotkey(
         Some(warning) => {
             eprintln!("{warning}");
             timing.log("hotkey unavailable");
-            None
+            (None, None)
         }
         None => {
             timing.log("hotkey registered");
-            Some(hotkeys.presses)
+            (Some(hotkeys.presses), Some(spec))
         }
     }
 }
@@ -596,6 +706,9 @@ fn hint(lines: &[&str]) {
 /// that says "no" is followed by the next thing to try.
 fn doctor(
     args: &Args,
+    settings: &Settings,
+    location: &config::Location,
+    loaded_hotkey: bool,
     binding: Option<&(String, hotkey::HotKey)>,
     output: console::Attached,
 ) -> Result<()> {
@@ -607,12 +720,73 @@ fn doctor(
     // Asked first: a daemon that is running is the most likely owner of the
     // hotkey, and that changes what a failed grab below means.
     let running = daemon_running();
-    doctor_hotkey(args, binding, running);
+    doctor_hotkey(hotkey_source(args, loaded_hotkey), binding, running);
     println!();
     doctor_dialog();
     println!();
     doctor_daemon(running);
+    println!();
+    doctor_tray(settings);
+    println!();
+    doctor_config(location, settings);
     Ok(())
+}
+
+/// Whether a resident daemon would get an icon, and where it would go.
+///
+/// Started here rather than reported from a running daemon because `--doctor`
+/// is a separate process: it can only say what *this* session can host. An
+/// icon appearing for the moment this runs is the honest test, and it is
+/// removed again as the tray drops at the end of the function.
+fn doctor_tray(settings: &Settings) {
+    println!("tray");
+    if !settings.tray {
+        row("icon", "off (tray = false / --no-tray)");
+        return;
+    }
+    let probe = tray::spawn(
+        icon::PNG,
+        tray::Menu {
+            hotkey: settings.hotkey.clone(),
+            hotkey_choices: tray::hotkey_choices(),
+            recent: Vec::new(),
+        },
+    );
+    match probe {
+        Some((tray, _events)) => row("icon", format!("yes — {}", tray.describe())),
+        None => {
+            row("icon", "no — nothing in this session hosts one");
+            hint(&[
+                "the daemon runs, serves its socket and answers its hotkey",
+                "regardless; it just has nowhere to put an icon. On GNOME,",
+                "install the AppIndicator and KStatusNotifierItem extension.",
+            ]);
+        }
+    }
+}
+
+/// Which config file was read, and what came out of the three layers.
+///
+/// Worth a section of its own because the file is where the hotkey and the
+/// theme really live — a `--hotkey` has to be repeated in every autostart
+/// entry, and this is the row that says whether the file was found at all.
+fn doctor_config(location: &config::Location, settings: &Settings) {
+    println!("config");
+    match location {
+        config::Location::Disabled => row("file", "ignored (--no-config)"),
+        config::Location::Explicit(path) => row("file", format!("{} (--config)", path.display())),
+        config::Location::Default(Some(path)) => {
+            let state = if path.exists() { "read" } else { "not present" };
+            row("file", format!("{} ({state})", path.display()));
+        }
+        config::Location::Default(None) => {
+            row("file", "none — no config directory in this environment");
+            hint(&["a hotkey chosen from the tray cannot be remembered here."]);
+        }
+    }
+    row("theme", settings.theme.as_str());
+    row("lines", settings.lines);
+    row("wrap", settings.wrap);
 }
 
 /// Where this report is going — a question only Windows can get wrong.
@@ -700,7 +874,26 @@ fn doctor_selection() {
 }
 
 /// Whether the spec parsed, and whether this session will hand over the key.
-fn doctor_hotkey(args: &Args, binding: Option<&(String, hotkey::HotKey)>, running: Option<bool>) {
+/// Which of the three layers the hotkey on screen actually came from.
+///
+/// Worth printing: "it is not the combination I set" is the commonest hotkey
+/// complaint, and the answer is nearly always that a flag or a stale config
+/// file is winning over the one the user just edited.
+fn hotkey_source(args: &Args, from_file: bool) -> &'static str {
+    if args.hotkey.is_some() {
+        "--hotkey"
+    } else if from_file {
+        "config file"
+    } else {
+        "default"
+    }
+}
+
+fn doctor_hotkey(
+    source: &str,
+    binding: Option<&(String, hotkey::HotKey)>,
+    running: Option<bool>,
+) {
     println!("hotkey");
     let Some((spec, key)) = binding else {
         row("hotkey", "none (--no-hotkey)");
@@ -712,11 +905,6 @@ fn doctor_hotkey(args: &Args, binding: Option<&(String, hotkey::HotKey)>, runnin
         return;
     };
 
-    let source = if args.hotkey.is_some() {
-        "--hotkey"
-    } else {
-        "default"
-    };
     row("spec", format!("{spec} ({source})"));
     row("parsed", hotkey::describe(key));
     if let Some(warning) = hotkey::risky(key) {
@@ -765,17 +953,10 @@ fn doctor_hotkey(args: &Args, binding: Option<&(String, hotkey::HotKey)>, runnin
 
 /// Is a daemon answering on this session's socket? `None` where there is no
 /// daemon mode at all.
-#[cfg(unix)]
 fn daemon_running() -> Option<bool> {
     Some(daemon::is_running(&daemon::socket_path()))
 }
 
-#[cfg(not(unix))]
-fn daemon_running() -> Option<bool> {
-    None
-}
-
-#[cfg(unix)]
 fn doctor_daemon(running: Option<bool>) {
     println!("daemon");
     row("socket", daemon::socket_path().display());
@@ -789,25 +970,4 @@ fn doctor_daemon(running: Option<bool>) {
             "for a fresh process.",
         ]);
     }
-}
-
-/// Windows has no daemon yet; say so rather than printing a socket path that
-/// means nothing here.
-#[cfg(not(unix))]
-fn doctor_daemon(_running: Option<bool>) {
-    println!("daemon");
-    row("supported", "no — the daemon needs Unix domain sockets");
-    hint(&[
-        "on this platform every `sekio-gui <path>` opens its own window;",
-        "there is nothing resident for a hotkey to summon yet.",
-    ]);
-}
-
-/// `--daemon` is a Unix-socket feature; there is nothing to run elsewhere.
-#[cfg(not(unix))]
-fn run_daemon(_args: Args, _binding: Binding, _timing: Timing) -> Result<()> {
-    Err(anyhow!(
-        "--daemon is not supported on this platform (it needs Unix domain sockets); \
-         run `sekio-gui <path>` instead — it opens a window directly"
-    ))
 }

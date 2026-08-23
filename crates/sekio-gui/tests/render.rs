@@ -47,7 +47,12 @@ use sekio_core::{
 };
 use sekio_gui::app::{SekioApp, Startup};
 use sekio_gui::state::{Mode, RequestTracker};
-use sekio_gui::style;
+use sekio_gui::style::{self, Palette};
+
+/// The palette every test below paints in unless it says otherwise: the
+/// harness feeds egui no system theme, so `ThemePreference::System` resolves to
+/// the documented dark fallback.
+const DARK: Palette = Palette::dark();
 use sekio_gui::timing::Timing;
 use sekio_gui::worker::{self, Kind, Loaded, Outcome, Request, Response, Worker};
 
@@ -130,6 +135,11 @@ impl AppUi {
             timing: Timing::start(false),
             incoming: None,
             presses: None,
+            // No tray in a headless render: `tray::spawn` would find no host
+            // anyway, and these tests are about what gets painted.
+            tray: None,
+            hotkey_spec: None,
+            config_path: None,
         };
 
         // The app is built inside the closure because it needs the harness's
@@ -955,7 +965,7 @@ fn a_table_paints_a_grid_with_column_letters_a_row_gutter_and_rules() {
     let lines = ui.lines();
     let verticals = lines
         .iter()
-        .filter(|line| line.is_vertical() && line.color == style::FAINT)
+        .filter(|line| line.is_vertical() && line.color == DARK.faint)
         .count();
     assert!(
         verticals >= 4,
@@ -965,7 +975,7 @@ fn a_table_paints_a_grid_with_column_letters_a_row_gutter_and_rules() {
     );
     let under_header = lines
         .iter()
-        .filter(|line| line.is_horizontal() && line.color == style::FAINT)
+        .filter(|line| line.is_horizontal() && line.color == DARK.faint)
         .any(|line| line.from.y > letters[0].max.y && line.from.y < gutter[0].min.y + 4.0);
     assert!(
         under_header,
@@ -973,15 +983,15 @@ fn a_table_paints_a_grid_with_column_letters_a_row_gutter_and_rules() {
     );
 
     // Colour by `CellKind`, and chrome that does not read as data.
-    assert_eq!(ui.color_of("47.3"), style::CELL_NUMBER, "a numeric cell");
-    assert_eq!(ui.color_of("Hoạt động"), style::CELL_TEXT, "a text cell");
-    assert_eq!(ui.color_of("A"), style::DIM, "a column letter");
-    assert_eq!(ui.color_of("2"), style::DIM, "a row number");
+    assert_eq!(ui.color_of("47.3"), DARK.cell_number, "a numeric cell");
+    assert_eq!(ui.color_of("Hoạt động"), DARK.cell_text, "a text cell");
+    assert_eq!(ui.color_of("A"), DARK.dim, "a column letter");
+    assert_eq!(ui.color_of("2"), DARK.dim, "a row number");
 
     // The sheet names, with the previewed one bracketed and picked out.
     ui.assert_shows("Sheets:", "the sheet strip");
-    assert_eq!(ui.color_of("[Tong]"), style::ACTIVE, "the active sheet");
-    assert_eq!(ui.color_of("Chi tiết"), style::FAINT, "the other sheet");
+    assert_eq!(ui.color_of("[Tong]"), DARK.active, "the active sheet");
+    assert_eq!(ui.color_of("Chi tiết"), DARK.faint, "the other sheet");
     assert!(
         ui.rect_of("[Tong]").max.y <= letters[0].min.y,
         "the sheet strip must sit above the grid"
@@ -1340,7 +1350,7 @@ fn a_ragged_table_paints_what_it_has_instead_of_panicking() {
 
     ui.assert_shows("short", "a row shorter than the column list");
     ui.assert_shows("#REF!", "an error cell");
-    assert_eq!(ui.color_of("#REF!"), style::CELL_ERROR);
+    assert_eq!(ui.color_of("#REF!"), DARK.cell_error);
     // A newline inside a cell must not open a second row and push every row
     // below it out of step with the virtualiser.
     let wrapped = ui.galley_of("two lines");
@@ -1554,6 +1564,174 @@ fn a_cancelled_result_goes_back_to_loading() {
 }
 
 // ---------------------------------------------------------------------------
+// 5b. Light mode
+// ---------------------------------------------------------------------------
+//
+// The frames above all render in the dark fallback, which is what a headless
+// harness resolves `System` to. These drive the other half: the same app, the
+// same content, with egui's theme preference flipped — which is exactly what a
+// desktop switching to light mode does to a running window.
+
+impl AppUi {
+    /// Switch the whole window to the light palette, the way the desktop would.
+    ///
+    /// `set_theme` is what `style::install` calls; going through it rather than
+    /// through `SekioApp` proves the app *follows* the theme rather than
+    /// deciding it once at startup.
+    fn switch_to_light(&mut self) {
+        self.harness.ctx.set_theme(egui::ThemePreference::Light);
+        self.run();
+    }
+}
+
+/// The home screen's one-line tagline, built the way the app builds it so this
+/// file does not pin a version number.
+fn subtitle() -> String {
+    format!(
+        "quick preview for any file · v{}",
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
+#[test]
+fn a_window_opens_in_the_dark_palette_when_the_desktop_says_nothing() {
+    // No system theme reaches a headless harness, so this is the documented
+    // fallback path — and the one every other test in this file relies on.
+    let ui = home_ui();
+    assert_eq!(ui.harness.ctx.theme(), egui::Theme::Dark);
+    assert_eq!(
+        ui.color_of(&subtitle()),
+        DARK.dim,
+        "the home screen's subtitle is painted in the dark palette's dim"
+    );
+}
+
+#[test]
+fn switching_to_light_repaints_the_chrome_in_the_light_palette() {
+    let light = Palette::light();
+    let mut ui = home_ui();
+    let subtitle = subtitle();
+    assert_eq!(ui.color_of(&subtitle), DARK.dim);
+
+    ui.switch_to_light();
+
+    assert_eq!(ui.harness.ctx.theme(), egui::Theme::Light);
+    assert_eq!(
+        ui.color_of(&subtitle),
+        light.dim,
+        "a secondary label kept its dark-mode colour on a light background"
+    );
+    // The surface really did change too, not just the text on it.
+    assert!(
+        ui.fills().iter().any(|fill| fill.color == light.card),
+        "nothing on the frame is painted on the light preview surface"
+    );
+    assert!(
+        !ui.fills().iter().any(|fill| fill.color == DARK.card),
+        "a dark surface survived the switch to light mode"
+    );
+}
+
+#[test]
+fn a_light_window_paints_its_cells_in_the_light_palette() {
+    let light = Palette::light();
+    let path = PathBuf::from("/tmp/sheet.xlsx");
+    let mut ui = ui_with_path("/tmp/sheet.xlsx");
+    ui.deliver(FIRST, &path, table_content());
+    assert_eq!(ui.color_of("47.3"), DARK.cell_number);
+
+    ui.switch_to_light();
+
+    assert_eq!(
+        ui.color_of("47.3"),
+        light.cell_number,
+        "a numeric cell must not keep a dark-mode colour on a light sheet"
+    );
+    assert_eq!(ui.color_of("Hoạt động"), light.cell_text);
+    assert_eq!(ui.color_of("A"), light.dim, "a column letter");
+    assert_eq!(ui.color_of("[Tong]"), light.active, "the active sheet");
+    // The frozen strips the cells slide under are the light surface, or the
+    // grid would scroll straight through the row numbers.
+    assert!(
+        ui.fills().iter().any(|fill| fill.color == light.card),
+        "the frozen header and gutter are not painted on the light surface"
+    );
+}
+
+#[test]
+fn a_light_window_relays_out_its_text_in_the_light_palette() {
+    // The colourless spans are the ones that take the palette's own body
+    // colour; a cached `LayoutJob` that survived the switch would still be
+    // painting them in the dark one.
+    let path = PathBuf::from("/tmp/main.rs");
+    let mut ui = ui_with_path("/tmp/main.rs");
+    ui.deliver(FIRST, &path, text_content());
+
+    let plain_color = |ui: &AppUi| {
+        let body = ui.galley_of("fn main() {\n    println!(\"sekio\");\n}");
+        let job = &body.galley.job;
+        job.sections
+            .iter()
+            .find(|section| {
+                // The document's own newline carries the same format as the
+                // colourless span after it, so the two arrive as one run.
+                let range = section.byte_range.start.0..section.byte_range.end.0;
+                job.text[range].contains("println!")
+            })
+            .map(|section| section.format.color)
+            .expect("the uncoloured run")
+    };
+    assert_eq!(plain_color(&ui), DARK.text);
+
+    ui.switch_to_light();
+    assert_eq!(
+        plain_color(&ui),
+        Palette::light().text,
+        "the cached layout job kept the dark palette's body colour"
+    );
+}
+
+/// The syntax colours arrive in the IR already baked, so the *only* way a light
+/// window stops showing dark-theme code is for the preview to be rendered
+/// again. This is the request that makes that happen.
+#[test]
+fn switching_mode_re_requests_the_preview_so_the_code_colours_follow() {
+    let path = PathBuf::from("/tmp/main.rs");
+    let mut ui = ui_with_path("/tmp/main.rs");
+    ui.deliver(FIRST, &path, text_content());
+    // Whatever the first frames asked for is water under the bridge.
+    let _ = ui.requests.try_iter().count();
+
+    ui.switch_to_light();
+
+    let requests: Vec<Request> = ui
+        .requests
+        .try_iter()
+        .filter(|request| request.kind == Kind::Preview)
+        .collect();
+    assert_eq!(
+        requests.len(),
+        1,
+        "a mode switch must re-render the file on screen exactly once"
+    );
+    assert_eq!(requests[0].path, path);
+    // …and the file stays on screen while it does, rather than blanking.
+    ui.assert_shows("fn main() {", "the preview during a theme switch");
+    ui.assert_hides("loading…", "a theme switch is not a navigation");
+}
+
+#[test]
+fn the_home_screen_does_not_re_request_anything_when_the_mode_changes() {
+    let mut ui = home_ui();
+    let _ = ui.requests.try_iter().count();
+    ui.switch_to_light();
+    assert!(
+        ui.requests.try_iter().next().is_none(),
+        "there is nothing on screen to re-render"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 5. Styling survives into the layout
 // ---------------------------------------------------------------------------
 
@@ -1607,7 +1785,7 @@ fn bold_coloured_and_italic_spans_keep_their_attributes_in_the_painted_galley() 
     assert_eq!(plain_run.color, Color32::from_rgb(200, 200, 200));
     assert_eq!(
         bold_run.color,
-        style::brighten(Color32::from_rgb(200, 200, 200)),
+        style::brighten(Color32::from_rgb(200, 200, 200), egui::Theme::Dark),
         "bold is painted as a lifted colour (egui's bundled fonts have no bold face)"
     );
     assert!(

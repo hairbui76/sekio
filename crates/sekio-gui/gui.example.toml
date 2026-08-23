@@ -1,0 +1,72 @@
+## sekio-gui configuration.
+##
+## Copy this file to:
+##   Linux:    $XDG_CONFIG_HOME/sekio/gui.toml
+##             (or ~/.config/sekio/gui.toml when XDG_CONFIG_HOME is unset)
+##   Windows:  %APPDATA%\sekio\gui.toml
+##
+## It is called gui.toml, not config.toml, because sekio-tui keeps its own
+## config.toml in the same sekio/ directory and the two schemas are different.
+##
+## Every key is optional; a partial file is fine, and so is no file at all.
+## Unknown keys are an error (reported on stderr, with sekio-gui still starting
+## on the built-in defaults), so a typo is never silently ignored.
+##
+## Precedence: command-line flags > this file > built-in defaults.
+##
+## Only settings that are worth keeping live here. --borderless, --timing,
+## --probe and --doctor describe a single invocation rather than a preference,
+## so they are flags only: a file that could turn --probe on permanently would
+## be a file that stops the app ever opening a window.
+##
+## Each key below is shown commented out, set to its built-in default.
+
+## The global hotkey the daemon answers to. Case-insensitive, '+'-separated,
+## modifiers first and exactly one key last: modifiers are Ctrl (Control), Alt
+## (Option), Shift and Super (Meta, Win, Cmd); keys are letters, digits, F1-F24,
+## Space, Enter, Tab, Escape, the arrows, Home/End/PageUp/PageDown,
+## Insert/Delete, the numpad keys and punctuation.
+##
+## This is the setting the file exists for: a hotkey passed as --hotkey has to be
+## repeated in every autostart entry and shortcut that starts the daemon, and
+## cannot be changed from the tray at all. Choosing it from the tray menu
+## rewrites this line in place, leaving the rest of the file — comments
+## included — alone.
+##
+## Prefer two modifiers. An unmodified key can be grabbed, and doing so takes it
+## away from every other application on the desktop. A combination another
+## program already owns is reported on stderr and simply not bound; run
+## `sekio-gui --doctor` to see which.
+##
+## Unparseable values are reported on stderr and the default is used instead.
+# hotkey = "Ctrl+Shift+Space"
+
+## Show the tray icon while running as a resident daemon (--daemon). The tray is
+## how a daemon with a hidden window proves it is there, and how the hotkey and
+## the recent files are reached without one.
+##
+## Sessions with nowhere to put an icon — headless, or GNOME without the
+## AppIndicator extension — carry on without one whatever this says; the socket
+## and the hotkey do not depend on it.
+# tray = true
+
+## Max lines of text produced per preview. The window scrolls within a preview,
+## so this is the buffer, not the visible height. Syntax highlighting is the
+## dominant cost (~70-125 us per line of Rust), so raising it is not free.
+# lines = 500
+
+## Wrap around at the ends when arrowing through a directory: past the last file
+## returns to the first. Off means the ends of the list are walls.
+# wrap = false
+
+## Which palette to paint in: "dark", "light", or "system" to follow the
+## desktop. On Linux "system" reads the XDG desktop portal's
+## org.freedesktop.appearance color-scheme setting, on Windows the app-mode
+## setting; a session that answers neither is treated as dark.
+##
+## It is followed live: switching the desktop between light and dark switches
+## sekio on the next frame, without restarting it. The syntax colours change
+## with it — a light window highlights code with a light theme.
+##
+## Unparseable values are reported on stderr and the default is used instead.
+# theme = "system"

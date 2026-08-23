@@ -14,14 +14,17 @@ use egui::{FontId, RichText, TextureHandle, TextureOptions, Vec2, ViewportComman
 use sekio_core::{ListEntry, MetaField, PreviewContent, Reflow};
 
 use crate::browser::{self, Activate, Browser};
+use crate::config;
 use crate::dialog;
 use crate::fonts;
 use crate::hotkey::{self, Action as PressAction};
 use crate::recent::{self, Recent};
+use crate::selection;
 use crate::state::{close_action, human_size, Close, Mode, RequestTracker, Siblings};
-use crate::style::{self, MONO_SIZE};
+use crate::style::{self, Palette, MONO_SIZE};
 use crate::table;
 use crate::timing::Timing;
+use crate::tray;
 use crate::worker::{Kind, Loaded, Outcome, Request, Response, Worker};
 use sekio_core::paths;
 
@@ -34,6 +37,12 @@ const ZOOM_MAX: f32 = 20.0;
 /// character or two spread over a handful of columns — invisible — while a
 /// one-character threshold would fire on almost every frame of a window drag.
 /// At `MONO_SIZE` four characters is roughly 30 px.
+/// How many recent files the tray menu offers.
+///
+/// Short on purpose: a tray menu opens against a screen edge with no room to
+/// scroll, and the home screen is where the full list lives.
+const TRAY_RECENT: usize = 8;
+
 const REFLOW_THRESHOLD: usize = 4;
 
 /// How long a new width has to hold still before we act on it. Long enough
@@ -113,10 +122,29 @@ pub struct Startup {
     /// Paths the global hotkey resolved, already looked up off the UI thread
     /// (see `hotkey.rs`); `None` when no hotkey is registered.
     pub presses: Option<Receiver<PathBuf>>,
+    /// The tray icon and the menu choices coming back from it. `None` whenever
+    /// there is no icon — not a daemon, `tray = false`, or a session with
+    /// nowhere to put one (see `tray::spawn`).
+    pub tray: Option<(Box<dyn tray::Tray>, Receiver<tray::Event>)>,
+    /// The combination actually registered, as the user would type it. Shown
+    /// ticked in the tray's Hotkey submenu; `None` means none is held.
+    pub hotkey_spec: Option<String>,
+    /// Where a hotkey chosen from the tray is written back to. `None` when
+    /// this environment has no config directory, in which case a choice
+    /// applies to this run and is not remembered.
+    pub config_path: Option<PathBuf>,
 }
 
 pub struct SekioApp {
     worker: Worker,
+    /// Every colour this frame is painted in. Held rather than looked up so no
+    /// widget has to reach for a global, and so both modes are reachable from a
+    /// test that never opens a window.
+    palette: Palette,
+    /// The syntax theme the *worker* is currently building previews with;
+    /// `None` is core's own (dark) default. Kept UI-side so a mode switch can
+    /// tell whether the worker has anything to do — see [`SekioApp::poll_theme`].
+    syntect: Option<&'static str>,
     /// Generation counter for the main preview.
     tracker: RequestTracker,
     /// A second, independent counter for the browser pane's listings, so
@@ -139,6 +167,18 @@ pub struct SekioApp {
     incoming: Option<Receiver<PathBuf>>,
     /// Hotkey presses that already resolved to a file.
     presses: Option<Receiver<PathBuf>>,
+    tray: Option<Box<dyn tray::Tray>>,
+    tray_events: Option<Receiver<tray::Event>>,
+    /// The last menu handed to the tray, so an unchanged one is not re-sent.
+    /// `Menu` derives `PartialEq` for exactly this.
+    tray_menu: tray::Menu,
+    /// The combination currently grabbed; `None` when none is.
+    hotkey_spec: Option<String>,
+    config_path: Option<PathBuf>,
+    /// Set by the tray's Quit. A daemon normally *refuses* to close (see
+    /// [`SekioApp::handle_close_request`]), and this is the one thing that
+    /// means it: end the process, do not hide.
+    quitting: bool,
     visible: bool,
     browser: Browser,
     /// Paths chosen in the native dialog, delivered from its thread. `None`
@@ -172,7 +212,11 @@ impl SekioApp {
     /// while the GL context is still being created. By the time this runs the
     /// result may already be waiting in the channel.
     pub fn new(ctx: &egui::Context, startup: Startup) -> Self {
-        ctx.set_visuals(egui::Visuals::dark());
+        // Both palettes, so egui can switch between them itself at the start of
+        // any pass. Which one is *preferred* is `style::install`'s business and
+        // belongs to whoever read the config; left alone, egui's own default
+        // preference is "follow the system", which is also sekio's.
+        style::install_styles(ctx);
         // Before the first layout: egui's bundled faces cannot draw Vietnamese
         // (or anything else in Latin Extended Additional), and a file name
         // full of boxes is what the user sees first.
@@ -191,7 +235,14 @@ impl SekioApp {
             timing,
             incoming,
             presses,
+            tray,
+            hotkey_spec,
+            config_path,
         } = startup;
+        let (tray, tray_events) = match tray {
+            Some((tray, events)) => (Some(tray), Some(events)),
+            None => (None, None),
+        };
         let loaded = path.is_some();
         // Only a daemon with nothing to show starts hidden. A window the user
         // launched from a menu must appear, empty or not — that is the whole
@@ -206,6 +257,11 @@ impl SekioApp {
         let (picks, picked) = mpsc::channel();
         Self {
             worker,
+            // Whatever egui has resolved by now: the preference is already set
+            // and the first `RawInput` has carried the desktop's answer.
+            palette: Palette::for_theme(ctx.theme()),
+            // What a freshly spawned worker builds its `Previewer` with.
+            syntect: None,
             tracker,
             browse_tracker: RequestTracker::new(),
             siblings,
@@ -220,6 +276,20 @@ impl SekioApp {
             mode,
             incoming,
             presses,
+            tray,
+            tray_events,
+            // Deliberately not the menu that was passed to `tray::spawn`: the
+            // first `refresh_tray` compares against this and so always sends
+            // once, which is what fills in the recent list as soon as the
+            // store thread has read it.
+            tray_menu: tray::Menu {
+                hotkey: None,
+                hotkey_choices: Vec::new(),
+                recent: Vec::new(),
+            },
+            hotkey_spec,
+            config_path,
+            quitting: false,
             visible,
             browser: Browser::default(),
             picked,
@@ -237,6 +307,42 @@ impl SekioApp {
             text_columns: None,
             reflow: Reflow::new(REFLOW_THRESHOLD, REFLOW_SETTLE),
             reflowing: false,
+        }
+    }
+
+    /// Follow the theme, once per frame.
+    ///
+    /// egui has already resolved "system" against whatever the desktop last
+    /// said, so this is a comparison, not a lookup: a desktop that switches to
+    /// light while sekio is open switches sekio on the very next frame. Two
+    /// separate checks on purpose — the palette changes whenever the mode does,
+    /// while the worker only hears about it when the *syntax* theme differs,
+    /// which is what keeps a dark-mode start from re-rendering for nothing.
+    fn poll_theme(&mut self, ctx: &egui::Context) {
+        let theme = ctx.theme();
+        if theme != self.palette.theme {
+            self.palette = Palette::for_theme(theme);
+            // The laid-out document has the old palette baked into it (see
+            // `style::text_job`). Dropping it costs one re-layout on the next
+            // frame; leaving it would paint yesterday's colours forever.
+            if let View::Ready(shown) = &mut self.view {
+                shown.text_job = None;
+            }
+        }
+
+        let wanted = self.palette.syntect_theme();
+        if wanted == self.syntect {
+            return;
+        }
+        self.syntect = wanted;
+        // Rebuilding the `Previewer` is tens of milliseconds of syntax-set
+        // loading, so it happens on the worker thread, not here.
+        self.worker.set_theme(wanted);
+        if self.current().is_some() {
+            // Deliberately a reflow rather than a navigation: the file has not
+            // changed, so it keeps being painted while the re-render is in
+            // flight instead of flashing "loading…" at a theme switch.
+            self.request_reflow();
         }
     }
 
@@ -360,7 +466,13 @@ impl SekioApp {
     /// root viewport unless `CancelClose` is sent during this very frame,
     /// which is why this runs in `logic`.
     fn handle_close_request(&mut self, ctx: &egui::Context) {
-        if self.mode != Mode::Daemon || !ctx.input(|i| i.viewport().close_requested()) {
+        // `quitting` is the tray's Quit, which is the one close a daemon must
+        // honour: it is the only way to stop a resident process that has no
+        // window on screen to close.
+        if self.quitting
+            || self.mode != Mode::Daemon
+            || !ctx.input(|i| i.viewport().close_requested())
+        {
             return;
         }
         ctx.send_viewport_cmd(ViewportCommand::CancelClose);
@@ -404,6 +516,116 @@ impl SekioApp {
             PressAction::Show(path) => self.show(ctx, path),
             PressAction::Dismiss => self.dismiss(ctx),
             PressAction::Ignore => {}
+        }
+    }
+
+    /// Act on what was chosen in the tray menu.
+    ///
+    /// Every one of these is something the window can already do; the tray is
+    /// a second way in, not a second implementation. Drained fully rather than
+    /// newest-wins — unlike a burst of handoffs, two menu choices are two
+    /// deliberate acts and both deserve to happen.
+    fn poll_tray(&mut self, ctx: &egui::Context) {
+        let Some(events) = &self.tray_events else {
+            return;
+        };
+        let pending: Vec<tray::Event> = events.try_iter().collect();
+        for event in pending {
+            match event {
+                tray::Event::OpenFile => {
+                    // A daemon's window is hidden; a file dialog owned by
+                    // nothing visible is a dialog the user cannot place.
+                    self.reveal(ctx);
+                    self.open_dialog(ctx);
+                }
+                tray::Event::Preview(path) => self.open(ctx, path),
+                tray::Event::SetHotkey(spec) => self.rebind_hotkey(ctx, spec),
+                tray::Event::Quit => {
+                    self.quitting = true;
+                    self.tracker.cancel_all();
+                    self.browse_tracker.cancel_all();
+                    ctx.send_viewport_cmd(ViewportCommand::Close);
+                }
+            }
+        }
+    }
+
+    /// Bring a hidden daemon window up without changing what it is showing.
+    fn reveal(&mut self, ctx: &egui::Context) {
+        if !self.visible {
+            self.visible = true;
+            ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+        }
+        ctx.send_viewport_cmd(ViewportCommand::Focus);
+    }
+
+    /// Grab `spec` instead of whatever is held now, and remember the choice.
+    ///
+    /// **The new grab is taken before the old one is released**, which is the
+    /// whole reason this is not two lines. A failed grab — another application
+    /// owns the combination — must leave the daemon exactly as it was rather
+    /// than with no hotkey at all, and the config file must not end up naming
+    /// a combination that does not work.
+    ///
+    /// The old grab is released by dropping the receiver its thread sends to,
+    /// which that thread only notices on its next press. So the previous
+    /// combination stays taken until it is pressed once more, and that press
+    /// does nothing. Better than the alternative — the hotkey thread blocks in
+    /// the platform's event loop, and there is no way to wake it that does not
+    /// mean holding a handle that outlives the grab.
+    fn rebind_hotkey(&mut self, ctx: &egui::Context, spec: String) {
+        if self.hotkey_spec.as_deref() == Some(spec.as_str()) {
+            return;
+        }
+        let key = match hotkey::parse(&spec) {
+            Ok(key) => key,
+            // Only reachable if the offered list and the parser disagree,
+            // which is a bug rather than something the user did.
+            Err(err) => {
+                eprintln!("sekio-gui: cannot use hotkey {spec:?}: {err}");
+                return;
+            }
+        };
+        let wake = ctx.clone();
+        let hotkeys = hotkey::listen(key, &spec, selection::for_this_platform(), move || {
+            wake.request_repaint()
+        });
+        if let Some(warning) = hotkeys.status.warning() {
+            eprintln!("{warning}");
+            eprintln!("sekio-gui: keeping the previous hotkey");
+            return;
+        }
+        // Now, and only now, the old thread is told to retire.
+        self.presses = Some(hotkeys.presses);
+        self.hotkey_spec = Some(spec.clone());
+        if let Some(path) = &self.config_path {
+            if let Err(err) = config::save_hotkey(path, &spec) {
+                eprintln!("sekio-gui: hotkey changed but not saved: {err}");
+            }
+        }
+        self.refresh_tray();
+    }
+
+    /// Rebuild the tray menu and send it if anything the user would see moved.
+    fn refresh_tray(&mut self) {
+        let Some(tray) = &mut self.tray else {
+            return;
+        };
+        let menu = tray::Menu {
+            hotkey: self.hotkey_spec.clone(),
+            hotkey_choices: tray::hotkey_choices(),
+            // A menu pinned to a panel edge is not a place to scroll: the
+            // home screen is where the whole list lives.
+            recent: self
+                .recent_shown
+                .iter()
+                .take(TRAY_RECENT)
+                .cloned()
+                .collect(),
+        };
+        if menu != self.tray_menu {
+            tray.update(&menu);
+            self.tray_menu = menu;
         }
     }
 
@@ -465,6 +687,9 @@ impl SekioApp {
     /// nobody is looking at would be silly.
     fn refresh_recent(&mut self) {
         self.recent_shown = self.recent.existing();
+        // The tray's Recent submenu is the same list, so the one place that
+        // knows it changed is the one place that tells the tray.
+        self.refresh_tray();
     }
 
     /// Cancel whatever is in flight and ask the worker for `self.path`.
@@ -830,7 +1055,7 @@ impl SekioApp {
                     if let (Some(pos), true) = (self.siblings.position(), self.siblings.len() > 1) {
                         ui.label(
                             RichText::new(format!("{pos} / {}", self.siblings.len()))
-                                .color(style::DIM),
+                                .color(self.palette.dim),
                         );
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -839,7 +1064,7 @@ impl SekioApp {
                         }
                         if let View::Ready(shown) = &self.view {
                             if shown.loaded.preview.truncated {
-                                ui.label(RichText::new("truncated").color(style::DIM));
+                                ui.label(RichText::new("truncated").color(self.palette.dim));
                             }
                         }
                         // Always reachable, whatever is on screen: this is the
@@ -875,6 +1100,7 @@ impl SekioApp {
         let View::Ready(shown) = &self.view else {
             return;
         };
+        let palette = &self.palette;
         egui::Panel::bottom("sekio-footer").show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
@@ -883,11 +1109,11 @@ impl SekioApp {
                         // How big the sheet is, and — when a cap or the column
                         // window cut it short — how much of it is on screen.
                         if let Some(view) = table_view(&shown.loaded.preview.content) {
-                            dim_label(ui, view.footer(shown.loaded.preview.truncated));
+                            dim_label(ui, palette, view.footer(shown.loaded.preview.truncated));
                         }
                     }
                     PreviewContent::Text { lines, language } => {
-                        dim_label(ui, format!("{language} · {} lines", lines.len()));
+                        dim_label(ui, palette, format!("{language} · {} lines", lines.len()));
                     }
                     PreviewContent::Image {
                         original_width,
@@ -896,25 +1122,30 @@ impl SekioApp {
                         fields,
                         ..
                     } => {
-                        dim_label(ui, format!("{format} · {original_width}×{original_height}"));
+                        dim_label(
+                            ui,
+                            palette,
+                            format!("{format} · {original_width}×{original_height}"),
+                        );
                         if self.zoom != 1.0 {
-                            dim_label(ui, format!("{:.0}%", self.zoom * 100.0));
+                            dim_label(ui, palette, format!("{:.0}%", self.zoom * 100.0));
                         }
                         for field in fields {
-                            dim_label(ui, format!("{}: {}", field.key, field.value));
+                            dim_label(ui, palette, format!("{}: {}", field.key, field.value));
                         }
                     }
                     PreviewContent::Listing { entries } => {
-                        dim_label(ui, format!("{} entries", entries.len()));
+                        dim_label(ui, palette, format!("{} entries", entries.len()));
                     }
                     PreviewContent::Metadata { fields, .. } => {
-                        dim_label(ui, format!("{} fields", fields.len()));
+                        dim_label(ui, palette, format!("{} fields", fields.len()));
                     }
                     PreviewContent::HexDump {
                         file_size, mime, ..
                     } => {
                         dim_label(
                             ui,
+                            palette,
                             format!(
                                 "{} · {}",
                                 mime.as_deref().unwrap_or("binary"),
@@ -924,7 +1155,7 @@ impl SekioApp {
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    dim_label(ui, format!("{} ms", shown.elapsed.as_millis()));
+                    dim_label(ui, palette, format!("{} ms", shown.elapsed.as_millis()));
                 });
             });
         });
@@ -935,16 +1166,18 @@ impl SekioApp {
         if !self.browser.is_open() {
             return None;
         }
+        let palette = self.palette;
         let browser = &mut self.browser;
         egui::Panel::left("sekio-browser")
             .default_size(260.0)
             .min_size(150.0)
-            .show(ui, |ui| paint_browser(ui, browser))
+            .show(ui, |ui| paint_browser(ui, browser, &palette))
             .inner
     }
 
     fn body(&mut self, ui: &mut egui::Ui) -> Option<Action> {
         let zoom = self.zoom;
+        let palette = self.palette;
         let home = HomeScreen {
             recent: &self.recent_shown,
             note: self.dialog_note,
@@ -956,29 +1189,39 @@ impl SekioApp {
         // scrollbar both eat into it.
         let mut columns = None;
         let action = egui::CentralPanel::default()
+            // The one surface that is not chrome: the preview sits on a card
+            // raised off the panels around it, which is the whole of the
+            // hierarchy this app needs. Same margin as egui's own central
+            // panel, so nothing moves and `text_columns` still measures the
+            // width the preview really gets.
+            .frame(
+                egui::Frame::new()
+                    .fill(palette.card)
+                    .inner_margin(egui::Margin::same(8)),
+            )
             .show(ui, |ui| {
                 columns = Some(text_columns(ui));
                 match view {
-                    View::Home => paint_home(ui, &home),
+                    View::Home => paint_home(ui, &home, &palette),
                     View::Loading => {
                         ui.centered_and_justified(|ui| {
-                            ui.label(RichText::new("loading…").color(style::DIM));
+                            ui.label(RichText::new("loading…").color(palette.dim));
                         });
                         None
                     }
                     // A failed preview is a message in the window, never a
                     // crash; the header still names the file it belongs to.
                     View::Failed(message) => {
-                        let color = ui.visuals().error_fg_color;
                         ui.centered_and_justified(|ui| {
                             ui.label(
-                                RichText::new(format!("cannot preview: {message}")).color(color),
+                                RichText::new(format!("cannot preview: {message}"))
+                                    .color(palette.error),
                             );
                         });
                         None
                     }
                     View::Ready(shown) => {
-                        paint_content(ui, shown, zoom);
+                        paint_content(ui, shown, zoom, &palette);
                         None
                     }
                 }
@@ -1063,12 +1306,17 @@ impl eframe::App for SekioApp {
     /// non-painting work — polling the worker and reacting to keys — lives
     /// here so it happens even on frames we skip drawing.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // First, so a path that arrived while the window was hidden is picked
+        // Before anything that paints or renders: a mode switch has to reach
+        // the worker before this frame's request does, or the preview comes
+        // back highlighted for the palette we just left.
+        self.poll_theme(ctx);
+        // Then, so a path that arrived while the window was hidden is picked
         // up on the very repaint the socket thread asked for.
         self.poll_incoming(ctx);
         // Same route as a socket handoff: `show` -> `request_current` ->
         // `RequestTracker::begin`, so a press during a slow render cancels it.
         self.poll_presses(ctx);
+        self.poll_tray(ctx);
         self.poll_picked(ctx);
         self.poll_drops(ctx);
         self.poll_recent();
@@ -1087,7 +1335,7 @@ impl eframe::App for SekioApp {
         self.footer(ui);
         action = action.or_else(|| self.browser_pane(ui));
         action = action.or_else(|| self.body(ui));
-        paint_drop_hint(ui.ctx());
+        paint_drop_hint(ui.ctx(), &self.palette);
 
         if let Some(action) = action {
             let ctx = ui.ctx().clone();
@@ -1116,7 +1364,7 @@ fn dropped_path(files: &[egui::DroppedFile]) -> Option<PathBuf> {
 
 /// While a drag is over the window, say what letting go will do. Painted on a
 /// foreground layer so it covers the panes as well as the preview.
-fn paint_drop_hint(ctx: &egui::Context) {
+fn paint_drop_hint(ctx: &egui::Context, palette: &Palette) {
     let (hovering, screen) = ctx.input(|i| (!i.raw.hovered_files.is_empty(), i.content_rect()));
     if !hovering {
         return;
@@ -1129,7 +1377,7 @@ fn paint_drop_hint(ctx: &egui::Context) {
     painter.rect_stroke(
         screen.shrink(10.0),
         8.0,
-        egui::Stroke::new(2.0, style::DIM),
+        egui::Stroke::new(2.0, palette.accent),
         egui::StrokeKind::Inside,
     );
     painter.text(
@@ -1151,7 +1399,7 @@ struct HomeScreen<'a> {
 
 /// The "nothing loaded yet" screen: what this is, how to open something, what
 /// was opened last time, and every key that does anything.
-fn paint_home(ui: &mut egui::Ui, home: &HomeScreen<'_>) -> Option<Action> {
+fn paint_home(ui: &mut egui::Ui, home: &HomeScreen<'_>, palette: &Palette) -> Option<Action> {
     let mut action = None;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -1165,7 +1413,7 @@ fn paint_home(ui: &mut egui::Ui, home: &HomeScreen<'_>) -> Option<Action> {
                     Vec2::new(width, 0.0),
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
-                        action = home_column(ui, home);
+                        action = home_column(ui, home, palette);
                     },
                 );
             });
@@ -1174,7 +1422,7 @@ fn paint_home(ui: &mut egui::Ui, home: &HomeScreen<'_>) -> Option<Action> {
     action
 }
 
-fn home_column(ui: &mut egui::Ui, home: &HomeScreen<'_>) -> Option<Action> {
+fn home_column(ui: &mut egui::Ui, home: &HomeScreen<'_>, palette: &Palette) -> Option<Action> {
     let mut action = None;
 
     ui.label(RichText::new("sekio").size(34.0).strong());
@@ -1183,7 +1431,7 @@ fn home_column(ui: &mut egui::Ui, home: &HomeScreen<'_>) -> Option<Action> {
             "quick preview for any file · v{}",
             env!("CARGO_PKG_VERSION")
         ))
-        .color(style::DIM),
+        .color(palette.dim),
     );
 
     ui.add_space(18.0);
@@ -1199,30 +1447,26 @@ fn home_column(ui: &mut egui::Ui, home: &HomeScreen<'_>) -> Option<Action> {
         }
         if home.dialog_open {
             ui.add(egui::Spinner::new().size(12.0));
-            ui.label(RichText::new("waiting for the dialog…").color(style::DIM));
+            ui.label(RichText::new("waiting for the dialog…").color(palette.dim));
         }
     });
     ui.add_space(6.0);
     ui.label(
         RichText::new("…or drop a file anywhere in this window.")
-            .color(style::DIM)
+            .color(palette.dim)
             .size(12.0),
     );
     if let Some(note) = home.note {
         ui.add_space(4.0);
-        ui.label(
-            RichText::new(note)
-                .color(ui.visuals().warn_fg_color)
-                .size(12.0),
-        );
+        ui.label(RichText::new(note).color(palette.warn).size(12.0));
     }
 
     ui.add_space(20.0);
-    section(ui, "Recent");
+    section(ui, palette, "Recent");
     if home.recent.is_empty() {
         ui.label(
             RichText::new("nothing yet — what you preview shows up here.")
-                .color(style::DIM)
+                .color(palette.dim)
                 .size(12.0),
         );
     } else {
@@ -1235,7 +1479,7 @@ fn home_column(ui: &mut egui::Ui, home: &HomeScreen<'_>) -> Option<Action> {
                 if let Some(parent) = path.parent() {
                     ui.label(
                         RichText::new(browser::compact(parent))
-                            .color(style::DIM)
+                            .color(palette.dim)
                             .size(11.0),
                     );
                 }
@@ -1244,14 +1488,14 @@ fn home_column(ui: &mut egui::Ui, home: &HomeScreen<'_>) -> Option<Action> {
     }
 
     ui.add_space(20.0);
-    section(ui, "Keys");
+    section(ui, palette, "Keys");
     egui::Grid::new("sekio-keys")
         .num_columns(2)
         .spacing([18.0, 3.0])
         .show(ui, |ui| {
             for (key, what) in KEYS {
                 ui.label(RichText::new(*key).monospace().size(11.0));
-                ui.label(RichText::new(*what).color(style::DIM).size(11.0));
+                ui.label(RichText::new(*what).color(palette.dim).size(11.0));
                 ui.end_row();
             }
         });
@@ -1271,13 +1515,13 @@ const KEYS: &[(&str, &str)] = &[
     ("Ctrl+Q", "quit"),
 ];
 
-fn section(ui: &mut egui::Ui, title: &str) {
-    ui.label(RichText::new(title).color(style::DIM).size(11.0).strong());
+fn section(ui: &mut egui::Ui, palette: &Palette, title: &str) {
+    ui.label(RichText::new(title).color(palette.dim).size(11.0).strong());
     ui.add_space(2.0);
 }
 
 /// The browser pane: where we are, a way up, and one row per entry.
-fn paint_browser(ui: &mut egui::Ui, browser: &mut Browser) -> Option<Action> {
+fn paint_browser(ui: &mut egui::Ui, browser: &mut Browser, palette: &Palette) -> Option<Action> {
     let mut action = None;
 
     ui.horizontal(|ui| {
@@ -1303,7 +1547,7 @@ fn paint_browser(ui: &mut egui::Ui, browser: &mut Browser) -> Option<Action> {
     });
     ui.label(
         RichText::new(browser::compact(browser.dir()))
-            .color(style::DIM)
+            .color(palette.dim)
             .size(11.0),
     );
     ui.separator();
@@ -1311,16 +1555,16 @@ fn paint_browser(ui: &mut egui::Ui, browser: &mut Browser) -> Option<Action> {
     if browser.has_failed() {
         ui.label(
             RichText::new("cannot list this directory")
-                .color(ui.visuals().error_fg_color)
+                .color(palette.error)
                 .size(12.0),
         );
     } else if browser.is_loading() && browser.entries().is_empty() {
-        ui.label(RichText::new("listing…").color(style::DIM).size(12.0));
+        ui.label(RichText::new("listing…").color(palette.dim).size(12.0));
     } else if browser.entries().is_empty() {
-        ui.label(RichText::new("empty").color(style::DIM).size(12.0));
+        ui.label(RichText::new("empty").color(palette.dim).size(12.0));
     }
 
-    let dir_color = ui.visuals().hyperlink_color;
+    let dir_color = palette.accent;
     let cursor = browser.cursor();
     let mut clicked = None;
     egui::ScrollArea::vertical()
@@ -1331,7 +1575,7 @@ fn paint_browser(ui: &mut egui::Ui, browser: &mut Browser) -> Option<Action> {
                 let text = if entry.is_dir {
                     RichText::new(format!("{}/", entry.name)).color(dir_color)
                 } else {
-                    RichText::new(entry.name.clone())
+                    RichText::new(entry.name.clone()).color(palette.text)
                 };
                 if ui.selectable_label(i == cursor, text.size(12.0)).clicked() {
                     clicked = Some(i);
@@ -1346,8 +1590,8 @@ fn paint_browser(ui: &mut egui::Ui, browser: &mut Browser) -> Option<Action> {
     action
 }
 
-fn dim_label(ui: &mut egui::Ui, text: String) {
-    ui.label(RichText::new(text).color(style::DIM).size(11.0));
+fn dim_label(ui: &mut egui::Ui, palette: &Palette, text: String) {
+    ui.label(RichText::new(text).color(palette.dim).size(11.0));
 }
 
 /// Borrow a `Table` out of the IR, so the painter and the footer read the same
@@ -1373,7 +1617,7 @@ fn table_view(content: &PreviewContent) -> Option<table::Table<'_>> {
     }
 }
 
-fn paint_content(ui: &mut egui::Ui, shown: &mut Shown, zoom: f32) {
+fn paint_content(ui: &mut egui::Ui, shown: &mut Shown, zoom: f32, palette: &Palette) {
     match &shown.loaded.preview.content {
         PreviewContent::Table { .. } => {
             let Some(view) = table_view(&shown.loaded.preview.content) else {
@@ -1384,12 +1628,12 @@ fn paint_content(ui: &mut egui::Ui, shown: &mut Shown, zoom: f32) {
             let grid = shown
                 .grid
                 .get_or_insert_with(|| table::Grid::measure(ui.ctx(), &view));
-            table::paint(ui, &view, grid);
+            table::paint(ui, &view, grid, palette);
         }
         PreviewContent::Text { lines, .. } => {
-            let job = shown.text_job.get_or_insert_with(|| {
-                style::text_job(lines, ui.visuals().text_color(), MONO_SIZE)
-            });
+            let job = shown
+                .text_job
+                .get_or_insert_with(|| style::text_job(lines, palette, MONO_SIZE));
             egui::ScrollArea::both()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
@@ -1404,7 +1648,7 @@ fn paint_content(ui: &mut egui::Ui, shown: &mut Shown, zoom: f32) {
                 paint_image(ui, texture, zoom);
             }
         }
-        PreviewContent::Listing { entries } => paint_listing(ui, entries),
+        PreviewContent::Listing { entries } => paint_listing(ui, entries, palette),
         PreviewContent::Metadata { fields, .. } => {
             let texture = shown.texture.clone();
             egui::ScrollArea::vertical()
@@ -1417,10 +1661,10 @@ fn paint_content(ui: &mut egui::Ui, shown: &mut Shown, zoom: f32) {
                         });
                         ui.add_space(8.0);
                     }
-                    paint_fields(ui, fields);
+                    paint_fields(ui, fields, palette);
                 });
         }
-        PreviewContent::HexDump { data, .. } => paint_hex(ui, data),
+        PreviewContent::HexDump { data, .. } => paint_hex(ui, data, palette),
     }
 }
 
@@ -1445,12 +1689,12 @@ fn fit(image: Vec2, avail: Vec2, zoom: f32) -> Vec2 {
     image * scale * zoom
 }
 
-fn paint_listing(ui: &mut egui::Ui, entries: &[ListEntry]) {
+fn paint_listing(ui: &mut egui::Ui, entries: &[ListEntry], palette: &Palette) {
     // `show_rows` assumes every row is exactly this tall, so measure the font
     // we actually paint with rather than the theme's monospace text style.
     let row_height = mono_row_height(ui);
-    let dir_color = ui.visuals().hyperlink_color;
-    let text_color = ui.visuals().text_color();
+    let dir_color = palette.accent;
+    let text_color = palette.text;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show_rows(ui, row_height, entries.len(), |ui, range| {
@@ -1464,7 +1708,7 @@ fn paint_listing(ui: &mut egui::Ui, entries: &[ListEntry]) {
                 };
                 ui.label(style::mono_job(
                     &[
-                        (&format!("{size:>10}  "), style::DIM),
+                        (&format!("{size:>10}  "), palette.dim),
                         (&name, if entry.is_dir { dir_color } else { text_color }),
                     ],
                     MONO_SIZE,
@@ -1479,27 +1723,27 @@ fn mono_row_height(ui: &egui::Ui) -> f32 {
         .fonts_mut(|f| f.row_height(&egui::FontId::monospace(MONO_SIZE)))
 }
 
-fn paint_fields(ui: &mut egui::Ui, fields: &[MetaField]) {
+fn paint_fields(ui: &mut egui::Ui, fields: &[MetaField], palette: &Palette) {
     egui::Grid::new("sekio-fields")
         .num_columns(2)
         .spacing([16.0, 4.0])
         .striped(true)
         .show(ui, |ui| {
             for field in fields {
-                ui.label(RichText::new(&field.key).color(style::DIM).monospace());
-                ui.label(RichText::new(&field.value).monospace());
+                ui.label(RichText::new(&field.key).color(palette.dim).monospace());
+                ui.label(RichText::new(&field.value).color(palette.text).monospace());
                 ui.end_row();
             }
         });
 }
 
 /// Offset / hex / ASCII columns, mirroring the CLI's hexdump layout.
-fn paint_hex(ui: &mut egui::Ui, data: &[u8]) {
+fn paint_hex(ui: &mut egui::Ui, data: &[u8], palette: &Palette) {
     // `show_rows` assumes every row is exactly this tall, so measure the font
     // we actually paint with rather than the theme's monospace text style.
     let row_height = mono_row_height(ui);
     let rows = data.len().div_ceil(16);
-    let text_color = ui.visuals().text_color();
+    let text_color = palette.text;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show_rows(ui, row_height, rows, |ui, range| {
@@ -1509,9 +1753,9 @@ fn paint_hex(ui: &mut egui::Ui, data: &[u8]) {
                 let chunk = &data[start..(start + 16).min(data.len())];
                 ui.label(style::mono_job(
                     &[
-                        (&format!("{start:08x}  "), style::DIM),
+                        (&format!("{start:08x}  "), palette.dim),
                         (&hex_columns(chunk), text_color),
-                        (&format!(" |{}|", ascii_columns(chunk)), style::DIM),
+                        (&format!(" |{}|", ascii_columns(chunk)), palette.dim),
                     ],
                     MONO_SIZE,
                 ));

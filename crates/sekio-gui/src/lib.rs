@@ -10,8 +10,8 @@
 
 pub mod app;
 pub mod browser;
+pub mod config;
 pub mod console;
-#[cfg(unix)]
 pub mod daemon;
 pub mod dialog;
 pub mod fonts;
@@ -23,4 +23,5 @@ pub mod state;
 pub mod style;
 pub mod table;
 pub mod timing;
+pub mod tray;
 pub mod worker;

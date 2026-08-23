@@ -44,7 +44,7 @@
 use egui::{Color32, FontId, Pos2, Rect, RichText, Stroke, Ui, Vec2};
 use sekio_core::{TableCell, TableRow};
 
-use crate::style::{self, MONO_SIZE};
+use crate::style::{self, Palette, MONO_SIZE};
 
 /// Blank space either side of a cell's text, inside its column.
 const CELL_PAD: f32 = 6.0;
@@ -222,11 +222,14 @@ fn widest_cells(rows: &[TableRow], column: usize) -> Vec<&str> {
 }
 
 /// Paint the sheet strip, then the grid, filling `ui`.
-pub fn paint(ui: &mut Ui, table: &Table<'_>, grid: &Grid) {
-    paint_sheets(ui, table);
+pub fn paint(ui: &mut Ui, table: &Table<'_>, grid: &Grid, palette: &Palette) {
+    paint_sheets(ui, table, palette);
 
-    let rule = Stroke::new(1.0, style::FAINT);
-    let chrome = ui.visuals().panel_fill;
+    let rule = Stroke::new(1.0, palette.faint);
+    // The strips that the cells slide *under* have to be the surface the grid
+    // is painted on, which is the raised preview card rather than the chrome
+    // around it — otherwise a scrolled cell shows through them.
+    let chrome = palette.card;
     let pitch = grid.pitch;
     // `show_rows` derives its row pitch from the ui's item spacing, so pin it
     // to the same gap this module paints at.
@@ -279,7 +282,7 @@ pub fn paint(ui: &mut Ui, table: &Table<'_>, grid: &Grid) {
                         &painter,
                         rect,
                         &cell.text,
-                        style::cell_color(cell.kind),
+                        palette.cell_color(cell.kind),
                         // Numbers and dates flush right so a column of them
                         // lines up on the decimal point, exactly as the CLI and
                         // any spreadsheet show them.
@@ -325,7 +328,7 @@ pub fn paint(ui: &mut Ui, table: &Table<'_>, grid: &Grid) {
                     Pos2::new(clip.min.x + CELL_PAD, top_of(content_row)),
                     Vec2::new(grid.gutter - 2.0 * CELL_PAD, grid.row_height),
                 );
-                paint_text(&below, rect, &row.label, style::DIM, true);
+                paint_text(&below, rect, &row.label, palette.dim, true);
             }
 
             // 5. The column letters, in the same dim as the gutter so neither
@@ -338,7 +341,7 @@ pub fn paint(ui: &mut Ui, table: &Table<'_>, grid: &Grid) {
                 if rect.max.x < clip.min.x || rect.min.x > clip.max.x {
                     continue;
                 }
-                paint_text(&strip, rect, label, style::DIM, false);
+                paint_text(&strip, rect, label, palette.dim, false);
             }
         });
 }
@@ -359,7 +362,7 @@ fn paint_text(painter: &egui::Painter, rect: Rect, text: &str, color: Color32, r
 
 /// The sheet names across the top, the previewed one bracketed — the same
 /// shape the CLI's first line has always had.
-fn paint_sheets(ui: &mut Ui, table: &Table<'_>) {
+fn paint_sheets(ui: &mut Ui, table: &Table<'_>, palette: &Palette) {
     if table.sheets.is_empty() {
         return;
     }
@@ -367,7 +370,7 @@ fn paint_sheets(ui: &mut Ui, table: &Table<'_>) {
         ui.spacing_mut().item_spacing.x = 8.0;
         ui.label(
             RichText::new("Sheets:")
-                .color(style::DIM)
+                .color(palette.dim)
                 .monospace()
                 .size(11.0),
         );
@@ -375,17 +378,17 @@ fn paint_sheets(ui: &mut Ui, table: &Table<'_>) {
             let name = style::one_line(name);
             let text = if index == table.active_sheet {
                 RichText::new(format!("[{name}]"))
-                    .color(style::ACTIVE)
+                    .color(palette.active)
                     .strong()
             } else {
-                RichText::new(name).color(style::FAINT)
+                RichText::new(name).color(palette.faint)
             };
             ui.label(text.monospace().size(11.0));
         }
         if table.sheets.len() > MAX_SHEETS {
             ui.label(
                 RichText::new(format!("+{} more", table.sheets.len() - MAX_SHEETS))
-                    .color(style::FAINT)
+                    .color(palette.faint)
                     .monospace()
                     .size(11.0),
             );
