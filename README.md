@@ -1,176 +1,168 @@
-<img src="assets/sekio_logo.png" alt="sekio logo" width="96" align="right">
+<div align="center">
+
+<img src="assets/sekio_logo.png" width="120" alt="">
 
 # sekio
 
-Fast quick-view for any filetype. One core, three frontends.
+**Quick-view for any filetype.** A terminal command, a two-pane file browser,
+and a Quick Look-style popup — all sharing one engine.
 
-```
-crates/
-  sekio-core   detection + rendering into a frontend-neutral PreviewContent IR
-  sekio-cli    `sekio <path>` — ANSI output; usable as an fzf/lf/yazi preview backend
-  sekio-tui    two-pane terminal browser with real terminal graphics
-  sekio-gui    Quick Look-style popup window (Linux + Windows)
-```
+[![Release](https://img.shields.io/github/v/release/hairbui76/sekio?style=flat-square&color=2aa5c7)](https://github.com/hairbui76/sekio/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/hairbui76/sekio/ci.yml?branch=main&style=flat-square&label=ci)](https://github.com/hairbui76/sekio/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE-MIT)
+[![Platforms](https://img.shields.io/badge/platforms-linux%20%7C%20windows-lightgrey?style=flat-square)](#install)
+
+</div>
+
+<img src="assets/screenshots/gui-table.png" alt="A spreadsheet previewed as a real table">
+
+---
+
+## Why
+
+Opening a heavyweight application just to remember what a file *is* wastes more
+time than it should. sekio answers that in milliseconds — a spreadsheet as a
+real grid, a PDF as its page, a photo with its EXIF, an archive as a listing —
+and gets out of the way.
+
+It is one detection-and-rendering core with three frontends over it, so a
+format added once appears in all of them at once.
 
 ## Install
 
-Releases ship three installers, all x86_64:
-
-**Debian / Ubuntu**
+Releases ship three installers, all x86&#95;64.
 
 ```sh
-sudo apt install ./sekio_0.7.0-1_amd64.deb
+sudo apt install ./sekio_0.7.0-1_amd64.deb      # Debian / Ubuntu
+sudo dnf install ./sekio-0.7.0-1.x86_64.rpm     # Fedora / RHEL / openSUSE
 ```
 
-**Fedora / RHEL / openSUSE**
+**Windows** — run `sekio-x86_64-pc-windows-msvc.msi`. It installs all three
+programs, adds them to `PATH`, and adds a Start Menu entry.
 
-```sh
-sudo dnf install ./sekio-0.7.0-1.x86_64.rpm
-```
-
-Both install all three binaries, an "Open with" desktop entry, and a systemd
-**user** unit for the preview daemon. The unit ships disabled; turn it on when
-you want previews to open instantly:
+Everything is on the [releases page](https://github.com/hairbui76/sekio/releases).
+The Linux packages also install an "Open with" desktop entry and a systemd
+**user** unit for the preview daemon, which ships disabled:
 
 ```sh
 systemctl --user enable --now sekio
 ```
 
-**Windows** — run `sekio-x86_64-pc-windows-msvc.msi`. It installs the three
-binaries, adds them to `PATH`, and adds a Start Menu entry.
+<details>
+<summary><b>Arch, or building from source</b></summary>
 
-Download all three from the
-[releases page](https://github.com/hairbui76/sekio/releases), each with a
-`.sha256` beside it.
+<br>
 
-**Arch** — the AUR `PKGBUILD` in [packaging/](packaging/).
+Arch: the [`PKGBUILD`](packaging/) in this repository.
 
-**Any other platform, or to build from source:**
+From source — three renderers need an external program at preview time and are
+opt-in in a source build. The installers already enable them and ship pdfium
+themselves.
 
 ```sh
 cargo install --path crates/sekio-cli     # sekio
 cargo install --path crates/sekio-tui     # sekio-tui
 cargo install --path crates/sekio-gui     # sekio-gui
-```
 
-See [packaging/README.md](packaging/README.md) for details.
-
-## Try it
-
-```sh
-cargo run -p sekio-cli -- src/main.rs        # syntax-highlighted code
-cargo run -p sekio-cli -- photo.jpg          # image, rendered in the terminal
-cargo run -p sekio-cli -- README.md          # markdown, rendered for reading
-cargo run -p sekio-cli -- archive.tar.gz     # archive contents
-cargo run -p sekio-cli -- report.pdf         # the page, rendered
-cargo run -p sekio-cli -- track.mp3          # tags, duration, cover art
-cargo run -p sekio-cli -- some/directory     # directory listing
-cargo run -p sekio-cli -- /bin/ls            # mime + hexdump fallback
-
-cargo run -p sekio-tui -- .                  # browse and preview
-cargo run -p sekio-gui -- photo.jpg          # popup window
-```
-
-On Linux, keep a warm instance around so popups open instantly:
-
-```sh
-sekio-gui --daemon &        # once per session
-sekio-gui photo.jpg         # ~5 ms handoff instead of a fresh process
-```
-
-If no daemon is running, `sekio-gui <path>` just opens a window as usual — the
-daemon is an optimization, never a requirement.
-
-The daemon also answers a global hotkey (`Ctrl+Shift+Space` by default) and
-previews whatever your file manager has selected:
-
-```sh
-sekio-gui --daemon --hotkey 'Ctrl+Shift+Space' &
-sekio-gui --doctor          # when the hotkey does nothing, run this first
-```
-
-A bare `Space` is deliberately not the default — grabbing it globally would
-steal it from every other application. Selection detection is exact on Windows
-(Explorer answers over COM) and best-effort on Linux, where no file manager
-publishes its selection; `--doctor` reports which strategy is active and what
-it can currently see. See [docs/desktop.md](docs/desktop.md).
-
-`sekio-tui` reads `$XDG_CONFIG_HOME/sekio/config.toml` (`%APPDATA%\sekio\` on
-Windows) for themes and default limits; see
-[crates/sekio-tui/config.example.toml](crates/sekio-tui/config.example.toml).
-
-## What it previews
-
-| Kind | Rendered as | Notes |
-|---|---|---|
-| Code and plain text | Syntax-highlighted text | bat's extended syntax set (TOML, TypeScript, Dockerfile, …) and ~30 themes; legacy encodings decoded, not mangled |
-| Markdown | Formatted text | Rendered for reading, not source highlighting |
-| Images | Image | PNG/JPEG/GIF/WebP/BMP/ICO/TIFF, plus EXIF and auto-rotation |
-| SVG | Image | Rasterized with resvg |
-| Archives | Listing | zip, tar, tar.gz, gz |
-| Spreadsheets | A real table | xlsx, xlsm, xlsb, xls, ods. The GUI scrolls a wide sheet sideways rather than squeezing it; the terminal fits it to the pane. |
-| Documents | Formatted text | docx, and pptx with slides in order |
-| Audio | Metadata + cover art | Tags, duration, codec, sample rate |
-| Directories | Listing | |
-| PDF | The page, as an image | The `.deb`, `.rpm` and `.msi` ship pdfium, so pages render — including scans, which have no text to extract. A `cargo install` build falls back to extracting text. |
-| Video | Frame grab | Needs `--features video` and ffmpeg/ffmpegthumbnailer |
-| Legacy `.doc`/`.ppt` | Converted text | Needs `--features office-legacy` and LibreOffice |
-| Anything else | Hexdump | With the detected mime type |
-
-Unsupported or malformed files degrade to a hexdump rather than failing.
-
-## Use it as a preview backend
-
-```sh
-fzf --preview 'sekio --color --width $FZF_PREVIEW_COLUMNS {}'
-```
-
-See [docs/guide.md](docs/guide.md) for every feature and how it works,
-[docs/integration.md](docs/integration.md) for lf, yazi, ranger, and Neovim
-recipes, and [docs/desktop.md](docs/desktop.md) for binding the GUI to a key in
-Nautilus, Dolphin, Thunar, or your window manager.
-
-## Design
-
-- **One IR, thin frontends.** `sekio-core` turns a path into
-  `PreviewContent::{Text, Image, Listing, Metadata, HexDump}`. Frontends only
-  paint. A new filetype added in core lights up everywhere at once.
-- **Detection reads the file, not its name.** An Office document is recognised
-  by the parts inside its zip, so a `.docx` renamed `mystery.bin` still
-  previews as a document.
-- **Cancellation-first.** `preview(path, opts, &CancelToken)` polls the token
-  at work boundaries so a frontend can abort stale previews while the user
-  flips through files. Both frontends run previews on a worker thread and
-  discard results that arrive after the user has moved on.
-- **Cap the work, not just the output.** Byte, line, entry, and dimension
-  limits live in `PreviewOptions` in core, and renderers stop reading at the
-  cap rather than loading everything and truncating. Nothing stalls on a 4 GB
-  file.
-- **Detection by content.** Magic bytes first, then encoding detection.
-  Extensions only disambiguate formats that magic bytes cannot see (SVG,
-  Markdown) and pick syntax highlighting — a PNG named `.txt` still previews
-  as an image.
-
-## Building
-
-Pure-Rust formats are on by default, so no C toolchain is required and Windows
-builds work out of the box. Three renderers need an external program at preview
-time and are opt-in in a source build — the installers already enable
-`pdf-render` and `video` and ship pdfium themselves:
-
-```sh
-cargo build --release                                      # everything default
+# optional, each needing a program at runtime
 cargo build --release --features sekio-core/pdf-render     # pdfium
 cargo build --release --features sekio-core/video          # ffmpeg
 cargo build --release --features sekio-core/office-legacy  # LibreOffice
 ```
 
-macOS is not a target for now.
+macOS is not a target.
 
-## Roadmap
+</details>
 
-See [ROADMAP.md](ROADMAP.md).
+## The three programs
+
+### `sekio` — print a preview and exit
+
+```sh
+sekio report.pdf         # the page, rendered
+sekio photo.jpg          # the image, drawn in the terminal
+sekio archive.tar.gz     # what is inside
+sekio ~/Downloads        # a directory listing
+```
+
+It is also the backend behind a preview pane. `--color` forces ANSI through a
+pipe, and it exits quietly when the reader closes one:
+
+```sh
+fzf --preview 'sekio --color --width $FZF_PREVIEW_COLUMNS {}'
+```
+
+Recipes for lf, yazi, ranger and Neovim: [docs/integration.md](docs/integration.md).
+
+### `sekio-tui` — browse and preview
+
+A two-pane terminal browser: the directory on the left, a live preview on the
+right. Images use kitty, iTerm2 or sixel graphics where the terminal supports
+them, half-blocks everywhere else. Themes and limits come from
+[`config.toml`](crates/sekio-tui/config.example.toml).
+
+### `sekio-gui` — a window
+
+<img src="assets/screenshots/gui-home.png" alt="The sekio home screen">
+
+Open a file, drop one on the window, or browse from inside it. Keep an instance
+resident and every preview becomes a socket handoff of about five milliseconds:
+
+```sh
+sekio-gui --daemon &
+```
+
+A resident instance also answers a global hotkey — `Ctrl+Shift+Space` by
+default — and previews whatever your file manager has selected. When that does
+nothing, `sekio-gui --doctor` reports exactly why.
+
+## What it previews
+
+| Kind | Shown as | Notes |
+|---|---|---|
+| Code and text | Syntax-highlighted text | bat's extended syntax set, ~30 themes; legacy encodings decoded, not mangled |
+| Markdown | Rendered for reading | headings, lists, quotes, tables — not highlighted as source |
+| PDF | The page | scans included; the installers ship pdfium |
+| Images | The image | PNG, JPEG, GIF, WebP, BMP, ICO, TIFF, with EXIF and auto-rotation |
+| SVG | The image | rasterised at the size actually needed |
+| Spreadsheets | A real table | xlsx, xlsm, xlsb, xls, ods — the GUI scrolls a wide sheet sideways |
+| Documents | Formatted text | docx, and pptx with slides in order |
+| Archives | A listing | zip, tar, tar.gz, gz — streamed, never unpacked |
+| Audio | Tags and cover art | duration, codec, sample rate, embedded artwork |
+| Video | A frame | needs ffmpeg or ffmpegthumbnailer |
+| Legacy `.doc` / `.ppt` | Converted text | needs LibreOffice |
+| Anything else | A hexdump | with the detected MIME type |
+
+<img src="assets/screenshots/gui-text.png" alt="Syntax-highlighted source in the sekio window">
+
+## How it works
+
+- **One representation, thin frontends.** The core turns a path into text, an
+  image, a listing, a table, a set of facts, or a hexdump. Frontends only
+  paint. A format added once lights up everywhere.
+- **It reads the file, not the name.** Type comes from magic bytes, and for
+  Office documents from the parts inside the container. A PNG named
+  `notes.txt` still previews as an image.
+- **Work is capped, not just output.** Byte, line, entry and dimension limits
+  stop the *reading*, so nothing stalls on a 4&nbsp;GB file. Syntax
+  highlighting is time-boxed too, because some grammars are pathologically
+  slow.
+- **Previews are cancellable.** Move to another file and the one in flight is
+  abandoned mid-work; a late result is discarded rather than painted.
+- **No C toolchain.** The dependency tree carries no native `-sys` crates, so
+  Windows and cross builds work without MSVC — enforced in CI.
+
+Unsupported or malformed files fall back to a hexdump rather than failing.
+
+## Documentation
+
+| | |
+|---|---|
+| [docs/guide.md](docs/guide.md) | Every feature and how it works |
+| [docs/integration.md](docs/integration.md) | fzf, lf, yazi, ranger, Neovim |
+| [docs/desktop.md](docs/desktop.md) | Binding the popup to a key in your file manager |
+| [ROADMAP.md](ROADMAP.md) | What is done, what is not, and what is blocked |
 
 ## License
 
-MIT
+MIT — see [LICENSE-MIT](LICENSE-MIT).

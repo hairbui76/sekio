@@ -54,3 +54,17 @@ Checked by eye, magnified, on both a light and a dark background:
 If the source logo is ever redrawn, re-check 16 and 24 before committing: this
 mark is close to the limit of what fits in 256 pixels, and a busier one will not
 survive.
+
+## screenshots/
+
+`gui-home.png`, `gui-text.png` and `gui-table.png` are used by the top-level
+README. They are rendered headlessly rather than captured by hand, so they can
+be regenerated exactly and never drift from the real UI: a temporary test in
+`crates/sekio-gui/tests/render.rs` drives the real `SekioApp` through
+`egui_kittest` and calls `Harness::render()`, with the crate's `egui_kittest`
+dev-dependency temporarily switched to `features = ["wgpu", "snapshot"]`. The
+result is cropped to its content with the status bar spliced back beneath.
+
+They are not a snapshot test: CI installs no graphics stack, and llvmpipe and
+WARP do not agree pixel for pixel, so comparing them automatically would be
+permanently flaky. Regenerate them by hand when the UI changes visibly.

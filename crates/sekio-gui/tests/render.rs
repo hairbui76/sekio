@@ -2288,3 +2288,4 @@ fn a_window_that_is_not_resized_never_re_requests_its_preview() {
         "a window sitting still must not keep re-rendering its preview"
     );
 }
+
