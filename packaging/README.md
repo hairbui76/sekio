@@ -1,7 +1,7 @@
 # Packaging
 
 Release artifacts are produced by `.github/workflows/release.yml` when a `v*`
-tag is pushed. As of v0.8.0 that is exactly three installers, all x86_64:
+tag is pushed. As of v0.9.0 that is exactly three installers, all x86_64:
 
 | Asset | Contents |
 |---|---|
@@ -96,8 +96,8 @@ Both are built from the same metadata in `crates/sekio-cli/Cargo.toml` — one
 from the release page, then:
 
 ```sh
-sudo apt install ./sekio_0.8.0-1_amd64.deb     # Debian/Ubuntu
-sudo dnf install ./sekio-0.8.0-1.x86_64.rpm    # Fedora/RHEL/openSUSE
+sudo apt install ./sekio_0.9.0-1_amd64.deb     # Debian/Ubuntu
+sudo dnf install ./sekio-0.9.0-1.x86_64.rpm    # Fedora/RHEL/openSUSE
 ```
 
 Layout:

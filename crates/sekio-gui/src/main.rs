@@ -889,11 +889,7 @@ fn hotkey_source(args: &Args, from_file: bool) -> &'static str {
     }
 }
 
-fn doctor_hotkey(
-    source: &str,
-    binding: Option<&(String, hotkey::HotKey)>,
-    running: Option<bool>,
-) {
+fn doctor_hotkey(source: &str, binding: Option<&(String, hotkey::HotKey)>, running: Option<bool>) {
     println!("hotkey");
     let Some((spec, key)) = binding else {
         row("hotkey", "none (--no-hotkey)");
