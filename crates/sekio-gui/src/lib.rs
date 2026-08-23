@@ -16,6 +16,7 @@ pub mod daemon;
 pub mod dialog;
 pub mod fonts;
 pub mod hotkey;
+pub mod icon;
 pub mod recent;
 pub mod selection;
 pub mod state;

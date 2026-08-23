@@ -1,3 +1,5 @@
+<img src="assets/sekio_logo.png" alt="sekio logo" width="96" align="right">
+
 # sekio
 
 Fast quick-view for any filetype. One core, three frontends.

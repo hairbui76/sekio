@@ -3,6 +3,12 @@ Type=Application
 Name=sekio
 GenericName=File Previewer
 Comment=Quick-view any file
+# A theme icon *name*, not a path: file managers and app menus resolve it
+# against /usr/share/icons/hicolor/<size>/apps/sekio.png, which the .deb and
+# .rpm install at 16 through 256 (see the `assets` tables in
+# crates/sekio-cli/Cargo.toml). Without this line the launcher, the app menu
+# and every "Open with" list fall back to a generic placeholder.
+Icon=sekio
 # %f is optional: with a file it previews it, without one it opens to a
 # browser and an Open button, so this works as an ordinary launcher too.
 Exec=sekio-gui %f

@@ -55,7 +55,7 @@ use sekio_gui::daemon;
 use sekio_gui::state::{Mode, RequestTracker};
 use sekio_gui::timing::Timing;
 use sekio_gui::worker::Worker;
-use sekio_gui::{console, dialog, hotkey, recent, selection, worker};
+use sekio_gui::{console, dialog, hotkey, icon, recent, selection, worker};
 
 /// sekio — instant preview popup for any file.
 #[derive(Parser)]
@@ -315,16 +315,32 @@ fn open_window(ctx: egui::Context, startup: Startup) -> Result<()> {
     let borderless = startup.borderless;
     let timing = startup.timing;
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title(title)
+        // Wayland needs an app id to match the window to its .desktop file.
+        .with_app_id("sekio")
+        .with_inner_size([880.0, 640.0])
+        .with_min_inner_size([320.0, 200.0])
+        .with_decorations(!borderless)
+        .with_visible(visible)
+        .with_active(true);
+
+    // Title bar, taskbar and Alt-Tab. Left unset, eframe substitutes its own
+    // bundled egui logo. A 64x64 PNG compiled into the binary, so this costs a
+    // decode and no file IO — `icon.rs` explains the size choice; the timing
+    // milestone is here because this runs on the cold-start path, before the
+    // window exists. `None` means the decode failed, which is a window without
+    // an icon and never a reason to stop: this process may be a daemon.
+    match icon::load() {
+        Some(icon) => {
+            viewport = viewport.with_icon(icon);
+            timing.log("window icon decoded");
+        }
+        None => timing.log("window icon could not be decoded; opening without one"),
+    }
+
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title(title)
-            // Wayland needs an app id to match the window to its .desktop file.
-            .with_app_id("sekio")
-            .with_inner_size([880.0, 640.0])
-            .with_min_inner_size([320.0, 200.0])
-            .with_decorations(!borderless)
-            .with_visible(visible)
-            .with_active(true),
+        viewport,
         ..Default::default()
     };
 

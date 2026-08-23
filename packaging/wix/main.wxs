@@ -275,6 +275,29 @@
 
         <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
 
+        <!--
+          The icon Add/Remove Programs (Settings > Apps > Installed apps) shows
+          beside the entry. Without ARPPRODUCTICON Windows draws a generic
+          package box there, whatever icons the installed binaries carry.
+
+          The Id must keep the .ico extension: WiX writes it into the MSI Icon
+          table verbatim, and the installer picks the icon format from that
+          name rather than from the file's contents.
+
+          Source is resolved through light's second bind path, the workspace
+          root, exactly like License.rtf above. This is the same multi-size
+          .ico that build.rs compiles into sekio-gui.exe as a resource, so the
+          installer entry and the executable cannot drift apart.
+
+          Nothing here touches the Start Menu shortcut: it points at
+          sekio-gui.exe, and a non-advertised shortcut takes the icon from its
+          target's own resource. Giving that component an Icon attribute would
+          mean editing it, and its KeyPath is load-bearing (see the
+          StartMenuShortcut component above).
+        -->
+        <Icon Id='sekio.ico' SourceFile='assets\sekio.ico'/>
+        <Property Id='ARPPRODUCTICON' Value='sekio.ico'/>
+
         <Property Id='ARPHELPLINK' Value='https://github.com/hairbui76/sekio'/>
         <Property Id='ARPURLINFOABOUT' Value='https://github.com/hairbui76/sekio'/>
 

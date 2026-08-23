@@ -3,6 +3,10 @@ name = "sekio-gui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# Embeds the icon resource into sekio-gui.exe. A no-op on every non-Windows
+# host, including the `--target x86_64-pc-windows-msvc` cross-check; build.rs
+# explains why the gate is on the host and not the target.
+build = "build.rs"
 
 # The GUI is a library with a thin binary on top purely so `tests/` can link
 # against it: `cargo test` cannot reach inside a bin-only crate, which is how a
@@ -51,6 +55,27 @@ rfd = { workspace = true }
 # and already in this workspace's lockfile via crossterm.
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.3"
+
+# The Windows icon resource, and nothing else. Under `[target.'cfg(windows)']`
+# rather than a plain `[build-dependencies]` because for *build* dependencies
+# cargo matches that cfg against the **host**, which is the same question
+# `#[cfg(windows)]` inside build.rs asks — so the crate and the code that uses
+# it can never disagree about whether they exist. Verify with:
+#
+#   cargo tree -p sekio-gui -e build                          # empty on Linux
+#   cargo tree -p sekio-gui -e build --target x86_64-pc-windows-msvc  # also empty
+#   cargo tree -p sekio-gui -e build --target all             # shows winresource
+#
+# It is still resolved into Cargo.lock and may be downloaded on any host, as
+# every platform-specific dependency is; it is simply never compiled or linked
+# on a non-Windows host, which is what keeps the Linux build and the
+# `--target x86_64-pc-windows-msvc` cross-check untouched.
+[target.'cfg(windows)'.build-dependencies]
+# The maintained fork of `winres` (which is unmaintained). Pure Rust — it pulls
+# only `toml` and `version_check`, both already in this lockfile, and shells out
+# to the Windows SDK's rc.exe rather than linking anything, so it does not
+# breach this workspace's no-C-dependency rule. See CLAUDE.md.
+winresource = "0.1"
 
 # Two Windows-only jobs. Reading the file manager's current selection: on
 # Windows that is a COM call into Explorer, while on Linux there is no

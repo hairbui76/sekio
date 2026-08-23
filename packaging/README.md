@@ -106,6 +106,7 @@ Layout:
 /usr/bin/sekio, sekio-tui, sekio-gui
 /usr/lib/sekio/libpdfium.so                the PDF page renderer (private copy)
 /usr/share/applications/sekio.desktop      "Open with" entry in file managers
+/usr/share/icons/hicolor/<size>/apps/sekio.png   what its Icon=sekio resolves to
 /usr/lib/systemd/user/sekio.service        the preview daemon (NOT auto-enabled)
 /usr/share/doc/sekio/                      README, integration.md, desktop.md
 /usr/share/doc/sekio/copyright             (deb)
@@ -120,6 +121,24 @@ link against it. sekio finds it there by looking one level up and over from its
 own executable path — `/usr/bin/sekio` → `/usr/lib/sekio/` — which is why the
 directory name has to keep matching `LIBDIR` in
 `crates/sekio-core/src/render/pdf.rs`.
+
+### Icons
+
+`sekio.desktop` carries `Icon=sekio` — a theme icon *name*, which desktops
+resolve against the hicolor theme. The packages therefore install
+`assets/icons/sekio-<n>.png` as
+`/usr/share/icons/hicolor/<n>x<n>/apps/sekio.png` for n in 16, 24, 32, 48, 64,
+128 and 256. Both asset lists in `crates/sekio-cli/Cargo.toml` spell out all
+seven; the AUR `PKGBUILD` installs the same set in a loop.
+
+The PNGs are committed, not generated during the build — see `assets/README.md`
+for how they are made and for the one command that regenerates them. No release
+runner needs an image tool installed.
+
+Nothing runs `gtk-update-icon-cache` afterwards, and nothing needs to: Debian
+ships a dpkg trigger on `/usr/share/icons/hicolor` (from `hicolor-icon-theme`,
+which every desktop pulls in) and Fedora has the equivalent file trigger. Where
+no cache exists at all, GTK and Qt read the directories directly.
 
 ### The preview daemon
 
@@ -214,6 +233,21 @@ C:\Program Files\sekio\bin\pdfium.dll        the PDF page renderer
 C:\Program Files\sekio\License.rtf           sekio's own licence, shown by the installer
 C:\Program Files\sekio\LICENSE-pdfium.txt    pdfium's
 ```
+
+Icons on Windows come from two independent places, and both are needed:
+
+- **`sekio-gui.exe` carries an icon resource**, embedded at build time by
+  `crates/sekio-gui/build.rs` from `assets/sekio.ico`. That is what Explorer,
+  the taskbar and the Start Menu shortcut show. `sekio.exe` and `sekio-tui.exe`
+  deliberately have none — they are console programs.
+- **`main.wxs` declares `<Icon>` + `ARPPRODUCTICON`** from the same
+  `assets/sekio.ico`. That is the icon in Add/Remove Programs, which reads the
+  MSI, not the installed files.
+
+`build.rs` only runs its half on a Windows *host* (it needs the Windows SDK's
+`rc.exe`), which is exactly what the `msi` job is. A `sekio-gui.exe`
+cross-compiled from Linux has no icon resource; that is a deliberate trade so
+`cargo check --target x86_64-pc-windows-msvc` keeps working on a Linux box.
 
 `pdfium.dll` sits in `bin`, beside the executables, because that is the first
 place sekio looks — and the first place Windows' own loader looks. Do not move

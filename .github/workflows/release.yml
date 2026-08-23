@@ -83,6 +83,25 @@ jobs:
       - name: Build .rpm
         run: cargo generate-rpm -p crates/sekio-cli
 
+      # A launcher with a generic icon is invisible to everyone but the user
+      # who installs the package, so nothing here is left to trust. Both halves
+      # have to be present together: `Icon=sekio` is only a name, and it
+      # resolves to nothing unless the hicolor PNGs are installed beside it.
+      # (Checked on the .deb; the .rpm is driven by the second `assets` table in
+      # the same crates/sekio-cli/Cargo.toml, and Fedora's rpm tooling is not on
+      # this runner to inspect it with.)
+      - name: Verify the desktop entry and its icons
+        shell: bash
+        run: |
+          set -euo pipefail
+          dpkg-deb -x target/debian/*.deb deb-contents
+          grep -qx 'Icon=sekio' deb-contents/usr/share/applications/sekio.desktop
+          for n in 16 24 32 48 64 128 256; do
+            test -s "deb-contents/usr/share/icons/hicolor/${n}x${n}/apps/sekio.png"
+          done
+          rm -rf deb-contents
+          echo "desktop entry has Icon=sekio and all seven hicolor sizes ship"
+
       - name: Collect and checksum
         shell: bash
         run: |
