@@ -18,6 +18,7 @@ use crate::config;
 use crate::dialog;
 use crate::fonts;
 use crate::hotkey::{self, Action as PressAction};
+use crate::icon;
 use crate::recent::{self, Recent};
 use crate::selection;
 use crate::state::{close_action, human_size, Close, Mode, RequestTracker, Siblings};
@@ -94,6 +95,8 @@ enum Action {
     /// Show or hide the built-in browser pane.
     ToggleBrowser,
     CloseBrowser,
+    /// Chosen in the settings menu: repaint in this mode and remember it.
+    SetTheme(style::Theme),
     /// Preview this path, at the user's request.
     Open(PathBuf),
     /// List this directory in the browser pane.
@@ -133,6 +136,10 @@ pub struct Startup {
     /// this environment has no config directory, in which case a choice
     /// applies to this run and is not remembered.
     pub config_path: Option<PathBuf>,
+    /// What the user asked for — `System`, not the mode it resolved to. The
+    /// settings menu ticks this, so it has to survive the round trip through
+    /// the desktop's answer.
+    pub theme: style::Theme,
 }
 
 pub struct SekioApp {
@@ -175,6 +182,14 @@ pub struct SekioApp {
     /// The combination currently grabbed; `None` when none is.
     hotkey_spec: Option<String>,
     config_path: Option<PathBuf>,
+    /// The *preference*, as opposed to `palette.theme`, which is what it
+    /// resolved to this frame. Both are needed: one is what the menu shows, the
+    /// other is what the window is painted in.
+    theme: style::Theme,
+    /// The app mark on the home screen, uploaded once and kept. `None` until
+    /// the home screen is first painted, and stays `None` if the embedded PNG
+    /// will not decode — in which case the wordmark simply stands alone.
+    logo: Option<egui::TextureHandle>,
     /// Set by the tray's Quit. A daemon normally *refuses* to close (see
     /// [`SekioApp::handle_close_request`]), and this is the one thing that
     /// means it: end the process, do not hide.
@@ -238,6 +253,7 @@ impl SekioApp {
             tray,
             hotkey_spec,
             config_path,
+            theme,
         } = startup;
         let (tray, tray_events) = match tray {
             Some((tray, events)) => (Some(tray), Some(events)),
@@ -289,6 +305,8 @@ impl SekioApp {
             },
             hotkey_spec,
             config_path,
+            theme,
+            logo: None,
             quitting: false,
             visible,
             browser: Browser::default(),
@@ -604,6 +622,44 @@ impl SekioApp {
             }
         }
         self.refresh_tray();
+    }
+
+    /// Repaint in `theme` from now on, and remember the choice.
+    ///
+    /// Only the *preference* is set here. Which palette that resolves to is
+    /// egui's answer at the start of the next pass, and `poll_theme` picks it
+    /// up there — so choosing System takes effect against whatever the desktop
+    /// currently says without this function having to ask.
+    fn set_theme(&mut self, ctx: &egui::Context, theme: style::Theme) {
+        if self.theme == theme {
+            return;
+        }
+        self.theme = theme;
+        style::install(ctx, theme);
+        if let Some(path) = &self.config_path {
+            if let Err(err) = config::save_theme(path, theme) {
+                eprintln!("sekio-gui: theme changed but not saved: {err}");
+            }
+        }
+    }
+
+    /// Upload the app mark, once, the first time the home screen needs it.
+    ///
+    /// Deliberately not done in `new`: a popup summoned by the hotkey never
+    /// shows the home screen, and a texture upload on the cold-start path
+    /// would be paid for by every preview that never displays it.
+    fn ensure_logo(&mut self, ctx: &egui::Context) {
+        if self.logo.is_some() || !matches!(self.view, View::Home) {
+            return;
+        }
+        let Some(icon) = icon::decode(icon::PNG) else {
+            return;
+        };
+        let image = egui::ColorImage::from_rgba_unmultiplied(
+            [icon.width as usize, icon.height as usize],
+            &icon.rgba,
+        );
+        self.logo = Some(ctx.load_texture("sekio-mark", image, egui::TextureOptions::LINEAR));
     }
 
     /// Rebuild the tray menu and send it if anything the user would see moved.
@@ -998,6 +1054,7 @@ impl SekioApp {
             Action::OpenDialog => self.open_dialog(ctx),
             Action::ToggleBrowser => self.toggle_browser(),
             Action::CloseBrowser => self.browser.close(),
+            Action::SetTheme(theme) => self.set_theme(ctx, theme),
             Action::Open(path) => self.open(ctx, path),
             Action::Descend(dir) => self.browse(dir),
             Action::Parent => {
@@ -1045,13 +1102,12 @@ impl SekioApp {
         let response = egui::Panel::top("sekio-header")
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    // There is no path on the home screen, or in a daemon
-                    // between popups.
-                    let title = match self.current() {
-                        Some(path) => file_name(path),
-                        None => "sekio".to_owned(),
-                    };
-                    ui.label(RichText::new(title).strong());
+                    // Only the file's name. On the home screen the wordmark
+                    // below already says "sekio", and repeating it in the bar
+                    // above just reads as the same word twice.
+                    if let Some(path) = self.current() {
+                        ui.label(RichText::new(file_name(path)).strong());
+                    }
                     if let (Some(pos), true) = (self.siblings.position(), self.siblings.len() > 1) {
                         ui.label(
                             RichText::new(format!("{pos} / {}", self.siblings.len()))
@@ -1059,6 +1115,10 @@ impl SekioApp {
                         );
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Rightmost, where a settings control is looked for.
+                        if let Some(chosen) = self.settings_menu(ui) {
+                            action = Some(chosen);
+                        }
                         if self.tracker.is_pending() {
                             ui.add(egui::Spinner::new().size(12.0));
                         }
@@ -1093,6 +1153,93 @@ impl SekioApp {
         if self.borderless && response.interact(egui::Sense::drag()).drag_started() {
             ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
         }
+        action
+    }
+
+    /// The gear: switch theme, and see what this is and where it keeps its
+    /// settings.
+    ///
+    /// A menu rather than a settings *window*, because there are two things in
+    /// it. Everything else worth setting is either a one-shot flag or lives in
+    /// `gui.toml`, and a preferences dialog that duplicated the file would be
+    /// two places to disagree.
+    fn settings_menu(&self, ui: &mut egui::Ui) -> Option<Action> {
+        let mut action = None;
+        ui.menu_button("⚙", |ui| {
+            ui.set_min_width(212.0);
+
+            menu_heading(ui, &self.palette, "Theme");
+            for theme in [
+                style::Theme::System,
+                style::Theme::Light,
+                style::Theme::Dark,
+            ] {
+                let label = match theme {
+                    // Says what it will do, not just what it is called: on a
+                    // desktop that reports nothing, "System" silently means
+                    // dark, and this is where that is admitted.
+                    style::Theme::System => "Follow the desktop",
+                    style::Theme::Light => "Light",
+                    style::Theme::Dark => "Dark",
+                };
+                if ui
+                    .selectable_label(self.theme == theme, label)
+                    .on_hover_text(match theme {
+                        style::Theme::System => "Switches with your desktop while sekio is open",
+                        _ => "Stays this way whatever the desktop does",
+                    })
+                    .clicked()
+                {
+                    action = Some(Action::SetTheme(theme));
+                    ui.close();
+                }
+            }
+
+            ui.add_space(6.0);
+            ui.separator();
+            ui.add_space(2.0);
+            menu_heading(ui, &self.palette, "About");
+            ui.label(format!("sekio {}", env!("CARGO_PKG_VERSION")));
+            ui.label(
+                RichText::new("Quick preview for any file")
+                    .color(self.palette.dim)
+                    .size(11.0),
+            );
+            ui.add_space(4.0);
+            // The one fact that is otherwise only discoverable by reading the
+            // documentation, and the answer to "where do I change the hotkey?".
+            match &self.config_path {
+                Some(path) => {
+                    ui.label(RichText::new("Settings").color(self.palette.dim).size(11.0));
+                    ui.label(
+                        RichText::new(browser::compact(path))
+                            .monospace()
+                            .size(10.0)
+                            .color(self.palette.dim),
+                    )
+                    .on_hover_text(path.display().to_string());
+                }
+                None => {
+                    ui.label(
+                        RichText::new("No settings file in this environment")
+                            .color(self.palette.dim)
+                            .size(11.0),
+                    );
+                }
+            }
+            if let Some(spec) = &self.hotkey_spec {
+                ui.add_space(4.0);
+                ui.label(RichText::new("Hotkey").color(self.palette.dim).size(11.0));
+                ui.label(RichText::new(spec).monospace().size(10.0));
+            }
+            ui.add_space(4.0);
+            ui.hyperlink_to(
+                RichText::new("github.com/hairbui76/sekio").size(11.0),
+                "https://github.com/hairbui76/sekio",
+            );
+        })
+        .response
+        .on_hover_text("Theme and about");
         action
     }
 
@@ -1178,6 +1325,9 @@ impl SekioApp {
     fn body(&mut self, ui: &mut egui::Ui) -> Option<Action> {
         let zoom = self.zoom;
         let palette = self.palette;
+        // Cloned before `view` is borrowed mutably below. A `TextureHandle` is
+        // a reference to an upload egui already owns, so this costs nothing.
+        let logo = self.logo.clone();
         let home = HomeScreen {
             recent: &self.recent_shown,
             note: self.dialog_note,
@@ -1202,7 +1352,7 @@ impl SekioApp {
             .show(ui, |ui| {
                 columns = Some(text_columns(ui));
                 match view {
-                    View::Home => paint_home(ui, &home, &palette),
+                    View::Home => paint_home(ui, &home, &palette, logo.as_ref()),
                     View::Loading => {
                         ui.centered_and_justified(|ui| {
                             ui.label(RichText::new("loading…").color(palette.dim));
@@ -1321,6 +1471,7 @@ impl eframe::App for SekioApp {
         self.poll_drops(ctx);
         self.poll_recent();
         self.poll_worker(ctx);
+        self.ensure_logo(ctx);
         self.handle_close_request(ctx);
         self.handle_keys(ctx);
         self.handle_wheel_zoom(ctx);
@@ -1399,42 +1550,73 @@ struct HomeScreen<'a> {
 
 /// The "nothing loaded yet" screen: what this is, how to open something, what
 /// was opened last time, and every key that does anything.
-fn paint_home(ui: &mut egui::Ui, home: &HomeScreen<'_>, palette: &Palette) -> Option<Action> {
+fn paint_home(
+    ui: &mut egui::Ui,
+    home: &HomeScreen<'_>,
+    palette: &Palette,
+    logo: Option<&egui::TextureHandle>,
+) -> Option<Action> {
     let mut action = None;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.add_space(26.0);
-            // A fixed-width column, centred: `ui.horizontal` inside it then
-            // lays out left-to-right the way it looks like it should.
-            let width = ui.available_width().clamp(220.0, 460.0);
+            let available = ui.available_width();
+            // Wide enough for two columns side by side on a maximised window,
+            // and still bounded: a wordmark and a key list stretched across
+            // 2000 px of monitor is not more readable, only emptier.
+            let width = available.clamp(280.0, 720.0);
+            // A little more air above when there is room for it, so a large
+            // window does not look like a small one with the content stuck to
+            // the top edge.
+            ui.add_space(if available > 900.0 { 44.0 } else { 26.0 });
             ui.vertical_centered(|ui| {
                 ui.allocate_ui_with_layout(
                     Vec2::new(width, 0.0),
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
-                        action = home_column(ui, home, palette);
+                        action = home_column(ui, home, palette, width, logo);
                     },
                 );
             });
-            ui.add_space(24.0);
+            ui.add_space(32.0);
         });
     action
 }
 
-fn home_column(ui: &mut egui::Ui, home: &HomeScreen<'_>, palette: &Palette) -> Option<Action> {
+fn home_column(
+    ui: &mut egui::Ui,
+    home: &HomeScreen<'_>,
+    palette: &Palette,
+    width: f32,
+    logo: Option<&egui::TextureHandle>,
+) -> Option<Action> {
     let mut action = None;
 
-    ui.label(RichText::new("sekio").size(34.0).strong());
-    ui.label(
-        RichText::new(format!(
-            "quick preview for any file · v{}",
-            env!("CARGO_PKG_VERSION")
-        ))
-        .color(palette.dim),
-    );
+    // The mark beside the wordmark, not above it: the block stays one line
+    // tall, so the actions below it do not get pushed down the window.
+    ui.horizontal(|ui| {
+        if let Some(logo) = logo {
+            ui.add(
+                egui::Image::new(logo)
+                    .fit_to_exact_size(Vec2::splat(52.0))
+                    .corner_radius(10.0),
+            );
+            ui.add_space(4.0);
+        }
+        ui.vertical(|ui| {
+            ui.add_space(2.0);
+            ui.label(RichText::new("sekio").size(34.0).strong());
+            ui.label(
+                RichText::new(format!(
+                    "Quick preview for any file · v{}",
+                    env!("CARGO_PKG_VERSION")
+                ))
+                .color(palette.dim),
+            );
+        });
+    });
 
-    ui.add_space(18.0);
+    ui.add_space(20.0);
     ui.horizontal(|ui| {
         if ui
             .add_enabled(!home.dialog_open, egui::Button::new("Open file…"))
@@ -1445,53 +1627,146 @@ fn home_column(ui: &mut egui::Ui, home: &HomeScreen<'_>, palette: &Palette) -> O
         if ui.button("Browse files").clicked() {
             action = Some(Action::ToggleBrowser);
         }
+        ui.add_space(4.0);
         if home.dialog_open {
             ui.add(egui::Spinner::new().size(12.0));
             ui.label(RichText::new("waiting for the dialog…").color(palette.dim));
+        } else {
+            ui.label(
+                RichText::new("or drop a file anywhere in this window")
+                    .color(palette.dim)
+                    .size(12.0),
+            );
         }
     });
-    ui.add_space(6.0);
-    ui.label(
-        RichText::new("…or drop a file anywhere in this window.")
-            .color(palette.dim)
-            .size(12.0),
-    );
     if let Some(note) = home.note {
-        ui.add_space(4.0);
+        ui.add_space(6.0);
         ui.label(RichText::new(note).color(palette.warn).size(12.0));
     }
 
-    ui.add_space(20.0);
+    ui.add_space(22.0);
+    hairline(ui, palette, width);
+    ui.add_space(18.0);
+
+    // Side by side where the window is wide enough, stacked where it is not.
+    // The threshold is where the key column stops being able to hold
+    // "previous / next file in the folder" on one line.
+    if width >= 560.0 {
+        let gap = 32.0;
+        let left = ((width - gap) * 0.56).floor();
+        let right = width - gap - left;
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui_with_layout(
+                Vec2::new(left, 0.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    if let Some(chosen) = recent_block(ui, home, palette) {
+                        action = Some(chosen);
+                    }
+                },
+            );
+            ui.add_space(gap);
+            ui.allocate_ui_with_layout(
+                Vec2::new(right, 0.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| keys_block(ui, palette),
+            );
+        });
+    } else {
+        if let Some(chosen) = recent_block(ui, home, palette) {
+            action = Some(chosen);
+        }
+        ui.add_space(22.0);
+        keys_block(ui, palette);
+    }
+
+    action
+}
+
+/// What was previewed last, most recent first.
+fn recent_block(ui: &mut egui::Ui, home: &HomeScreen<'_>, palette: &Palette) -> Option<Action> {
+    let mut action = None;
     section(ui, palette, "Recent");
     if home.recent.is_empty() {
         ui.label(
-            RichText::new("nothing yet — what you preview shows up here.")
+            RichText::new("Nothing yet — what you preview shows up here.")
                 .color(palette.dim)
                 .size(12.0),
         );
-    } else {
-        for path in home.recent {
-            ui.horizontal(|ui| {
-                ui.style_mut().wrap_mode = Some(style::NO_WRAP);
-                if ui.link(file_name(path)).clicked() {
-                    action = Some(Action::Open(path.clone()));
-                }
-                if let Some(parent) = path.parent() {
-                    ui.label(
-                        RichText::new(browser::compact(parent))
-                            .color(palette.dim)
-                            .size(11.0),
-                    );
-                }
-            });
-        }
+        return action;
     }
+    for path in home.recent.iter().take(HOME_RECENT) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            let total = ui.available_width();
 
-    ui.add_space(20.0);
+            // The folder is measured before either is drawn, because the name
+            // has to be told how much room is left. Without that the two are
+            // laid out independently and a long name runs straight underneath
+            // its own folder label — which is exactly what a recent list is
+            // full of.
+            let folder = path.parent().map(browser::compact);
+            let folder_width = folder
+                .as_deref()
+                .map(|text| text_width(ui, text, FOLDER_SIZE).min(total * 0.45))
+                .unwrap_or(0.0);
+            let name_width = (total - folder_width - 12.0).max(72.0);
+
+            ui.allocate_ui_with_layout(
+                Vec2::new(name_width, ui.spacing().interact_size.y),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    // Elided rather than wrapped: one row per file, always, or
+                    // the list stops scanning as a list.
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                    if ui
+                        .add(egui::Link::new(file_name(path)))
+                        .on_hover_text(path.display().to_string())
+                        .clicked()
+                    {
+                        action = Some(Action::Open(path.clone()));
+                    }
+                },
+            );
+
+            // Pushed to the far edge rather than trailing the name. Most of a
+            // recent list is the same two or three folders, so left-aligned
+            // they repeat as ragged noise between the names; against the right
+            // edge they line up into a column the eye can skip.
+            if let Some(folder) = folder {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                    ui.label(RichText::new(folder).color(palette.faint).size(FOLDER_SIZE));
+                });
+            }
+        });
+    }
+    action
+}
+
+/// Point size of the folder beside a recent file.
+const FOLDER_SIZE: f32 = 11.0;
+
+/// How wide `text` would be, so a neighbour can be given what is left.
+fn text_width(ui: &egui::Ui, text: &str, size: f32) -> f32 {
+    ui.ctx().fonts_mut(|fonts| {
+        fonts
+            .layout_no_wrap(
+                text.to_owned(),
+                egui::FontId::proportional(size),
+                egui::Color32::PLACEHOLDER,
+            )
+            .size()
+            .x
+    })
+}
+
+/// Every key that does anything, so the window never needs the manual.
+fn keys_block(ui: &mut egui::Ui, palette: &Palette) {
     section(ui, palette, "Keys");
     egui::Grid::new("sekio-keys")
         .num_columns(2)
-        .spacing([18.0, 3.0])
+        .spacing([16.0, 4.0])
         .show(ui, |ui| {
             for (key, what) in KEYS {
                 ui.label(RichText::new(*key).monospace().size(11.0));
@@ -1499,9 +1774,23 @@ fn home_column(ui: &mut egui::Ui, home: &HomeScreen<'_>, palette: &Palette) -> O
                 ui.end_row();
             }
         });
-
-    action
 }
+
+/// A one-pixel rule the width of the content column.
+///
+/// `ui.separator()` spans whatever the parent allocated and picks its own
+/// colour; this one belongs to the column and uses the palette's outline, so
+/// it reads as structure rather than as a divider dropped on top.
+fn hairline(ui: &mut egui::Ui, palette: &Palette, width: f32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 1.0), egui::Sense::hover());
+    ui.painter()
+        .hline(rect.x_range(), rect.center().y, (1.0, palette.outline));
+}
+
+/// How many recent files the home screen lists. The whole point is the last
+/// few things you looked at; a longer list is a file browser, and there is one
+/// of those a keystroke away.
+const HOME_RECENT: usize = 8;
 
 /// The key list on the home screen. Kept in one place so it cannot drift from
 /// `SekioApp::handle_keys`.
@@ -1514,6 +1803,12 @@ const KEYS: &[(&str, &str)] = &[
     ("Esc", "back to this screen"),
     ("Ctrl+Q", "quit"),
 ];
+
+/// A small capitalised label above a group of menu items.
+fn menu_heading(ui: &mut egui::Ui, palette: &Palette, title: &str) {
+    ui.label(RichText::new(title).color(palette.dim).size(10.0).strong());
+    ui.add_space(2.0);
+}
 
 fn section(ui: &mut egui::Ui, palette: &Palette, title: &str) {
     ui.label(RichText::new(title).color(palette.dim).size(11.0).strong());

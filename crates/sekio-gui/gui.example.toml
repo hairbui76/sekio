@@ -68,5 +68,9 @@
 ## sekio on the next frame, without restarting it. The syntax colours change
 ## with it — a light window highlights code with a light theme.
 ##
+## This is the one setting with a control in the window: the gear in the top
+## right switches it and rewrites this line in place, the way the tray menu does
+## for the hotkey.
+##
 ## Unparseable values are reported on stderr and the default is used instead.
 # theme = "system"

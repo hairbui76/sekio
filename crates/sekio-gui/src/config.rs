@@ -498,6 +498,37 @@ pub fn save_hotkey(path: &Path, spec: &str) -> Result<(), SaveError> {
     write_atomically(path, &updated).map_err(|source| io_error(path, source))
 }
 
+/// Persist `theme` as the `theme` setting in `path`.
+///
+/// The window's own theme switcher writes through this, so a mode chosen from
+/// the menu is still there next time. No validation step like `save_hotkey`'s:
+/// the caller hands over a [`Theme`], which cannot be a value the reader would
+/// reject.
+pub fn save_theme(path: &Path, theme: Theme) -> Result<(), SaveError> {
+    let existing = read_for_update(path)?;
+    let updated = with_setting(&existing, "theme", theme.as_str());
+    write_atomically(path, &updated).map_err(|source| io_error(path, source))
+}
+
+/// Read a file that is about to be rewritten, creating its directory first.
+///
+/// A missing file is an empty one — the settings file is optional and this is
+/// how it comes into existence. A file that exists but cannot be *read* is a
+/// hard stop: rewriting it from scratch would throw away content we cannot
+/// see.
+fn read_for_update(path: &Path) -> Result<String, SaveError> {
+    if let Some(dir) = path.parent() {
+        if !dir.as_os_str().is_empty() {
+            std::fs::create_dir_all(dir).map_err(|source| io_error(path, source))?;
+        }
+    }
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(text),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(String::new()),
+        Err(err) => Err(io_error(path, err)),
+    }
+}
+
 fn io_error(path: &Path, source: io::Error) -> SaveError {
     SaveError::Io {
         path: path.to_path_buf(),
@@ -521,7 +552,17 @@ fn io_error(path: &Path, source: io::Error) -> SaveError {
 /// uncommented in place: it is documentation of the default, and the live line
 /// added below it wins in TOML anyway.
 pub fn with_hotkey(text: &str, spec: &str) -> String {
-    let value = toml_string(spec);
+    with_setting(text, "hotkey", spec)
+}
+
+/// The general form of [`with_hotkey`]: set top-level `key` to the string
+/// `value`, keeping every other byte of `text` exactly as it was.
+///
+/// Two settings are written back from the UI now — the tray's hotkey and the
+/// window's theme — and they must not have two different ideas about what
+/// happens to a comment.
+pub fn with_setting(text: &str, key: &str, value: &str) -> String {
+    let value = toml_string(value);
     let segments: Vec<&str> = text.split_inclusive('\n').collect();
 
     // The top-level section is everything before the first table header; only
@@ -535,7 +576,7 @@ pub fn with_hotkey(text: &str, spec: &str) -> String {
 
     for (index, segment) in segments.iter().enumerate() {
         let (body, eol) = line_body(segment);
-        match hotkey_assignment(body).filter(|_| index < first_table) {
+        match assignment(body, key).filter(|_| index < first_table) {
             Some((value_start, value_end)) => {
                 out.push_str(&body[..value_start]);
                 out.push_str(&value);
@@ -549,7 +590,7 @@ pub fn with_hotkey(text: &str, spec: &str) -> String {
             }
             None => {
                 if index == first_table {
-                    push_assignment(&mut out, text, &value);
+                    push_assignment(&mut out, text, key, &value);
                 }
                 out.push_str(segment);
             }
@@ -557,14 +598,14 @@ pub fn with_hotkey(text: &str, spec: &str) -> String {
     }
 
     if first_table == segments.len() {
-        push_assignment(&mut out, text, &value);
+        push_assignment(&mut out, text, key, &value);
     }
     out
 }
 
-/// Append `hotkey = <value>` as its own line, starting one if the file's last
+/// Append `<key> = <value>` as its own line, starting one if the file's last
 /// line was unterminated.
-fn push_assignment(out: &mut String, text: &str, value: &str) {
+fn push_assignment(out: &mut String, text: &str, key: &str, value: &str) {
     // Windows is a first-class target, so a config written by an editor there
     // has CRLF endings and a lone `\n` would leave one line looking different
     // from every other.
@@ -572,7 +613,8 @@ fn push_assignment(out: &mut String, text: &str, value: &str) {
     if !out.is_empty() && !out.ends_with('\n') {
         out.push_str(eol);
     }
-    out.push_str("hotkey = ");
+    out.push_str(key);
+    out.push_str(" = ");
     out.push_str(value);
     out.push_str(eol);
 }
@@ -597,16 +639,15 @@ fn line_body(segment: &str) -> (&str, &str) {
 /// spacing and any trailing comment: everything outside it is copied through.
 /// A commented line never matches, because the `#` is part of the trimmed
 /// content.
-fn hotkey_assignment(body: &str) -> Option<(usize, usize)> {
-    const KEY: &str = "hotkey";
+fn assignment(body: &str, key: &str) -> Option<(usize, usize)> {
     let indent = body.len() - body.trim_start().len();
-    let after_key = body[indent..].strip_prefix(KEY)?;
+    let after_key = body[indent..].strip_prefix(key)?;
     let gap = after_key.len() - after_key.trim_start().len();
     // Anything but `=` here means this was a different key that merely starts
-    // with "hotkey" (`hotkeys`, `hotkey_choices`).
+    // with the one we want (`hotkey` vs `hotkeys`, `theme` vs `theme_name`).
     let after_eq = after_key[gap..].strip_prefix('=')?;
     let space = after_eq.len() - after_eq.trim_start().len();
-    let start = indent + KEY.len() + gap + 1 + space;
+    let start = indent + key.len() + gap + 1 + space;
     Some((start, start + value_len(&after_eq[space..])))
 }
 
@@ -1478,6 +1519,51 @@ tray = false
     }
 
     // ---- the comment-preserving rewrite, as a pure function ----
+
+    #[test]
+    fn saving_a_theme_round_trips_and_leaves_the_rest_of_the_file_alone() {
+        let dir = std::env::temp_dir().join("sekio-config-theme-roundtrip");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("gui.toml");
+
+        // Into a file that does not exist yet, directory and all.
+        save_theme(&path, Theme::Light).expect("a theme should save");
+        let loaded = load_file(&path, true);
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+        assert_eq!(loaded.config.theme.as_deref(), Some("light"));
+
+        // Over an existing value, with a neighbour and a comment to preserve.
+        std::fs::write(
+            &path,
+            "# mine\nhotkey = \"Super+P\"  # keep me\ntheme = \"light\"\nlines = 42\n",
+        )
+        .unwrap();
+        save_theme(&path, Theme::Dark).expect("a theme should save");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "# mine\nhotkey = \"Super+P\"  # keep me\ntheme = \"dark\"\nlines = 42\n",
+            "only the theme value may change"
+        );
+
+        // And the two writers do not tread on each other.
+        save_hotkey(&path, "Alt+F1").expect("a hotkey should save");
+        let loaded = load_file(&path, true);
+        assert_eq!(loaded.config.hotkey.as_deref(), Some("Alt+F1"));
+        assert_eq!(loaded.config.theme.as_deref(), Some("dark"));
+        assert_eq!(loaded.config.lines, Some(42));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_key_that_merely_starts_with_the_one_we_want_is_not_it() {
+        // `theme_name` is not `theme`, so the setting is appended rather than
+        // the wrong line being rewritten.
+        assert_eq!(
+            with_setting("theme_name = \"x\"\n", "theme", "dark"),
+            "theme_name = \"x\"\ntheme = \"dark\"\n"
+        );
+    }
 
     #[test]
     fn with_hotkey_appends_when_the_key_is_absent() {

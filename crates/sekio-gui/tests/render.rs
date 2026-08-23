@@ -140,6 +140,7 @@ impl AppUi {
             tray: None,
             hotkey_spec: None,
             config_path: None,
+            theme: sekio_gui::style::Theme::Dark,
         };
 
         // The app is built inside the closure because it needs the harness's
@@ -1404,8 +1405,8 @@ fn the_home_screen_offers_a_way_to_open_something() {
     let ui = home_ui();
 
     ui.assert_shows("sekio", "the app name");
-    ui.assert_shows("quick preview for any file", "the tagline");
-    ui.assert_shows("…or drop a file anywhere in this window.", "the drop hint");
+    ui.assert_shows("Quick preview for any file", "the tagline");
+    ui.assert_shows("or drop a file anywhere in this window", "the drop hint");
 
     // The controls, as widgets a user (or a screen reader) can actually reach.
     for label in ["Open file…", "Browse files", "Open…", "Browse"] {
@@ -1416,10 +1417,18 @@ fn the_home_screen_offers_a_way_to_open_something() {
         );
     }
 
+    // The settings control, which is the only way to reach the theme and the
+    // version from inside the window.
+    assert!(
+        ui.harness.query_by_label("⚙").is_some(),
+        "the header has no settings button; the AccessKit tree is:\n{:#?}",
+        ui.harness
+    );
+
     // The recent-files area, in its empty state.
     ui.assert_shows("Recent", "the recent-files heading");
     ui.assert_shows(
-        "nothing yet — what you preview shows up here.",
+        "Nothing yet — what you preview shows up here.",
         "the empty recent list",
     );
 
@@ -1588,7 +1597,7 @@ impl AppUi {
 /// file does not pin a version number.
 fn subtitle() -> String {
     format!(
-        "quick preview for any file · v{}",
+        "Quick preview for any file · v{}",
         env!("CARGO_PKG_VERSION")
     )
 }

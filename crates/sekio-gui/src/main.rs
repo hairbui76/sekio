@@ -267,6 +267,7 @@ fn run_once(args: Args, settings: Settings, timing: Timing) -> Result<()> {
             tray: None,
             hotkey_spec: None,
             config_path: None,
+            theme: settings.theme,
         },
     )
 }
@@ -544,6 +545,7 @@ fn run_daemon(
             // `--no-config` or an environment with no config directory, in
             // which case a choice lasts as long as the process.
             config_path: location.write_target().map(Path::to_path_buf),
+            theme: settings.theme,
         },
     );
     // Explicit, so the socket is gone before the process is.

@@ -235,10 +235,14 @@ none is found. See [desktop.md](desktop.md) for binding it in a file manager.
 
 ### Light, dark, and following the desktop
 
-The window paints in whichever mode your desktop is set to, and **changes with
-it while it is open** — switch your desktop to light and sekio is light on the
-next frame. Force one with `--theme dark`, `--theme light`, or pin the
-following-behaviour explicitly with `--theme system`.
+The **gear in the top right** is where this lives, along with the version and
+the path to your settings file. Pick "Follow the desktop", "Light" or "Dark";
+the choice is written straight into `gui.toml`, so it survives a restart.
+
+By default the window paints in whichever mode your desktop is set to and
+**changes with it while it is open** — switch your desktop to light and sekio is
+light on the next frame. `--theme dark`, `--theme light` and `--theme system`
+do the same from the command line.
 
 This is not one palette inverted. Syntax colours do not come from the window at
 all: they are baked into the preview by the core library, using a syntax theme

@@ -113,8 +113,9 @@ them, half-blocks everywhere else. Themes and limits come from
 <img src="assets/screenshots/gui-home.png" alt="The sekio home screen">
 
 Open a file, drop one on the window, or browse from inside it. It follows your
-desktop's light or dark setting and switches with it while open; `--theme
-dark|light|system` or a line in `gui.toml` overrides that.
+desktop's light or dark setting and switches with it while open — the gear in
+the top right pins it either way, and holds the version and the path to your
+settings.
 
 The installers leave one resident, so every preview is a handoff of about five
 milliseconds — a Unix socket on Linux, a named pipe on Windows — and there is a

@@ -82,7 +82,12 @@ impl Recent {
             if line.is_empty() {
                 continue;
             }
-            let path = Path::new(line);
+            // Normalised on the way in, not just on the way out: entries
+            // written by an older version are still in Windows' verbatim
+            // spelling, and left alone they show up as a second, uglier copy
+            // of a file that is already in the list.
+            let path = sekio_core::paths::plain(Path::new(line));
+            let path = path.as_path();
             if !path.is_absolute() {
                 continue;
             }
@@ -279,6 +284,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create scratch dir");
         dir
+    }
+
+    #[test]
+    fn a_verbatim_windows_path_is_normalised_rather_than_listed_twice() {
+        // What an older version wrote (verbatim) beside what this one writes.
+        // Left alone they are two entries for one file, which is exactly what
+        // the home screen was showing.
+        let recent = Recent::parse(
+            "\\\\?\\C:\\Users\\Admin\\Downloads\\report.pdf\nC:\\Users\\Admin\\Downloads\\report.pdf\n",
+        );
+        // On a Unix host neither spelling is absolute, so nothing is kept and
+        // there is nothing to compare — the point of the test is the Windows
+        // runner, where both collapse to one.
+        if cfg!(windows) {
+            assert_eq!(recent.paths().len(), 1, "one file, one entry");
+            assert_eq!(
+                recent.paths()[0].to_str(),
+                Some("C:\\Users\\Admin\\Downloads\\report.pdf"),
+                "the readable spelling is the one kept"
+            );
+        } else {
+            assert!(recent.paths().is_empty());
+        }
     }
 
     #[test]
