@@ -454,14 +454,12 @@ mod imp {
             }
             // DrawingML carries the same two as attributes on the run's own
             // `a:rPr` rather than as child elements.
-            b"rPr" => {
-                if st.run_depth > 0 {
-                    if let Some(v) = attr(e, b"b") {
-                        st.bold = on_off(Some(&v));
-                    }
-                    if let Some(v) = attr(e, b"i") {
-                        st.italic = on_off(Some(&v));
-                    }
+            b"rPr" if st.run_depth > 0 => {
+                if let Some(v) = attr(e, b"b") {
+                    st.bold = on_off(Some(&v));
+                }
+                if let Some(v) = attr(e, b"i") {
+                    st.italic = on_off(Some(&v));
                 }
             }
             _ => {}

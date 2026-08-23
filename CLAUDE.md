@@ -20,12 +20,19 @@ cargo run --release -p sekio-core --example bench   # preview latency per format
 cargo check --target x86_64-pc-windows-msvc --workspace   # verify Windows from Linux
 ```
 
-CI pins `dtolnay/rust-toolchain@stable`, which is ahead of this machine's
-toolchain (`rustc --version` locally vs. whatever stable is today). New clippy
-lints therefore fail CI while passing here — `chunks_exact_to_as_chunks` did
-exactly that. A clean local clippy is necessary but not sufficient; if CI trips
-a lint you have never seen, that is why, and the fix is the lint's own
-suggestion rather than an `allow`.
+CI pins `dtolnay/rust-toolchain@stable`, which is **ahead of this machine's
+default toolchain**. New clippy lints therefore fail CI while passing here —
+that happened twice (`chunks_exact_to_as_chunks`, then `collapsible_if`) before
+`stable` was installed alongside the default. Lint under the same compiler CI
+uses, not the default one:
+
+```sh
+RUSTFLAGS="-D warnings" cargo +stable clippy --workspace --all-targets
+```
+
+Build and test with the default toolchain as usual; it is only lints that
+differ. When one does trip, take the lint's own suggestion rather than adding
+an `allow`.
 
 CI sets `RUSTFLAGS: -D warnings`, so a warning fails the build there but not
 locally. Before pushing, mirror it — especially for the Windows target, where
