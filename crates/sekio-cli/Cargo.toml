@@ -74,8 +74,9 @@ preview backend
   * sekio-tui  - two-pane terminal browser with real terminal graphics
   * sekio-gui  - Quick Look-style popup window, with a resident --daemon mode
 
-Enable the popup daemon so previews open instantly:
-  systemctl --user enable --now sekio
+The resident popup daemon is enabled for every user at install time, so a
+preview is a socket handoff rather than a cold start. To switch it off:
+  systemctl --global disable sekio
 """
 # `$auto` reads DT_NEEDED and finds only libc6/libgcc-s1 — verified with `ldd`
 # on the release build. That is not the whole story: eframe/winit/glutin
@@ -116,18 +117,27 @@ assets = [
     ["../../assets/icons/sekio-128.png", "usr/share/icons/hicolor/128x128/apps/sekio.png", "644"],
     ["../../assets/icons/sekio-256.png", "usr/share/icons/hicolor/256x256/apps/sekio.png", "644"],
     # A *user* unit, not a system one: it is per-session and runs as you.
-    # Not enabled by a postinst on purpose — see the systemd-units note below.
+    # Enabled for every user by the postinst below, which is where the
+    # awkwardness of doing that from a root maintainer script is explained.
     ["../../packaging/systemd/sekio.service", "usr/lib/systemd/user/", "644"],
     ["../../README.md", "usr/share/doc/sekio/README.md", "644"],
     ["../../docs/guide.md", "usr/share/doc/sekio/guide.md", "644"],
     ["../../docs/integration.md", "usr/share/doc/sekio/integration.md", "644"],
     ["../../docs/desktop.md", "usr/share/doc/sekio/desktop.md", "644"],
 ]
-# Note the absence of [package.metadata.deb.systemd-units]: that would generate
-# maintainer scripts that enable and start the unit on install. A previewer
-# daemon that appears in every session without being asked for is not a good
-# default, so the unit ships disabled and README.md documents the one command
-# that turns it on.
+# postinst / prerm. They enable the systemd *user* unit installed above for
+# every user on the machine, and remove that again on uninstall. Both scripts
+# carry the reasoning; the shape of it is that `systemctl --user enable` is
+# unusable from a root maintainer script, so `systemctl --global enable` does
+# it by managing one symlink under /etc/systemd/user instead.
+#
+# Path is relative to this manifest's directory, like the assets above.
+maintainer-scripts = "../../packaging/deb"
+# Note the continued absence of [package.metadata.deb.systemd-units]: it drives
+# deb-systemd-helper and deb-systemd-invoke, which only know about *system*
+# units — there is no --user or --global anywhere in what it generates. It
+# would also insert its fragments at a #DEBHELPER# token in the scripts above,
+# which is why they contain none.
 
 [package.metadata.generate-rpm]
 name = "sekio"
@@ -145,6 +155,19 @@ group = "Applications/File"
 # rpm's find-requires: these packages are built on an Ubuntu CI runner, which
 # may not have rpm's helper scripts installed at all.
 auto-req = "builtin"
+# %post and %preun, the rpm twins of the .deb's postinst/prerm above: they
+# enable the systemd *user* unit for every user and take it away again on
+# uninstall. See packaging/rpm/*.sh for why this cannot be
+# `systemctl --user enable`.
+#
+# These are read relative to the *current directory*, like the rpm assets
+# below, so `cargo generate-rpm` must run from the workspace root. Watch this
+# one: when cargo-generate-rpm cannot find the file it silently treats the
+# string as the scriptlet body itself, so a typo here produces a package whose
+# %post is the literal text "packaging/rpm/post-install.sh". Check it with
+# `rpm -qp --scripts` after building.
+post_install_script = "packaging/rpm/post-install.sh"
+pre_uninstall_script = "packaging/rpm/pre-uninstall.sh"
 assets = [
     { source = "target/release/sekio", dest = "/usr/bin/sekio", mode = "755" },
     { source = "target/release/sekio-tui", dest = "/usr/bin/sekio-tui", mode = "755" },
@@ -161,6 +184,7 @@ assets = [
     { source = "assets/icons/sekio-64.png", dest = "/usr/share/icons/hicolor/64x64/apps/sekio.png", mode = "644" },
     { source = "assets/icons/sekio-128.png", dest = "/usr/share/icons/hicolor/128x128/apps/sekio.png", mode = "644" },
     { source = "assets/icons/sekio-256.png", dest = "/usr/share/icons/hicolor/256x256/apps/sekio.png", mode = "644" },
+    # Enabled for every user by post_install_script above, same as the .deb.
     { source = "packaging/systemd/sekio.service", dest = "/usr/lib/systemd/user/sekio.service", mode = "644" },
     { source = "README.md", dest = "/usr/share/doc/sekio/README.md", mode = "644", doc = true },
     { source = "docs/guide.md", dest = "/usr/share/doc/sekio/guide.md", mode = "644", doc = true },

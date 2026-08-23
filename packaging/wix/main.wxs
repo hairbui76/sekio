@@ -117,6 +117,63 @@
                         </Component>
 
                         <!--
+                          Starts the preview daemon at login, by writing one
+                          value named 'sekio' under the Run key.
+
+                          Same shape as the Path component just above and for
+                          the same reason: a registry value is not a file, so
+                          WiX cannot derive a stable auto-GUID for the
+                          component and the Guid is fixed rather than '*'. A
+                          changing GUID would orphan the old Run value on
+                          upgrade instead of replacing it.
+
+                          Root='HKMU' is load-bearing. It resolves to HKLM in
+                          this package, which is InstallScope='perMachine'
+                          (ALLUSERS=1), so the component holds nothing but
+                          per-machine data in a per-machine package, and
+                          light's ICE validation has nothing to object to.
+                          Writing HKCU here instead would put per-user data in
+                          a component that installs under ProgramFiles64Folder,
+                          which is the mix ICE57 rejects, and would also make
+                          the daemon start for the one account that happened to
+                          run the installer rather than for everyone. The Start
+                          Menu shortcut below has no choice about this - a
+                          shortcut in the user profile IS per-user data, hence
+                          its HKCU KeyPath - but an autostart entry does.
+
+                          HKLM Run also matches what the Linux packages do:
+                          they enable the systemd user unit globally, for every
+                          user on the machine, not just the installing one.
+
+                          Keying the entry by NAME is what makes upgrades safe.
+                          MSI writes the same value name every time, so a
+                          reinstall or a major upgrade overwrites one entry
+                          rather than accumulating a second, and uninstall
+                          deletes it. A Startup folder shortcut has no such
+                          guarantee and would need its own Directory and a
+                          RemoveFile besides.
+
+                          The off switch for a user who does not want it is
+                          Task Manager, Startup apps, which lists Run entries
+                          and remembers the choice in StartupApproved across
+                          upgrades. README.md documents that and the registry
+                          equivalent.
+
+                          [Bin] expands to the install directory with its
+                          trailing backslash, and the quotes around it are
+                          required: the default path contains a space.
+                        -->
+                        <Component Id='AutostartRegistry' Guid='E8268E9C-9DF5-4AE8-A927-868153A88170'>
+                            <RegistryValue
+                                Root='HKMU'
+                                Key='Software\Microsoft\Windows\CurrentVersion\Run'
+                                Name='sekio'
+                                Type='string'
+                                Value='"[Bin]sekio-gui.exe" --daemon'
+                                KeyPath='yes'/>
+                        </Component>
+
+                        <!--
                           One component per binary, each with the exe as its
                           KeyPath, which is what lets Guid='*' derive a stable
                           GUID from the install path.
@@ -254,6 +311,21 @@
                 Level='1'
                 Absent='allow'>
                 <ComponentRef Id='Path'/>
+            </Feature>
+
+            <!--
+              Enabled by default, and a sub-feature so the WixUI_FeatureTree
+              dialog offers it as a checkbox to clear at install time. Nested
+              inside Binaries because the Run value points at sekio-gui.exe,
+              which that feature installs.
+            -->
+            <Feature
+                Id='Autostart'
+                Title='Start the preview daemon at login'
+                Description='Keep sekio-gui resident in the background so a preview opens instantly instead of starting a process. Writes one Run entry; it can be turned off later from Task Manager, under Startup apps.'
+                Level='1'
+                Absent='allow'>
+                <ComponentRef Id='AutostartRegistry'/>
             </Feature>
 
             <!--

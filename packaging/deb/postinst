@@ -1,0 +1,41 @@
+#!/bin/sh
+# Enable the sekio preview daemon's systemd *user* unit for every user.
+#
+# `systemctl --user enable` cannot be used from here, and this is the whole
+# reason this script exists. A postinst runs as root at package install time:
+# root has no graphical session, there may be several users on the machine, and
+# some of them do not exist yet. There is no user manager to talk to and no
+# single home directory to write into.
+#
+# `systemctl --global enable` is the mechanism that does work. It touches
+# nothing but /etc/systemd/user/graphical-session.target.wants/sekio.service --
+# no D-Bus, no running user manager, no home directory -- and that symlink
+# applies to all future logins of all users. It is also symmetric: the off
+# switch documented in README.md is
+#
+#     systemctl --global disable sekio
+#
+# which removes exactly this symlink. (A per-user opt-out, leaving it on for
+# everyone else, is `systemctl --user mask sekio`.)
+#
+# The unit is only enabled on FIRST install. `$2` is the previously configured
+# version, so it is empty exactly once. On upgrade an administrator's
+# `systemctl --global disable sekio` has to survive; re-enabling here would
+# silently switch the daemon back on with every new release.
+#
+# --global only affects future logins, so nothing starts in an already-open
+# session. `systemctl --user start sekio` does that, and README.md says so.
+set -e
+
+case "$1" in
+configure)
+    if [ -z "$2" ] && command -v systemctl >/dev/null 2>&1; then
+        if ! systemctl --global enable sekio.service; then
+            echo "sekio: could not enable the preview daemon automatically." >&2
+            echo "sekio: turn it on with 'systemctl --user enable --now sekio'." >&2
+        fi
+    fi
+    ;;
+esac
+
+exit 0

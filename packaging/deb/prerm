@@ -1,0 +1,29 @@
+#!/bin/sh
+# Undo what postinst enabled.
+#
+# This is prerm and not postrm, and the ordering is load-bearing. By postrm
+# time /usr/lib/systemd/user/sekio.service is already gone, and
+# `systemctl --global disable sekio.service` then fails outright --
+# "Failed to disable unit, unit sekio.service does not exist" -- leaving the
+# symlink under /etc/systemd/user dangling. Verified against systemd 255.
+# In prerm the unit file is still on disk, so the disable resolves.
+#
+# `remove` only. On `upgrade` this must do nothing: postinst enables on first
+# install only, so disabling here would leave every upgraded package with the
+# daemon switched off.
+set -e
+
+case "$1" in
+remove)
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl --global disable sekio.service || true
+    fi
+    # Belt and braces. Whatever systemctl managed to do, an uninstall must not
+    # leave a symlink in /etc pointing at a unit file that no longer exists.
+    rm -f /etc/systemd/user/graphical-session.target.wants/sekio.service
+    rmdir --ignore-fail-on-non-empty \
+        /etc/systemd/user/graphical-session.target.wants 2>/dev/null || true
+    ;;
+esac
+
+exit 0
