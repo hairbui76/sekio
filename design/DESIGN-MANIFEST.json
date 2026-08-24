@@ -1,51 +1,138 @@
 {
   "schema": "open-design.design-manifest.v1",
-  "title": "ui_kits",
-  "entryFile": "app/index.html",
+  "title": "2f015e24-cf9b-4ac9-83f5-a7976d444b01",
+  "entryFile": "preview/index.html",
   "sourceFiles": {
     "all": [
-      "app/app.js",
-      "app/components.css",
-      "app/components/app-shell.html",
-      "app/components/preview-card.html",
-      "app/components/sidebar-places.html",
-      "app/index.html",
-      "app/README.md"
+      "assets/sekio-mark.svg",
+      "assets/settings-icon.svg",
+      "colors_and_type.css",
+      "context/provenance.md",
+      "context/source-context.md",
+      "DESIGN.md",
+      "hotkey-readiness-audit.md",
+      "hotkey-readiness-prototype.html",
+      "preview/applied-ui.html",
+      "preview/brand-assets.html",
+      "preview/colors-primary.html",
+      "preview/components-buttons.html",
+      "preview/index.html",
+      "preview/manifest.json",
+      "preview/preview.css",
+      "preview/radius-shadows.html",
+      "preview/spacing-tokens.html",
+      "preview/typography-specimens.html",
+      "PRODUCT.md",
+      "README.md",
+      "SKILL.md",
+      "ui_kits/app/app.js",
+      "ui_kits/app/components.css",
+      "ui_kits/app/components/app-shell.html",
+      "ui_kits/app/components/preview-card.html",
+      "ui_kits/app/components/sidebar-places.html",
+      "ui_kits/app/index.html",
+      "ui_kits/app/README.md"
     ],
     "html": [
-      "app/components/app-shell.html",
-      "app/components/preview-card.html",
-      "app/components/sidebar-places.html",
-      "app/index.html"
+      "hotkey-readiness-prototype.html",
+      "preview/applied-ui.html",
+      "preview/brand-assets.html",
+      "preview/colors-primary.html",
+      "preview/components-buttons.html",
+      "preview/index.html",
+      "preview/radius-shadows.html",
+      "preview/spacing-tokens.html",
+      "preview/typography-specimens.html",
+      "ui_kits/app/components/app-shell.html",
+      "ui_kits/app/components/preview-card.html",
+      "ui_kits/app/components/sidebar-places.html",
+      "ui_kits/app/index.html"
     ],
     "css": [
-      "app/components.css"
+      "colors_and_type.css",
+      "preview/preview.css",
+      "ui_kits/app/components.css"
     ],
     "scriptsAndComponents": [
-      "app/app.js"
+      "ui_kits/app/app.js"
     ],
     "assets": [
-      "app/README.md"
+      "assets/sekio-mark.svg",
+      "assets/settings-icon.svg",
+      "context/provenance.md",
+      "context/source-context.md",
+      "DESIGN.md",
+      "hotkey-readiness-audit.md",
+      "preview/manifest.json",
+      "PRODUCT.md",
+      "README.md",
+      "SKILL.md",
+      "ui_kits/app/README.md"
     ]
   },
   "screens": [
     {
-      "file": "app/components/app-shell.html",
+      "file": "hotkey-readiness-prototype.html",
+      "role": "screen",
+      "implementationNote": "Preserve visual hierarchy, responsive behavior, and interactive states from this screen."
+    },
+    {
+      "file": "preview/applied-ui.html",
       "role": "product-screen",
       "implementationNote": "Preserve visual hierarchy, responsive behavior, and interactive states from this screen."
     },
     {
-      "file": "app/components/preview-card.html",
+      "file": "preview/brand-assets.html",
+      "role": "screen",
+      "implementationNote": "Preserve visual hierarchy, responsive behavior, and interactive states from this screen."
+    },
+    {
+      "file": "preview/colors-primary.html",
+      "role": "screen",
+      "implementationNote": "Preserve visual hierarchy, responsive behavior, and interactive states from this screen."
+    },
+    {
+      "file": "preview/components-buttons.html",
+      "role": "screen",
+      "implementationNote": "Preserve visual hierarchy, responsive behavior, and interactive states from this screen."
+    },
+    {
+      "file": "preview/index.html",
+      "role": "launcher-overview",
+      "implementationNote": "Use this as the navigation/overview entry only; implement each linked screen file as its own route/surface."
+    },
+    {
+      "file": "preview/radius-shadows.html",
+      "role": "screen",
+      "implementationNote": "Preserve visual hierarchy, responsive behavior, and interactive states from this screen."
+    },
+    {
+      "file": "preview/spacing-tokens.html",
+      "role": "screen",
+      "implementationNote": "Preserve visual hierarchy, responsive behavior, and interactive states from this screen."
+    },
+    {
+      "file": "preview/typography-specimens.html",
+      "role": "screen",
+      "implementationNote": "Preserve visual hierarchy, responsive behavior, and interactive states from this screen."
+    },
+    {
+      "file": "ui_kits/app/components/app-shell.html",
       "role": "product-screen",
       "implementationNote": "Preserve visual hierarchy, responsive behavior, and interactive states from this screen."
     },
     {
-      "file": "app/components/sidebar-places.html",
+      "file": "ui_kits/app/components/preview-card.html",
       "role": "product-screen",
       "implementationNote": "Preserve visual hierarchy, responsive behavior, and interactive states from this screen."
     },
     {
-      "file": "app/index.html",
+      "file": "ui_kits/app/components/sidebar-places.html",
+      "role": "product-screen",
+      "implementationNote": "Preserve visual hierarchy, responsive behavior, and interactive states from this screen."
+    },
+    {
+      "file": "ui_kits/app/index.html",
       "role": "launcher-overview",
       "implementationNote": "Use this as the navigation/overview entry only; implement each linked screen file as its own route/surface."
     }
@@ -81,7 +168,9 @@
   },
   "tokens": {
     "source": [
-      "app/components.css"
+      "colors_and_type.css",
+      "preview/preview.css",
+      "ui_kits/app/components.css"
     ],
     "required": [
       "background",
@@ -100,7 +189,7 @@
   },
   "interactions": {
     "source": [
-      "app/app.js"
+      "ui_kits/app/app.js"
     ],
     "requiredStates": [
       "default",
