@@ -10,8 +10,12 @@ corresponds to a `v*` tag and its published deb, rpm and msi.
 - Releases carry their packages again. Reading the changelog on the release
   page needed the repository checked out, and doing that after the packages
   were downloaded deleted them — `actions/checkout` cleans the directory it
-  checks out into. **v0.14.1 and v0.14.2 published with no binaries; use this
-  release or v0.14.0 instead.**
+  checks out into.
+
+  v0.14.1 and v0.14.2 published with no binaries and have been withdrawn.
+  Nothing is missing from this release: the history is linear, so everything
+  those two versions describe is here. Their tags are still in the repository
+  and still point at the commits they were cut from.
 
 ## 0.14.2 — 2026-08-24
 
