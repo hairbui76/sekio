@@ -3,6 +3,24 @@
 Notable changes per release. Versions are the workspace version; every entry
 corresponds to a `v*` tag and its published deb, rpm and msi.
 
+## 0.15.0 — 2026-08-24
+
+### Changed
+
+- The bar above the preview now carries only the document: its name, its
+  position in the folder, whether it was truncated. On the home screen there
+  is no bar at all, so the launcher starts at the top of the window.
+- Open, Browse, the theme control and the settings menu moved to the right of
+  the footer, which is painted on every screen now instead of only under a
+  preview. One place on every screen, and out of the way of the preview.
+- The browser pane lost its "Browse files" heading, which said nothing the
+  pane does not; the close button sits on the path row instead.
+
+### Fixed
+
+- The search box has padding. A single-line text field takes none of its own,
+  so the text sat hard against its border.
+
 ## 0.14.3 — 2026-08-24
 
 ### Fixed
