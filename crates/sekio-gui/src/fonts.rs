@@ -171,6 +171,51 @@ mod tests {
         (uv.min, uv.max)
     }
 
+    /// Every glyph the chrome paints, in the family it paints it in.
+    ///
+    /// 0.12.1 shipped the theme control as a replacement box: `◐` and `☾` are
+    /// the obvious pictures for "half lit" and "night", and Noto Sans has
+    /// neither. Arrows are worse, because they are in the *monospace* face
+    /// only — so the key legend renders them correctly and a proportional `↑`
+    /// on a button does not, which is exactly the pair of symptoms that got
+    /// reported.
+    ///
+    /// A glyph added to the UI belongs in this list.
+    #[test]
+    fn every_ui_glyph_has_a_picture() {
+        use crate::style::Theme;
+
+        let mut ours = fonts(with_fallbacks(FontDefinitions::default()));
+
+        let mut proportional: Vec<String> = ["⚙", "×"].iter().map(|s| (*s).to_owned()).collect();
+        for theme in [Theme::System, Theme::Light, Theme::Dark] {
+            proportional.push(theme.icon().to_owned());
+        }
+        // Both the parent button and the key legend draw these, and both ask
+        // for the monospace face precisely because it is the one that has them.
+        let monospace: Vec<String> = ["↑", "←", "→", "↓"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+
+        for (family, glyphs) in [
+            (FontFamily::Proportional, &proportional),
+            (FontFamily::Monospace, &monospace),
+        ] {
+            let boxed = glyph(&mut ours, &family, NEVER_DRAWN);
+            for text in glyphs {
+                for c in text.chars() {
+                    assert_ne!(
+                        glyph(&mut ours, &family, c),
+                        boxed,
+                        "{family:?}: U+{:04X} {c:?} rasterises as the replacement box",
+                        c as u32
+                    );
+                }
+            }
+        }
+    }
+
     /// The 90 precomposed Vietnamese letters of Latin Extended Additional,
     /// U+1EA0–U+1EF9. `ề` (U+1EC1), the one from the screenshot, is in here.
     fn vietnamese() -> impl Iterator<Item = char> {

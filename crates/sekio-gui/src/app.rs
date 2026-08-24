@@ -1303,8 +1303,12 @@ impl SekioApp {
         let palette = self.palette;
         let browser = &mut self.browser;
         egui::Panel::left("sekio-browser")
-            .default_size(260.0)
-            .min_size(150.0)
+            .resizable(true)
+            // Bounded at both ends. Without a max the pane grows to whatever
+            // its widest filename asks for, which is how it ended up owning
+            // half the window and left nothing for the drag to do.
+            .default_size(320.0)
+            .size_range(200.0..=640.0)
             .show(ui, |ui| paint_browser(ui, browser, &palette))
             .inner
     }
@@ -1579,33 +1583,49 @@ fn home_column(
 ) -> Option<Action> {
     let mut action = None;
 
-    // Centred, mark above wordmark: the design system's home is one column
-    // read top to bottom, and a left-aligned intro over centred blocks reads
-    // as two different screens stacked.
-    ui.vertical_centered(|ui| {
-        ui.add_space(32.0);
+    // Mark, wordmark and version on one line, centred as a unit.
+    //
+    // `vertical_centered` centres each child it is given, and a `horizontal`
+    // child claims the whole width — so the row's contents started at the left
+    // edge while the mark above them sat in the middle. The row is measured
+    // and padded here instead, which is the only way to centre a mixed run of
+    // widgets in egui.
+    let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let name_width = text_width(ui, "sekio", 32.0);
+    let version_width = mono_width(ui, &version, 11.0);
+    let mark = if logo.is_some() {
+        MARK_SIZE + 10.0
+    } else {
+        0.0
+    };
+    let intro = mark + name_width + 6.0 + version_width;
+
+    ui.add_space(32.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.add_space(((width - intro) / 2.0).max(0.0));
         if let Some(logo) = logo {
             ui.add(
                 egui::Image::new(logo)
-                    .fit_to_exact_size(Vec2::splat(48.0))
-                    .corner_radius(12.0),
+                    .fit_to_exact_size(Vec2::splat(MARK_SIZE))
+                    .corner_radius(9.0),
             );
-            ui.add_space(12.0);
+            ui.add_space(10.0);
         }
-        // The version rides beside the wordmark as a mono chip rather than
-        // inside the tagline: the tagline is what sekio *is*, and a build
-        // number in the middle of it makes the sentence about the build.
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            ui.label(RichText::new("sekio").size(32.0).strong());
-            ui.label(
-                RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
-                    .monospace()
-                    .size(11.0)
-                    .color(palette.faint),
-            );
-        });
-        ui.add_space(8.0);
+        ui.label(RichText::new("sekio").size(32.0).strong());
+        ui.add_space(6.0);
+        // Baseline-aligned with the wordmark rather than centred against it:
+        // a build number hanging in the middle of a 32 px word reads as part
+        // of the name.
+        ui.label(
+            RichText::new(&version)
+                .monospace()
+                .size(11.0)
+                .color(palette.faint),
+        );
+    });
+    ui.add_space(8.0);
+    ui.vertical_centered(|ui| {
         ui.label(RichText::new("Quick preview for any file").color(palette.dim));
     });
 
@@ -1745,6 +1765,23 @@ fn recent_block(ui: &mut egui::Ui, home: &HomeScreen<'_>, palette: &Palette) -> 
 /// plus the row itself is the design system's 44 px minimum.
 const ROW_PAD: f32 = 8.0;
 
+/// The app mark on the home screen, sized to sit on the wordmark's line.
+const MARK_SIZE: f32 = 36.0;
+
+/// How wide `text` is in the monospace face at `size`.
+fn mono_width(ui: &egui::Ui, text: &str, size: f32) -> f32 {
+    ui.ctx().fonts_mut(|fonts| {
+        fonts
+            .layout_no_wrap(
+                text.to_owned(),
+                egui::FontId::monospace(size),
+                egui::Color32::PLACEHOLDER,
+            )
+            .size()
+            .x
+    })
+}
+
 /// Point size of the folder beside a recent file.
 const FOLDER_SIZE: f32 = 11.0;
 
@@ -1835,18 +1872,8 @@ const KEY_PAIR_GAP: f32 = 20.0;
 
 /// How wide `style::kbd` will draw this key, including its padding and border.
 fn keycap_width(ui: &egui::Ui, key: &str) -> f32 {
-    let glyphs = ui.ctx().fonts_mut(|fonts| {
-        fonts
-            .layout_no_wrap(
-                key.to_owned(),
-                egui::FontId::monospace(11.0),
-                egui::Color32::PLACEHOLDER,
-            )
-            .size()
-            .x
-    });
     // 6 px of inner margin either side, plus the 1 px stroke.
-    glyphs + 14.0
+    mono_width(ui, key, 11.0) + 14.0
 }
 
 /// How many recent files the home screen lists. The whole point is the last
@@ -1887,7 +1914,7 @@ fn paint_browser(ui: &mut egui::Ui, browser: &mut Browser, palette: &Palette) ->
         ui.label(RichText::new("Browse files").strong().size(14.0));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
-                .add(egui::Button::new("✕").frame(false))
+                .add(egui::Button::new(RichText::new("×").size(15.0)).frame(false))
                 .on_hover_text("Close the pane (Esc)")
                 .clicked()
             {
@@ -1904,7 +1931,7 @@ fn paint_browser(ui: &mut egui::Ui, browser: &mut Browser, palette: &Palette) ->
         if ui
             .add_enabled(
                 browser.parent().is_some(),
-                egui::Button::new(RichText::new("↑").size(11.0)),
+                egui::Button::new(RichText::new("↑").monospace().size(11.0)),
             )
             .on_hover_text("Parent directory (←)")
             .clicked()

@@ -129,11 +129,17 @@ impl Theme {
     }
 
     /// The glyph that stands for this mode in the header.
+    ///
+    /// Every one of these is checked against the bundled faces by
+    /// `fonts::tests::every_ui_glyph_has_a_picture`. The obvious picks — `◐`
+    /// for a half-lit disc and `☾` for a crescent — are not in Noto Sans and
+    /// rasterise as the replacement box, which is how the theme control
+    /// shipped as a tofu square in 0.12.1.
     pub fn icon(self) -> &'static str {
         match self {
-            Self::System => "◐",
+            Self::System => "◑",
             Self::Light => "☀",
-            Self::Dark => "☾",
+            Self::Dark => "🌑",
         }
     }
 
