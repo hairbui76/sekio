@@ -1,0 +1,897 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>sekio · Hotkey preview readiness</title>
+  <style>
+    :root {
+      /* ─── Surface ──────────────────────────────────────────────────── */
+      --bg:           #08090a;              /* marketing black — hero canvas */
+      --surface:      #191a1b;              /* elevated surface — cards, dropdowns */
+      --surface-warm: var(--surface);       /* no warm tier in dark achromatic system */
+
+      /* ─── Foreground ───────────────────────────────────────────────── */
+      --fg:   #f7f8f8;                      /* near-white primary text */
+      --fg-2: #d0d6e0;                      /* silver-gray body / secondary text */
+      --muted: #8a8f98;                     /* tertiary — placeholders, metadata */
+      --meta:  #62666d;                      /* quaternary — timestamps, disabled */
+
+      /* ─── Border ───────────────────────────────────────────────────── */
+      --border:      rgba(255, 255, 255, 0.08);   /* standard semi-transparent white */
+      --border-soft: rgba(255, 255, 255, 0.05);   /* ultra-subtle divider */
+
+      /* ─── Accent ───────────────────────────────────────────────────── */
+      --accent:        #5e6ad2;             /* brand indigo — CTA backgrounds */
+      --accent-on:     #ffffff;
+      --accent-hover:  #828fff;             /* lighter saturated hover */
+      --accent-active: #4752c4;             /* darker pressed state */
+
+      /* ─── Semantic ─────────────────────────────────────────────────── */
+      --success: #27a644;                   /* Linear green */
+      --warn:    #eab308;
+      --danger:  #dc2626;
+
+      /* ─── Typography ───────────────────────────────────────────────── */
+      --font-display: "Inter Variable", "Inter", "SF Pro Display", -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+      --font-body:    "Inter Variable", "Inter", "SF Pro Display", -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+      --font-mono:    "Berkeley Mono", ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+
+      --text-xs:   12px;
+      --text-sm:   14px;
+      --text-base: 16px;
+      --text-lg:   18px;
+      --text-xl:   24px;
+      --text-2xl:  32px;
+      --text-3xl:  48px;
+      --text-4xl:  72px;
+
+      --leading-body:     1.5;
+      --leading-tight:    1.00;
+      --tracking-display: -0.022em;
+
+      /* ─── Spacing ──────────────────────────────────────────────────── */
+      --space-1:  4px;
+      --space-2:  8px;
+      --space-3:  12px;
+      --space-4:  16px;
+      --space-5:  20px;
+      --space-6:  24px;
+      --space-8:  32px;
+      --space-12: 48px;
+
+      --section-y-desktop: 80px;
+      --section-y-tablet:  48px;
+      --section-y-phone:   32px;
+
+      /* ─── Radius ───────────────────────────────────────────────────── */
+      --radius-sm:   6px;
+      --radius-md:   8px;
+      --radius-lg:   12px;
+      --radius-pill: 9999px;
+
+      /* ─── Elevation ────────────────────────────────────────────────── */
+      --elev-flat:   none;
+      --elev-ring:   0 0 0 1px var(--border);
+      --elev-raised:
+        rgba(0, 0, 0, 0.4) 0px 2px 4px,
+        0 0 0 1px rgba(255, 255, 255, 0.05);
+
+      /* ─── Focus ────────────────────────────────────────────────────── */
+      --focus-ring:
+        0 0 0 2px color-mix(in oklab, var(--accent), transparent 30%),
+        0 4px 12px rgba(0, 0, 0, 0.1);
+
+      /* ─── Motion ───────────────────────────────────────────────────── */
+      --motion-fast:   150ms;
+      --motion-base:   200ms;
+      --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+
+      /* ─── Layout ───────────────────────────────────────────────────── */
+      --container-max:            1200px;
+      --container-gutter-desktop: 24px;
+      --container-gutter-tablet:  16px;
+      --container-gutter-phone:   12px;
+    }
+
+    html[data-theme="light"] {
+      --bg: oklch(97.8% 0.003 264);
+      --surface: oklch(100% 0 0);
+      --surface-warm: var(--surface);
+      --fg: oklch(20% 0.008 264);
+      --fg-2: oklch(35% 0.01 264);
+      --muted: oklch(40% 0.012 264);
+      --meta: oklch(44% 0.01 264);
+      --border: color-mix(in oklab, var(--fg) 14%, transparent);
+      --border-soft: color-mix(in oklab, var(--fg) 8%, transparent);
+      --elev-raised: 0 8px 24px color-mix(in oklab, var(--fg) 10%, transparent), 0 0 0 1px var(--border-soft);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html { color-scheme: dark; -webkit-text-size-adjust: 100%; }
+    html[data-theme="light"] { color-scheme: light; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--font-body);
+      font-size: var(--text-base);
+      line-height: var(--leading-body);
+      font-feature-settings: "cv01", "ss03";
+      -webkit-font-smoothing: antialiased;
+    }
+    button, input, select { font: inherit; font-feature-settings: inherit; }
+    button { cursor: pointer; }
+    button:disabled { cursor: not-allowed; opacity: .55; }
+    svg { display: block; }
+    a { color: inherit; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; }
+    p { text-wrap: pretty; }
+    [hidden] { display: none !important; }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    .topnav {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      height: 58px;
+      background: color-mix(in oklab, var(--bg) 92%, transparent);
+      border-bottom: 1px solid var(--border-soft);
+      backdrop-filter: blur(12px);
+    }
+    .topnav-inner {
+      max-width: var(--container-max);
+      height: 100%;
+      margin: 0 auto;
+      padding: 0 var(--container-gutter-desktop);
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: var(--space-6);
+    }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 590; letter-spacing: -0.02em; }
+    .brand-mark { width: 19px; height: 19px; border: 1px solid var(--border); border-radius: 5px; display: grid; place-items: center; }
+    .brand-mark::after { content: ""; width: 7px; height: 7px; background: var(--fg); border-radius: 2px; }
+    .nav-tabs { display: flex; align-items: center; gap: var(--space-1); }
+    .nav-tab, .icon-btn, .text-btn {
+      min-height: 44px;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      border-radius: var(--radius-sm);
+    }
+    .nav-tab { padding: 0 var(--space-3); font-size: var(--text-sm); font-weight: 510; }
+    .nav-tab:hover, .nav-tab[aria-current="page"] { color: var(--fg); background: color-mix(in oklab, var(--fg) 5%, transparent); }
+    .topnav-actions { justify-self: end; position: relative; display: flex; align-items: center; gap: var(--space-1); }
+    .icon-btn { width: 44px; display: grid; place-items: center; font-size: 18px; }
+    .icon-btn svg { width: 18px; height: 18px; }
+    .icon-btn:hover, .text-btn:hover { color: var(--fg); background: color-mix(in oklab, var(--fg) 5%, transparent); }
+
+    .menu {
+      position: absolute;
+      right: 0;
+      top: 48px;
+      width: 245px;
+      padding: var(--space-2);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      box-shadow: var(--elev-raised);
+    }
+    .menu button { width: 100%; min-height: 44px; padding: 0 var(--space-3); text-align: left; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--fg-2); }
+    .menu button:hover { color: var(--fg); background: color-mix(in oklab, var(--fg) 5%, transparent); }
+    .theme-menu { right: 48px; width: 180px; }
+    .theme-option { display: grid; grid-template-columns: 20px 1fr 16px; align-items: center; gap: var(--space-2); }
+    .theme-option svg { width: 16px; height: 16px; }
+    .theme-option .selected-mark { color: var(--accent); opacity: 0; text-align: center; }
+    .theme-option[aria-checked="true"] { color: var(--fg); background: color-mix(in oklab, var(--fg) 5%, transparent); }
+    .theme-option[aria-checked="true"] .selected-mark { opacity: 1; }
+    .menu-sep { border-top: 1px solid var(--border-soft); margin: var(--space-2) 0; }
+    .menu-meta { padding: var(--space-2) var(--space-3); color: var(--meta); font: 12px var(--font-mono); }
+
+    .app-main { min-height: calc(100vh - 58px); }
+    .section { padding: var(--section-y-tablet) var(--container-gutter-desktop); }
+    .home-column { width: min(100%, 720px); margin: 0 auto; }
+    .home-intro { text-align: center; padding: var(--space-12) 0 var(--space-8); }
+    .home-intro h1 { margin-bottom: var(--space-2); font-size: var(--text-2xl); font-weight: 510; letter-spacing: -0.704px; }
+    .home-intro p { color: var(--muted); margin-bottom: 0; }
+    .version { font: 11px var(--font-mono); color: var(--meta); margin-left: 6px; }
+    .primary-actions { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
+
+    .btn {
+      min-height: 44px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--space-2);
+      padding: 0 var(--space-4);
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: color-mix(in oklab, var(--fg) 2%, transparent);
+      color: var(--fg);
+      font-size: var(--text-sm);
+      font-weight: 510;
+      transition: background var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard), transform var(--motion-fast) var(--ease-standard);
+    }
+    .btn:hover { background: color-mix(in oklab, var(--fg) 8%, transparent); border-color: color-mix(in oklab, var(--fg) 20%, transparent); }
+    .btn:active { transform: translateY(1px); }
+    .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-on); }
+    .btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--accent-on); }
+    .btn-primary:active { background: var(--accent-active); border-color: var(--accent-active); }
+    .btn-quiet { background: transparent; border-color: transparent; color: var(--fg-2); }
+    .btn-danger { color: color-mix(in oklab, var(--danger) 72%, var(--fg)); }
+    .btn-small { min-height: 44px; padding: 0 var(--space-3); font-size: 13px; }
+    :focus-visible { outline: none; box-shadow: var(--focus-ring); }
+    .section h1[tabindex="-1"]:focus { outline: none; box-shadow: none; }
+
+    .drop-hint { text-align: center; color: var(--muted); font-size: 13px; padding: var(--space-4); }
+    .readiness-card {
+      display: grid;
+      grid-template-columns: auto 1fr auto auto;
+      gap: var(--space-3);
+      align-items: center;
+      min-height: 68px;
+      padding: var(--space-3) var(--space-4);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: color-mix(in oklab, var(--fg) 2%, transparent);
+    }
+    .readiness-card:hover { background: color-mix(in oklab, var(--fg) 4%, transparent); }
+    .signal { width: 9px; height: 9px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 0 4px color-mix(in oklab, var(--warn) 14%, transparent); }
+    .readiness-copy { min-width: 0; }
+    .readiness-copy strong { display: block; font-size: 14px; font-weight: 510; }
+    .readiness-copy span { display: block; color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .text-btn { padding: 0 var(--space-2); font-size: 13px; font-weight: 510; }
+
+    .home-block { margin-top: var(--space-8); }
+    .block-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-3); }
+    .block-heading h2 { margin: 0; font-size: 13px; font-weight: 510; color: var(--muted); }
+    .recent-list { border-top: 1px solid var(--border-soft); }
+    .recent-row { width: 100%; min-height: 52px; display: grid; grid-template-columns: 1fr auto; gap: var(--space-4); align-items: center; padding: var(--space-2) 0; border: 0; border-bottom: 1px solid var(--border-soft); background: transparent; color: var(--fg); text-align: left; }
+    .recent-row:hover strong { text-decoration: underline; text-underline-offset: 3px; }
+    .recent-row > span:first-child { min-width: 0; }
+    .recent-row strong { display: block; overflow: hidden; font-size: 14px; font-weight: 510; text-overflow: ellipsis; white-space: nowrap; }
+    .recent-row span { color: var(--meta); font: 11px var(--font-mono); }
+    .recent-home-empty { padding: var(--space-5) 0; border-block: 1px solid var(--border-soft); color: var(--muted); font-size: 13px; }
+    .keys { display: flex; gap: var(--space-5); flex-wrap: wrap; color: var(--muted); font-size: 12px; }
+    kbd { min-width: 26px; display: inline-flex; justify-content: center; padding: 2px 6px; margin-right: 5px; border: 1px solid var(--border); border-radius: 4px; background: color-mix(in oklab, var(--fg) 4%, transparent); color: var(--fg-2); font: 11px var(--font-mono); }
+
+    .panel-shell { width: min(100%, 820px); margin: 0 auto; }
+    .panel-head { display: grid; grid-template-columns: 44px 1fr auto; gap: var(--space-3); align-items: start; margin-bottom: var(--space-8); }
+    .back-btn { margin-left: -12px; }
+    .panel-head h1 { margin: 1px 0 4px; font-size: var(--text-xl); font-weight: 510; letter-spacing: -0.288px; }
+    .panel-head p { margin: 0; color: var(--muted); font-size: 14px; }
+    .progress-copy { color: var(--fg-2); font: 12px var(--font-mono); padding-top: 7px; white-space: nowrap; }
+    .verdict { padding: var(--space-4); margin-bottom: var(--space-6); border: 1px solid var(--border); border-radius: var(--radius-md); background: color-mix(in oklab, var(--fg) 2%, transparent); }
+    .verdict strong { display: block; font-size: 16px; font-weight: 510; margin-bottom: 3px; }
+    .verdict span { color: var(--muted); font-size: 14px; }
+    .banner { display: grid; grid-template-columns: auto 1fr; gap: var(--space-3); padding: var(--space-4); margin-bottom: var(--space-4); border: 1px solid color-mix(in oklab, var(--warn) 35%, transparent); border-radius: var(--radius-md); background: color-mix(in oklab, var(--warn) 7%, transparent); }
+    .banner strong { display: block; font-size: 14px; font-weight: 590; }
+    .banner p { margin: 3px 0 0; color: var(--fg-2); font-size: 13px; }
+
+    .check-list { border-top: 1px solid var(--border); }
+    .check-row { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: var(--space-3); padding: var(--space-4) 0; border-bottom: 1px solid var(--border-soft); align-items: start; }
+    .state-icon { width: 18px; height: 18px; border: 1px solid currentColor; border-radius: 50%; display: grid; place-items: center; margin-top: 2px; font: 11px var(--font-mono); }
+    .state-unmet { color: color-mix(in oklab, var(--danger) 72%, var(--fg)); }
+    .state-partial { color: var(--warn); }
+    .state-met { color: var(--success); }
+    .check-copy strong { display: block; font-size: 14px; font-weight: 510; color: var(--fg); }
+    .check-copy p { margin: 3px 0 0; color: var(--muted); font-size: 13px; max-width: 58ch; }
+    .check-copy .evidence { color: var(--meta); font: 11px var(--font-mono); margin-top: 6px; }
+    .check-actions { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; justify-content: end; }
+    .check-actions-start { justify-content: start; margin-top: var(--space-3); }
+    .section-label { margin: var(--space-6) 0 var(--space-2); color: var(--meta); font: 11px var(--font-mono); text-transform: uppercase; letter-spacing: .06em; }
+    .passed-toggle { width: 100%; min-height: 48px; display: flex; justify-content: space-between; align-items: center; padding: 0; border: 0; border-bottom: 1px solid var(--border-soft); background: transparent; color: var(--fg-2); text-align: left; }
+    .passed-toggle:hover { color: var(--fg); }
+    .panel-actions { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); padding-top: var(--space-6); }
+    .panel-actions > div { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+    .switch-row { display: flex; justify-content: space-between; align-items: center; gap: var(--space-4); padding: var(--space-4) 0; border-bottom: 1px solid var(--border-soft); }
+    .switch-copy strong { display: block; font-size: 14px; font-weight: 510; }
+    .switch-copy span { color: var(--muted); font-size: 13px; }
+    .switch { position: relative; flex: 0 0 48px; width: 48px; height: 44px; border: 0; padding: 0; background: transparent; }
+    .switch::before { content: ""; position: absolute; inset: 10px 3px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: color-mix(in oklab, var(--fg) 4%, transparent); transition: background var(--motion-base) var(--ease-standard), border-color var(--motion-base) var(--ease-standard); }
+    .switch::after { content: ""; position: absolute; top: 14px; left: 7px; width: 16px; height: 16px; border-radius: 50%; background: var(--fg-2); transition: transform var(--motion-base) var(--ease-standard); }
+    .switch[aria-checked="true"]::before { background: var(--success); border-color: var(--success); }
+    .switch[aria-checked="true"]::after { background: var(--fg); transform: translateX(18px); }
+
+    .preset-list { display: grid; gap: var(--space-2); margin-top: var(--space-5); }
+    .preset { width: 100%; min-height: 52px; display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); padding: 0 var(--space-4); border: 1px solid var(--border-soft); border-radius: var(--radius-sm); background: transparent; color: var(--fg); }
+    .preset:hover { background: color-mix(in oklab, var(--fg) 4%, transparent); border-color: var(--border); }
+    .preset[aria-checked="true"] { border-color: var(--accent); }
+    .preset kbd { margin: 0; }
+    .inline-note { padding: var(--space-3); margin-top: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--fg-2); font-size: 13px; }
+    .save-state { margin-top: var(--space-4); color: var(--muted); font: 12px var(--font-mono); }
+
+    .checking-state { min-height: 240px; display: grid; place-items: center; text-align: center; color: var(--muted); }
+    .checking-state strong { display: block; margin-top: var(--space-3); color: var(--fg-2); font-size: 14px; font-weight: 510; }
+    .checking-mark { width: 28px; height: 28px; margin: 0 auto; border: 2px solid var(--border); border-top-color: var(--fg-2); border-radius: 50%; animation: checking-spin 700ms linear infinite; }
+    @keyframes checking-spin { to { transform: rotate(360deg); } }
+
+    .armed-card { padding: var(--space-8); border: 1px solid var(--border); border-radius: var(--radius-lg); text-align: center; background: color-mix(in oklab, var(--fg) 2%, transparent); }
+    .pulse { width: 54px; height: 54px; margin: 0 auto var(--space-5); border-radius: 50%; border: 1px solid var(--accent); display: grid; place-items: center; color: var(--accent-hover); box-shadow: 0 0 0 10px color-mix(in oklab, var(--accent) 9%, transparent); }
+    .armed-card h2 { margin-bottom: var(--space-3); font-size: var(--text-xl); font-weight: 510; }
+    .armed-card p { margin: 0 auto; max-width: 48ch; color: var(--fg-2); }
+    .test-events { margin-top: var(--space-8); padding-top: var(--space-5); border-top: 1px solid var(--border-soft); }
+    .test-events > span { display: block; color: var(--meta); font: 11px var(--font-mono); margin-bottom: var(--space-3); }
+    .test-events > div { display: flex; justify-content: center; gap: var(--space-2); flex-wrap: wrap; }
+
+    .result-card { padding: var(--space-6); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+    .result-head { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-5); }
+    .result-head h2 { margin: 0; font-size: var(--text-xl); font-weight: 510; }
+    .result-grid { display: grid; grid-template-columns: 130px 1fr; gap: var(--space-3) var(--space-5); padding: var(--space-4) 0; border-top: 1px solid var(--border-soft); border-bottom: 1px solid var(--border-soft); }
+    .result-grid dt { color: var(--meta); font: 12px var(--font-mono); }
+    .result-grid dd { margin: 0; color: var(--fg-2); overflow-wrap: anywhere; }
+    .cause-list { margin: var(--space-4) 0 0; padding-left: 20px; color: var(--fg-2); font-size: 14px; }
+    .cause-list li + li { margin-top: var(--space-2); }
+    .result-copy { color: var(--fg-2); }
+    .cancel-copy { color: var(--muted); }
+
+    .report { border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; }
+    .report-row { display: grid; grid-template-columns: 170px 1fr; gap: var(--space-4); padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border-soft); }
+    .report-row:last-child { border-bottom: 0; }
+    .report-row span:first-child { color: var(--meta); font: 12px var(--font-mono); }
+    .report-row code { color: var(--fg-2); font: 12px var(--font-mono); overflow-wrap: anywhere; }
+
+    .browser-shell { width: min(100%, 940px); margin: 0 auto; }
+    .browser-grid { display: grid; grid-template-columns: 220px 1fr; min-height: 460px; border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
+    .browser-side { padding: var(--space-4); border-right: 1px solid var(--border); background: color-mix(in oklab, var(--fg) 2%, transparent); }
+    .browser-side button { width: 100%; min-height: 44px; text-align: left; padding: 0 var(--space-3); border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--muted); }
+    .browser-side button:hover, .browser-side button[aria-current="page"] { color: var(--fg); background: color-mix(in oklab, var(--fg) 5%, transparent); }
+    .browser-files { padding: var(--space-5); }
+    .browser-list-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-4); min-height: 44px; padding-bottom: var(--space-2); border-bottom: 1px solid var(--border); }
+    .browser-list-head h2 { margin: 0; font-size: var(--text-sm); font-weight: 510; }
+    .browser-list-head span { color: var(--meta); font: 11px var(--font-mono); }
+    .file-row { width: 100%; min-height: 46px; display: grid; grid-template-columns: 1fr 90px; align-items: center; border: 0; border-bottom: 1px solid var(--border-soft); background: transparent; color: var(--fg-2); text-align: left; }
+    .file-row:hover { color: var(--fg); background: color-mix(in oklab, var(--fg) 3%, transparent); }
+    .file-row span:last-child { color: var(--meta); font: 11px var(--font-mono); }
+    .browser-empty { min-height: 340px; display: grid; place-items: center; padding: var(--space-8); text-align: center; }
+    .browser-empty h2 { margin-bottom: var(--space-2); font-size: var(--text-lg); font-weight: 510; }
+    .browser-empty p { max-width: 38ch; margin: 0 auto var(--space-5); color: var(--muted); font-size: 14px; }
+    .toast { position: fixed; left: 50%; bottom: 24px; z-index: 40; transform: translateX(-50%); max-width: calc(100vw - 24px); padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--fg-2); box-shadow: var(--elev-raised); font-size: 13px; }
+    .drop-overlay { position: fixed; inset: 16px; z-index: 50; display: grid; place-items: center; border: 1px dashed var(--accent); border-radius: var(--radius-lg); background: color-mix(in oklab, var(--bg) 92%, transparent); color: var(--fg); font-size: var(--text-lg); }
+
+    @media (max-width: 700px) {
+      .topnav-inner { grid-template-columns: 1fr auto; padding: 0 var(--container-gutter-tablet); }
+      .nav-tabs { display: none; }
+      .section { padding: var(--section-y-phone) var(--container-gutter-tablet); }
+      .primary-actions { grid-template-columns: 1fr; }
+      .readiness-card { grid-template-columns: auto 1fr auto; }
+      .readiness-card .text-btn { grid-column: 2; justify-self: start; min-height: 44px; }
+      .check-row { grid-template-columns: 20px 1fr; }
+      .check-actions { grid-column: 2; justify-content: start; }
+      .panel-head { grid-template-columns: 44px 1fr; }
+      .progress-copy { grid-column: 2; padding: 0; }
+      .panel-actions { align-items: stretch; flex-direction: column-reverse; }
+      .panel-actions > div, .panel-actions .btn { width: 100%; }
+      .result-grid, .report-row { grid-template-columns: 1fr; gap: 3px; }
+      .browser-grid { grid-template-columns: 1fr; }
+      .browser-side { display: flex; gap: var(--space-1); overflow-x: auto; padding: var(--space-2); border-right: 0; border-bottom: 1px solid var(--border); }
+      .browser-side button { width: auto; flex: 0 0 auto; }
+    }
+    @media (max-width: 430px) {
+      .topnav-inner, .section { padding-left: var(--container-gutter-phone); padding-right: var(--container-gutter-phone); }
+      .home-intro { padding-top: var(--space-8); }
+      .readiness-card { grid-template-columns: auto minmax(0, 1fr); }
+      .readiness-card .btn { grid-column: 2; width: 100%; }
+      .readiness-card .text-btn { grid-column: 2; width: 100%; justify-content: center; }
+      .armed-card, .result-card { padding: var(--space-4); }
+      .test-events > div, .test-events .btn { width: 100%; }
+      .preset { align-items: flex-start; flex-direction: column; padding-block: var(--space-3); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topnav" data-od-id="app-header">
+    <div class="topnav-inner">
+      <div class="brand" data-od-id="brand"><span class="brand-mark" aria-hidden="true"></span>sekio</div>
+      <nav class="nav-tabs" aria-label="Primary">
+        <button class="nav-tab" data-nav="home" aria-current="page" data-od-id="nav-home">Home</button>
+        <button class="nav-tab" data-nav="browser" data-od-id="nav-browser">Browse files</button>
+      </nav>
+      <div class="topnav-actions">
+        <button class="icon-btn" id="theme-button" aria-label="Theme: System" aria-haspopup="menu" aria-controls="theme-menu" aria-expanded="false" data-od-id="theme-button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="7.5"></circle><path d="M12 4.5a7.5 7.5 0 0 0 0 15V4.5Z" fill="currentColor" stroke="none"></path></svg></button>
+        <button class="icon-btn" id="settings-button" aria-label="Settings" aria-haspopup="menu" aria-controls="settings-menu" aria-expanded="false" data-od-id="settings-button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.06.06-2.78 2.78-.06-.06A1.8 1.8 0 0 0 15 19.4a1.8 1.8 0 0 0-1.1 1.64V21h-3.8v-.08A1.8 1.8 0 0 0 9 19.4a1.8 1.8 0 0 0-1.98.36l-.06.06-2.78-2.78.06-.06A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-1.64-1.1H3v-3.8h.08A1.8 1.8 0 0 0 4.6 9a1.8 1.8 0 0 0-.36-1.98l-.06-.06 2.78-2.78.06.06A1.8 1.8 0 0 0 9 4.6a1.8 1.8 0 0 0 1.1-1.64V3h3.8v.08A1.8 1.8 0 0 0 15 4.6a1.8 1.8 0 0 0 1.98-.36l.06-.06 2.78 2.78-.06.06A1.8 1.8 0 0 0 19.4 9a1.8 1.8 0 0 0 1.64 1.1H21v3.8h-.08A1.8 1.8 0 0 0 19.4 15Z"></path></svg></button>
+        <div class="menu theme-menu" id="theme-menu" role="menu" aria-label="Theme" hidden data-od-id="theme-menu">
+          <button class="theme-option" role="menuitemradio" aria-checked="true" tabindex="0" data-theme-option="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"></rect><path d="M8 21h8M12 17v4"></path></svg><span>System</span><span class="selected-mark" aria-hidden="true">✓</span></button>
+          <button class="theme-option" role="menuitemradio" aria-checked="false" tabindex="-1" data-theme-option="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="3.5"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"></path></svg><span>Light</span><span class="selected-mark" aria-hidden="true">✓</span></button>
+          <button class="theme-option" role="menuitemradio" aria-checked="false" tabindex="-1" data-theme-option="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M20 15.2A8.5 8.5 0 0 1 8.8 4a8.5 8.5 0 1 0 11.2 11.2Z"></path></svg><span>Dark</span><span class="selected-mark" aria-hidden="true">✓</span></button>
+        </div>
+        <div class="menu" id="settings-menu" role="menu" hidden data-od-id="settings-menu">
+          <button role="menuitem" data-action="open-readiness">Hotkey preview setup</button>
+          <div class="menu-sep"></div>
+          <div class="menu-meta">Config · ~/.config/sekio/gui.toml</div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="app-main" id="content">
+    <section class="section" id="home-screen" data-screen="home" data-od-id="home-screen">
+      <div class="home-column">
+        <div class="home-intro">
+          <h1 data-od-id="home-heading" style="display: flex; flex-direction: column; align-items: center; gap: var(--space-3);"><svg data-od-id="home-logo" width="48" height="48" viewBox="0 0 48 48" fill="none" aria-hidden="true" style="display: block; color: var(--fg);"><rect x="1" y="1" width="46" height="46" rx="12" stroke="currentColor" stroke-opacity="0.2" stroke-width="2"></rect><rect x="17" y="17" width="14" height="14" rx="4" fill="currentColor"></rect></svg><span>sekio <span class="version">0.8.0</span></span></h1>
+          <p>Quick preview for any file</p>
+        </div>
+        <div class="primary-actions">
+          <button class="btn btn-primary" data-action="open-file" data-od-id="open-file-button">Open file…</button>
+          <button class="btn" data-nav="browser" data-od-id="browse-files-button">Browse files</button>
+        </div>
+        <div class="drop-hint">or drop a file anywhere in this window</div>
+
+        <div id="readiness-slot">
+          <div class="readiness-card" data-od-id="readiness-card">
+            <span class="signal" aria-hidden="true"></span>
+            <div class="readiness-copy"><strong>Hotkey preview</strong><span>2 of 5 ready · Finish setup to preview from anywhere</span></div>
+            <button class="btn btn-small" data-action="open-readiness">Set up</button>
+            <button class="text-btn" data-action="dismiss-card" aria-label="Dismiss hotkey preview setup">Dismiss</button>
+          </div>
+        </div>
+
+        <div class="home-block" id="home-recent" data-od-id="recent-files"></div>
+        <div class="home-block" data-od-id="keys-legend">
+          <div class="block-heading"><h2>Keys</h2></div>
+          <div class="keys"><span><kbd>Ctrl O</kbd>Open</span><span><kbd>Ctrl B</kbd>Browse</span><span><kbd>Esc</kbd>Close panel</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="readiness-screen" data-screen="readiness" data-od-id="readiness-panel" hidden>
+      <div class="panel-shell">
+        <div class="panel-head">
+          <button class="icon-btn back-btn" data-action="back-home" aria-label="Back to Home">←</button>
+          <div><h1 data-od-id="readiness-heading">Hotkey preview</h1><p>See what sekio can use in this session, then test the full path.</p></div>
+          <span class="progress-copy" id="panel-progress"></span>
+        </div>
+        <div id="readiness-content"></div>
+      </div>
+    </section>
+
+    <section class="section" id="hotkey-screen" data-screen="hotkey" data-od-id="hotkey-setting" hidden>
+      <div class="panel-shell">
+        <div class="panel-head">
+          <button class="icon-btn back-btn" data-nav="readiness" aria-label="Back to readiness">←</button>
+          <div><h1>Hotkey</h1><p>Choose a combination, then sekio will try to register it in this session.</p></div>
+        </div>
+        <div id="hotkey-content"></div>
+      </div>
+    </section>
+
+    <section class="section" id="verification-screen" data-screen="verification" data-od-id="verification-state" hidden>
+      <div class="panel-shell">
+        <div class="panel-head">
+          <button class="icon-btn back-btn" data-action="cancel-verification" aria-label="Cancel test">←</button>
+          <div><h1>Try hotkey preview</h1><p>The test keeps listening while sekio is in the background.</p></div>
+        </div>
+        <div id="verification-content"></div>
+      </div>
+    </section>
+
+    <section class="section" id="report-screen" data-screen="report" data-od-id="technical-report" hidden>
+      <div class="panel-shell">
+        <div class="panel-head">
+          <button class="icon-btn back-btn" data-nav="readiness" aria-label="Back to readiness">←</button>
+          <div><h1>Readiness report</h1><p>Technical details for troubleshooting or a bug report.</p></div>
+        </div>
+        <div id="report-content"></div>
+      </div>
+    </section>
+
+    <section class="section" id="browser-screen" data-screen="browser" data-od-id="browser-panel" hidden>
+      <div class="browser-shell">
+        <div class="panel-head">
+          <button class="icon-btn back-btn" data-nav="home" aria-label="Back to Home">←</button>
+          <div><h1>Browse files</h1><p>Open a file without relying on a desktop portal.</p></div>
+        </div>
+        <div class="browser-grid">
+          <aside class="browser-side" aria-label="Places">
+            <button data-place="recent" aria-current="page">Recent</button>
+            <button data-place="home">Home</button>
+            <button data-place="documents">Documents</button>
+            <button data-place="downloads">Downloads</button>
+            <button data-place="pictures">Pictures</button>
+          </aside>
+          <div class="browser-files" id="browser-content"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <div class="drop-overlay" id="drop-overlay" hidden>Drop to preview this file</div>
+
+  <script>
+    const params = new URLSearchParams(location.search);
+    const scenario = params.get('scenario') || 'gnome';
+    const state = {
+      screen: 'home',
+      previous: 'home',
+      cardDismissed: localStorage.getItem('sekio-readiness-dismissed') === 'true',
+      daemon: scenario !== 'gnome' && scenario !== 'windows',
+      autostart: scenario !== 'gnome',
+      helper: scenario !== 'gnome',
+      hotkey: 'Ctrl+Shift+Space',
+      hotkeyOk: scenario === 'wayland' ? false : scenario !== 'gnome',
+      hotkeyConflict: scenario === 'gnome',
+      passingOpen: false,
+      theme: ['system', 'light', 'dark'].includes(localStorage.getItem('sekio-theme')) ? localStorage.getItem('sekio-theme') : 'system',
+      lastVerified: scenario === 'ready' ? { path: '/home/mira/Documents/roadmap.md', origin: 'Dolphin file manager', elapsed: '7 ms', time: 'Today, 09:42' } : null,
+      verification: null,
+      platform: scenario === 'windows' ? 'windows' : 'linux',
+      waylandOnly: scenario === 'wayland',
+      configWritable: scenario !== 'config-readonly',
+      browserPlace: 'recent',
+      recentFiles: scenario === 'empty-recent' ? [] : [
+        { name: 'roadmap.md', path: '~/Documents/sekio', time: '2m ago', kind: 'md' },
+        { name: 'q3-results.xlsx', path: '~/Downloads', time: 'Yesterday', kind: 'xls' },
+        { name: 'export-014.png', path: '~/Pictures', time: 'Mon', kind: 'png' }
+      ]
+    };
+
+    const $ = (selector) => document.querySelector(selector);
+    const all = (selector) => [...document.querySelectorAll(selector)];
+    const esc = (value) => String(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+    const systemTheme = matchMedia('(prefers-color-scheme: dark)');
+
+    function applyTheme(preference, persist = true) {
+      state.theme = preference;
+      const resolved = preference === 'system' ? (systemTheme.matches ? 'dark' : 'light') : preference;
+      document.documentElement.dataset.theme = resolved;
+      $('#theme-button').setAttribute('aria-label', `Theme: ${preference[0].toUpperCase()}${preference.slice(1)}`);
+      all('[data-theme-option]').forEach(option => {
+        const selected = option.dataset.themeOption === preference;
+        option.setAttribute('aria-checked', String(selected));
+        option.tabIndex = selected ? 0 : -1;
+      });
+      if (persist) localStorage.setItem('sekio-theme', preference);
+    }
+
+    function closeMenu(menuId, buttonId) {
+      $(menuId).hidden = true;
+      $(buttonId).setAttribute('aria-expanded', 'false');
+    }
+
+    function focusAfterRender(selector, fallbackSelector) {
+      requestAnimationFrame(() => {
+        const target = $(selector) || (fallbackSelector ? $(fallbackSelector) : null);
+        if (!target) return;
+        if (/^H[1-6]$/.test(target.tagName)) target.setAttribute('tabindex', '-1');
+        target.focus({ preventScroll: true });
+      });
+    }
+
+    function focusResult() {
+      focusAfterRender('#verification-content h2', '#verification-screen h1');
+    }
+
+    function handleMenuKeys(menu, event) {
+      const items = all(`#${menu.id} [role^="menuitem"]`);
+      const current = items.indexOf(document.activeElement);
+      let next = current;
+      if (event.key === 'ArrowDown') next = (current + 1) % items.length;
+      else if (event.key === 'ArrowUp') next = (current - 1 + items.length) % items.length;
+      else if (event.key === 'Home') next = 0;
+      else if (event.key === 'End') next = items.length - 1;
+      else return;
+      event.preventDefault();
+      items[next].focus();
+    }
+
+    function readiness() {
+      const checks = state.platform === 'windows' ? 2 : 5;
+      let ready = 0;
+      if (state.daemon) ready++;
+      if (state.hotkeyOk) ready++;
+      if (state.platform === 'linux') {
+        if (state.helper) ready++;
+        ready++; // GNOME selection is partial but usable with Ctrl+C.
+        ready++; // Tray is optional and does not reduce overall readiness.
+      }
+      return { ready, checks, complete: ready === checks };
+    }
+
+    function showToast(message, actionLabel, action) {
+      const toast = $('#toast');
+      toast.innerHTML = `${esc(message)}${actionLabel ? ` · <button class="text-btn" id="toast-action">${esc(actionLabel)}</button>` : ''}`;
+      toast.hidden = false;
+      if (actionLabel) $('#toast-action').onclick = action;
+      clearTimeout(showToast.timer);
+      showToast.timer = setTimeout(() => toast.hidden = true, 4500);
+    }
+
+    function renderChecking() {
+      $('#panel-progress').textContent = 'Checking…';
+      $('#readiness-content').innerHTML = '<div class="checking-state" role="status" aria-live="polite"><div><div class="checking-mark" aria-hidden="true"></div><strong>Checking this session</strong><span>Testing the service, hotkey, and selection path.</span></div></div>';
+    }
+
+    function navigate(screen) {
+      clearTimeout(navigate.checkTimer);
+      const screenChanged = state.screen !== screen;
+      state.previous = state.screen;
+      state.screen = screen;
+      all('[data-screen]').forEach(el => el.hidden = el.dataset.screen !== screen);
+      all('.nav-tab[data-nav]').forEach(el => {
+        if (el.dataset.nav === screen) el.setAttribute('aria-current', 'page');
+        else el.removeAttribute('aria-current');
+      });
+      closeMenu('#settings-menu', '#settings-button');
+      closeMenu('#theme-menu', '#theme-button');
+      if (screen === 'home') renderHome();
+      if (screen === 'readiness') {
+        renderChecking();
+        navigate.checkTimer = setTimeout(() => {
+          if (state.screen === 'readiness') renderReadiness();
+        }, 420);
+      }
+      if (screen === 'hotkey') renderHotkey();
+      if (screen === 'verification') renderVerification();
+      if (screen === 'report') renderReport();
+      if (screen === 'browser') renderBrowser();
+      window.scrollTo({ top: 0, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+      if (screenChanged) requestAnimationFrame(() => {
+        const heading = $(`[data-screen="${screen}"] h1`);
+        if (heading) {
+          heading.setAttribute('tabindex', '-1');
+          heading.focus({ preventScroll: true });
+        }
+      });
+    }
+
+    function renderHome() {
+      const r = readiness();
+      const slot = $('#readiness-slot');
+      const shouldShow = !state.cardDismissed && !(r.complete && state.lastVerified);
+      slot.innerHTML = shouldShow ? `
+        <div class="readiness-card" data-od-id="readiness-card">
+          <span class="signal" aria-hidden="true"></span>
+          <div class="readiness-copy"><strong>Hotkey preview</strong><span>${r.ready} of ${r.checks} ready · ${r.complete ? 'Ready to verify' : 'Finish setup to preview from anywhere'}</span></div>
+          <button class="btn btn-small" data-action="open-readiness">Set up</button>
+          <button class="text-btn" data-action="dismiss-card" aria-label="Dismiss hotkey preview setup">Dismiss</button>
+        </div>` : '';
+      const files = state.recentFiles.slice(0, 3);
+      $('#home-recent').innerHTML = `
+        <div class="block-heading"><h2>Recent</h2>${files.length ? '<button class="text-btn" data-action="open-recent">View all</button>' : ''}</div>
+        ${files.length ? `<div class="recent-list">${files.map((file, index) => `<button class="recent-row" data-action="preview-file" data-file="${esc(file.name)}" data-od-id="home-recent-file-${index + 1}"><span><strong>${esc(file.name)}</strong><span>${esc(file.path)}</span></span><span>${esc(file.time)}</span></button>`).join('')}</div>` : '<div class="recent-home-empty">Files you preview will appear here.</div>'}`;
+    }
+
+    function renderBrowser() {
+      const place = state.browserPlace;
+      all('.browser-side [data-place]').forEach(button => {
+        if (button.dataset.place === place) button.setAttribute('aria-current', 'page');
+        else button.removeAttribute('aria-current');
+      });
+      if (place === 'recent') {
+        const files = state.recentFiles.slice(0, 10);
+        $('#browser-content').innerHTML = files.length ? `
+          <div class="browser-list-head"><h2>Recent</h2><span>${files.length} ${files.length === 1 ? 'file' : 'files'}</span></div>
+          ${files.map((file, index) => `<button class="file-row" data-action="preview-file" data-file="${esc(file.name)}" data-od-id="recent-file-${index + 1}"><span>${esc(file.name)}</span><span>${esc(file.time)}</span></button>`).join('')}` : `
+          <div class="browser-empty" data-od-id="recent-empty-state"><div><h2>No recent files</h2><p>Files you preview will appear here, up to the ten most recent.</p><button class="btn btn-primary" data-action="open-file">Open a file…</button></div></div>`;
+        return;
+      }
+      const placeName = place.charAt(0).toUpperCase() + place.slice(1);
+      $('#browser-content').innerHTML = `
+        <div class="browser-list-head"><h2>${esc(placeName)}</h2><span>4 items</span></div>
+        <button class="file-row" data-place="documents"><span>Documents</span><span>Folder</span></button>
+        <button class="file-row" data-action="preview-file" data-file="roadmap.md"><span>roadmap.md</span><span>18 KB</span></button>
+        <button class="file-row" data-action="preview-file" data-file="notes.txt"><span>notes.txt</span><span>4 KB</span></button>
+        <button class="file-row" data-action="preview-file" data-file="q3-results.xlsx"><span>q3-results.xlsx</span><span>1.8 MB</span></button>`;
+    }
+
+    function unmetRow(icon, title, copy, actions) {
+      return `<div class="check-row"><span class="state-icon state-unmet" aria-hidden="true">${icon}</span><div class="check-copy"><span class="sr-only">Needs attention. </span><strong>${title}</strong><p>${copy}</p></div><div class="check-actions">${actions}</div></div>`;
+    }
+
+    function metRow(title, copy, evidence = '', actions = '') {
+      return `<div class="check-row"><span class="state-icon state-met" aria-hidden="true">✓</span><div class="check-copy"><span class="sr-only">Passed. </span><strong>${title}</strong><p>${copy}</p>${evidence ? `<div class="evidence">${evidence}</div>` : ''}</div>${actions ? `<div class="check-actions">${actions}</div>` : ''}</div>`;
+    }
+
+    function renderReadiness() {
+      const r = readiness();
+      $('#panel-progress').textContent = `${r.ready} of ${r.checks} ready`;
+      const issues = [];
+      const passes = [];
+
+      if (!state.daemon) issues.push(unmetRow('!', 'The hotkey has nothing listening for it', 'Start the background service so sekio can answer instantly without opening a fresh process.', '<button class="btn btn-small" data-action="start-daemon">Start daemon</button>'));
+      else passes.push(metRow('Background service is running', 'sekio is listening for preview requests.', 'socket · /run/user/1000/sekio.sock · pid 4821', '<button class="btn btn-small btn-quiet" data-action="stop-daemon">Stop daemon</button>'));
+
+      if (state.waylandOnly) {
+        issues.push(`<div class="banner"><span class="state-icon state-partial" aria-hidden="true">!</span><div><span class="sr-only">Partial support. </span><strong>Global hotkeys are unavailable in this session</strong><p>sekio needs X11 or XWayland to register a global key. Bind a desktop shortcut to <code>sekio-gui &lt;path&gt;</code> instead.</p><div class="check-actions check-actions-start"><button class="btn btn-small" data-action="copy-alternative">Copy alternative</button><button class="btn btn-small btn-quiet" data-action="docs">Read guide</button></div></div></div>`);
+      } else if (!state.hotkeyOk) {
+        issues.push(unmetRow('!', 'Ctrl+Shift+Space could not be registered', 'Another application may already own this combination. sekio cannot identify which one.', '<button class="btn btn-small" data-nav="hotkey">Choose another</button>'));
+      } else passes.push(metRow(`${state.hotkey} is registered`, 'This session handed the key to sekio.', 'source · gui.toml · grab-and-release · 4 ms'));
+
+      if (state.platform === 'linux') {
+        if (!state.helper) issues.push(unmetRow('!', 'The hotkey will not find your selection', 'Install one clipboard helper so sekio can read a copied path.', '<button class="btn btn-small" data-action="copy-install">Copy install command</button><button class="btn btn-small btn-quiet" data-action="recheck-helper">Re-check</button>'));
+        else passes.push(metRow('Clipboard helper is available', 'sekio can read copied paths through wl-paste.', 'probe · wl-paste · 11 ms'));
+      }
+
+      const partial = state.platform === 'linux' ? `<div class="check-row"><span class="state-icon state-partial" aria-hidden="true">~</span><div class="check-copy"><span class="sr-only">Works with a caveat. </span><strong>Selection works, but press Ctrl+C first</strong><p>Nautilus does not publish live selection. Copy the file, then press the hotkey; this is a supported partial state.</p></div><div class="check-actions"><button class="btn btn-small btn-quiet" data-action="docs">Coverage</button></div></div>` : '';
+      if (state.platform === 'linux') passes.push(metRow('Tray icon is unavailable', 'Nothing in this GNOME session hosts tray icons. The daemon and hotkey still work.', 'component · degraded · overall readiness unaffected'));
+
+      const verdictTitle = state.waylandOnly ? 'Hotkey preview cannot run in this session' : r.complete ? (state.lastVerified ? 'Hotkey preview is working' : 'Ready for a live test') : `${r.checks - r.ready} ${r.checks - r.ready === 1 ? 'step' : 'steps'} left`;
+      const verdictCopy = state.waylandOnly ? 'Use a desktop file-manager shortcut instead; normal file preview remains available.' : r.complete ? (state.lastVerified ? `Last verified ${state.lastVerified.time}.` : 'The checks pass. Verify the whole chain with a real file selection.') : 'Resolve the issues below; you can leave and come back at any time.';
+
+      $('#readiness-content').innerHTML = `
+        <div class="verdict"><strong>${verdictTitle}</strong><span>${verdictCopy}</span></div>
+        ${issues.length ? `<div class="section-label">Needs attention</div><div class="check-list">${issues.join('')}</div>` : ''}
+        ${partial ? `<div class="section-label">Works with a caveat</div><div class="check-list">${partial}</div>` : ''}
+        <button class="passed-toggle" data-action="toggle-passes" aria-expanded="${state.passingOpen}" aria-controls="passed-checks"><span>${passes.length} checks passed</span><span aria-hidden="true">${state.passingOpen ? '−' : '+'}</span></button>
+        <div class="check-list" id="passed-checks" ${state.passingOpen ? '' : 'hidden'}>${passes.join('')}</div>
+        <div class="section-label">Background service</div>
+        <div class="switch-row"><div class="switch-copy"><strong>Start at login</strong><span>Keeps the hotkey instant after you sign in.</span></div><button class="switch" role="switch" aria-checked="${state.autostart}" data-action="toggle-autostart" aria-label="Start at login"></button></div>
+        ${state.lastVerified ? `<div class="section-label">Last verified</div><div class="result-grid"><dt>File</dt><dd>${esc(state.lastVerified.path)}</dd><dt>Source</dt><dd>${esc(state.lastVerified.origin)}</dd><dt>Response</dt><dd>${esc(state.lastVerified.elapsed)} · ${esc(state.lastVerified.time)}</dd></div>` : ''}
+        <div class="panel-actions"><div><button class="btn btn-quiet" data-nav="report">Details</button><button class="btn btn-quiet" data-action="copy-report">Copy report</button></div><div>${r.complete && !state.waylandOnly ? '<button class="btn btn-primary" data-action="try-now">Try it now</button>' : ''}<button class="btn" data-action="back-home">Done for now</button></div></div>`;
+    }
+
+    function renderHotkey() {
+      if (state.waylandOnly) {
+        $('#hotkey-content').innerHTML = `<div class="banner"><span class="state-icon state-partial" aria-hidden="true">!</span><div><span class="sr-only">Partial support. </span><strong>Read-only in this session</strong><p>Global hotkeys require X11 or XWayland. Your saved binding remains ${esc(state.hotkey)}, but sekio cannot register it here.</p></div></div><button class="btn" data-action="copy-alternative">Copy desktop-shortcut command</button>`;
+        return;
+      }
+      const presets = ['Ctrl+Shift+Space', 'Ctrl+Alt+Space', 'Alt+Space', 'Ctrl+Shift+P', 'Space'];
+      $('#hotkey-content').innerHTML = `
+        <div class="verdict"><strong>${state.hotkeyOk ? 'Registered in this session' : 'Current binding is unavailable'}</strong><span>${state.hotkeyOk ? 'A real grab-and-release test succeeded.' : 'Another application may already own Ctrl+Shift+Space.'}</span></div>
+        <div class="preset-list" role="radiogroup" aria-label="Hotkey presets">${presets.map(key => `<button class="preset" role="radio" aria-checked="${key === state.hotkey}" data-hotkey="${key}"><span>${key}</span><kbd>${key.split('+').join(' + ')}</kbd></button>`).join('')}</div>
+        <div id="hotkey-warning"></div>
+        <div class="save-state">${state.configWritable ? 'Source · gui.toml · changes save immediately' : 'Config directory is read-only · changes apply only until sekio quits'}</div>
+        <div class="panel-actions"><div></div><div><button class="btn" data-nav="readiness">Back to readiness</button></div></div>`;
+      if (state.hotkey === 'Space') showHotkeyWarning();
+    }
+
+    function showHotkeyWarning() {
+      $('#hotkey-warning').innerHTML = '<div class="inline-note"><strong>Space will be taken from every application.</strong><br>A modifier-less typing key is usually disruptive. Choose it only if that is intentional.</div>';
+    }
+
+    function renderVerification() {
+      if (!state.verification || state.verification === 'armed') {
+        state.verification = 'armed';
+        $('#verification-content').innerHTML = `<div class="armed-card"><div class="pulse" aria-hidden="true">⌁</div><h2>sekio is watching</h2><p>Select a file in your file manager and press <kbd>${esc(state.hotkey)}</kbd>. You can leave this window; the test will remain armed.</p><div class="test-events"><span>Prototype event</span><div><button class="btn btn-primary" data-action="verify-success">Simulate file + hotkey</button><button class="btn" data-action="verify-empty">Simulate no selection</button><button class="btn btn-quiet" data-action="cancel-verification">Cancel</button></div></div></div>`;
+      } else if (state.verification === 'success') {
+        $('#verification-content').innerHTML = `<div class="result-card"><div class="result-head"><span class="state-icon state-met" aria-hidden="true">✓</span><h2><span class="sr-only">Success. </span>Preview resolved</h2></div><dl class="result-grid"><dt>Path</dt><dd>/home/mira/Documents/roadmap.md</dd><dt>From</dt><dd>Nautilus clipboard</dd><dt>Resolved in</dt><dd>8 ms</dd><dt>Verified</dt><dd>Just now</dd></dl><div class="panel-actions"><div><button class="btn btn-quiet" data-action="copy-report">Copy report</button></div><div><button class="btn" data-action="retry-verification">Try again</button><button class="btn btn-primary" data-action="finish-verification">Done</button></div></div></div>`;
+      } else if (state.verification === 'empty') {
+        $('#verification-content').innerHTML = `<div class="result-card"><div class="result-head"><span class="state-icon state-unmet" aria-hidden="true">!</span><h2><span class="sr-only">Test failed. </span>No file was resolved</h2></div><p class="result-copy">The hotkey reached sekio, but Nautilus did not provide a path. Outside an armed test this outcome stays silent.</p><ul class="cause-list"><li>Select the file and press Ctrl+C before using the hotkey.</li><li>Check that the copied value is a path or <code>file://</code> URI.</li><li>Re-check the clipboard helper if this used to work.</li></ul><div class="panel-actions"><div><button class="btn btn-quiet" data-action="copy-report">Copy report</button></div><div><button class="btn" data-action="retry-verification">Retry</button><button class="btn btn-quiet" data-nav="readiness">Back to readiness</button></div></div></div>`;
+      } else {
+        $('#verification-content').innerHTML = `<div class="result-card"><div class="result-head"><span class="state-icon" aria-hidden="true">×</span><h2>Test cancelled</h2></div><p class="cancel-copy">Nothing changed. Your readiness checks and chosen hotkey are still saved.</p><div class="panel-actions"><div></div><div><button class="btn" data-action="retry-verification">Try again</button><button class="btn btn-quiet" data-nav="readiness">Back to readiness</button></div></div></div>`;
+      }
+    }
+
+    function reportText() {
+      return `sekio readiness report\nplatform: ${state.platform}\nsession: ${state.waylandOnly ? 'wayland-only' : 'x11/xwayland'}\ndaemon: ${state.daemon ? 'running · pid 4821' : 'not running'}\nsocket: /run/user/1000/sekio.sock\nhotkey: ${state.hotkey} · ${state.hotkeyOk ? 'registered' : 'unavailable'}\nselection: ${state.platform === 'windows' ? 'Explorer COM' : 'Nautilus clipboard · partial'}\nclipboard helper: ${state.platform === 'windows' ? 'not required' : state.helper ? 'wl-paste · 11 ms' : 'not found'}\ntray: unavailable · no host\nconfig: ${state.configWritable ? 'writable' : 'read-only'}`;
+    }
+
+    function renderReport() {
+      $('#report-content').innerHTML = `<div class="report"><div class="report-row"><span>platform</span><code>${state.platform}</code></div><div class="report-row"><span>display</span><code>${state.waylandOnly ? 'wayland-only · no XWayland' : 'x11/xwayland · :0'}</code></div><div class="report-row"><span>daemon</span><code>${state.daemon ? 'running · pid 4821 · uptime 00:04:18' : 'not running'}</code></div><div class="report-row"><span>socket</span><code>/run/user/1000/sekio.sock</code></div><div class="report-row"><span>hotkey</span><code>${esc(state.hotkey)} · ${state.hotkeyOk ? 'grab succeeded in 4 ms' : 'grab failed'}</code></div><div class="report-row"><span>selection</span><code>${state.platform === 'windows' ? 'Explorer COM · direct' : 'Nautilus clipboard · partial coverage'}</code></div><div class="report-row"><span>clipboard</span><code>${state.platform === 'windows' ? 'not required' : state.helper ? 'wl-paste · probe 11 ms' : 'wl-paste, xclip, xsel not found'}</code></div><div class="report-row"><span>tray</span><code>unavailable · no AppIndicator host</code></div><div class="report-row"><span>config</span><code>${state.configWritable ? '~/.config/sekio/gui.toml · writable' : '~/.config/sekio · read-only'}</code></div></div><div class="panel-actions"><div></div><div><button class="btn" data-action="copy-report">Copy report</button></div></div>`;
+    }
+
+    async function copy(text, message) {
+      try { await navigator.clipboard.writeText(text); showToast(message); }
+      catch { showToast('Clipboard access is unavailable in this preview.'); }
+    }
+
+    document.addEventListener('click', (event) => {
+      const nav = event.target.closest('[data-nav]');
+      if (nav) { navigate(nav.dataset.nav); return; }
+      const actionEl = event.target.closest('[data-action]');
+      if (!actionEl) return;
+      const action = actionEl.dataset.action;
+      if (action === 'open-readiness') { state.cardDismissed = false; navigate('readiness'); }
+      if (action === 'open-recent') { state.browserPlace = 'recent'; navigate('browser'); }
+      if (action === 'back-home') navigate('home');
+      if (action === 'dismiss-card') { state.cardDismissed = true; localStorage.setItem('sekio-readiness-dismissed', 'true'); renderHome(); showToast('Hotkey setup hidden from Home.', 'Undo', () => { state.cardDismissed = false; localStorage.removeItem('sekio-readiness-dismissed'); renderHome(); $('#toast').hidden = true; focusAfterRender('[data-action="open-readiness"]', '#open-file-button'); }); focusAfterRender('#toast-action', '#open-file-button'); }
+      if (action === 'start-daemon') { state.daemon = true; showToast('Background service started.'); renderReadiness(); focusAfterRender('[data-action="stop-daemon"]', '[data-action="toggle-passes"]'); }
+      if (action === 'stop-daemon') { state.daemon = false; showToast('Background service stopped.'); renderReadiness(); focusAfterRender('[data-action="start-daemon"]'); }
+      if (action === 'toggle-autostart') { state.autostart = !state.autostart; renderReadiness(); focusAfterRender('[data-action="toggle-autostart"]'); showToast(state.autostart ? 'sekio will start at login.' : 'Start at login turned off.'); }
+      if (action === 'toggle-passes') { state.passingOpen = !state.passingOpen; renderReadiness(); focusAfterRender('[data-action="toggle-passes"]'); }
+      if (action === 'copy-install') copy('sudo apt install wl-clipboard', 'Install command copied.');
+      if (action === 'recheck-helper') { state.helper = true; showToast('wl-paste found in 11 ms.'); renderReadiness(); focusAfterRender('[data-action="toggle-passes"]'); }
+      if (action === 'copy-alternative') copy('sekio-gui <path>', 'Desktop shortcut command copied.');
+      if (action === 'docs') showToast('Coverage guide would open in the browser.');
+      if (action === 'try-now') { state.verification = 'armed'; navigate('verification'); }
+      if (action === 'verify-success') { state.verification = 'success'; renderVerification(); focusResult(); }
+      if (action === 'verify-empty') { state.verification = 'empty'; renderVerification(); focusResult(); }
+      if (action === 'retry-verification') { state.verification = 'armed'; renderVerification(); focusResult(); }
+      if (action === 'cancel-verification') { state.verification = 'cancelled'; renderVerification(); focusResult(); }
+      if (action === 'finish-verification') { state.lastVerified = { path: '/home/mira/Documents/roadmap.md', origin: 'Nautilus clipboard', elapsed: '8 ms', time: 'Just now' }; state.verification = null; navigate('home'); showToast('Hotkey preview verified. Setup has been removed from Home.'); }
+      if (action === 'copy-report') copy(reportText(), 'Readiness report copied.');
+      if (action === 'open-file') showToast('Native Open dialog would open; browser is the fallback.');
+      if (action === 'preview-file') showToast(`${actionEl.dataset.file || 'File'} opened in preview. This window is now in App mode.`);
+    });
+
+    document.addEventListener('click', (event) => {
+      const place = event.target.closest('[data-place]');
+      if (!place) return;
+      state.browserPlace = place.dataset.place;
+      if (state.screen !== 'browser') navigate('browser');
+      else renderBrowser();
+    });
+
+    document.addEventListener('click', (event) => {
+      const preset = event.target.closest('[data-hotkey]');
+      if (!preset) return;
+      state.hotkey = preset.dataset.hotkey;
+      state.hotkeyConflict = false;
+      state.hotkeyOk = true;
+      renderHotkey();
+      if (state.hotkey === 'Space') showHotkeyWarning();
+      focusAfterRender(`[data-hotkey="${state.hotkey}"]`);
+      showToast(state.configWritable ? `${state.hotkey} registered and saved.` : `${state.hotkey} registered for this session only.`);
+    });
+
+    $('#theme-button').addEventListener('click', () => {
+      const menu = $('#theme-menu');
+      const opening = menu.hidden;
+      closeMenu('#settings-menu', '#settings-button');
+      menu.hidden = !opening;
+      $('#theme-button').setAttribute('aria-expanded', String(opening));
+      if (opening) menu.querySelector('[aria-checked="true"]').focus();
+    });
+
+    $('#theme-menu').addEventListener('click', (event) => {
+      const option = event.target.closest('[data-theme-option]');
+      if (!option) return;
+      applyTheme(option.dataset.themeOption);
+      closeMenu('#theme-menu', '#theme-button');
+      $('#theme-button').focus();
+    });
+    $('#theme-menu').addEventListener('keydown', event => handleMenuKeys($('#theme-menu'), event));
+    $('#theme-menu').addEventListener('focusout', () => setTimeout(() => {
+      if (!$('#theme-menu').contains(document.activeElement)) closeMenu('#theme-menu', '#theme-button');
+    }));
+
+    $('#settings-button').addEventListener('click', () => {
+      const menu = $('#settings-menu');
+      const opening = menu.hidden;
+      closeMenu('#theme-menu', '#theme-button');
+      menu.hidden = !opening;
+      $('#settings-button').setAttribute('aria-expanded', String(opening));
+      if (opening) menu.querySelector('[role="menuitem"]').focus();
+    });
+    $('#settings-menu').addEventListener('keydown', event => handleMenuKeys($('#settings-menu'), event));
+    $('#settings-menu').addEventListener('focusout', () => setTimeout(() => {
+      if (!$('#settings-menu').contains(document.activeElement)) closeMenu('#settings-menu', '#settings-button');
+    }));
+
+    document.addEventListener('click', (event) => {
+      if (event.target.closest('.topnav-actions')) return;
+      closeMenu('#settings-menu', '#settings-button');
+      closeMenu('#theme-menu', '#theme-button');
+    });
+
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        if (!$('#settings-menu').hidden) { $('#settings-menu').hidden = true; $('#settings-button').setAttribute('aria-expanded', 'false'); $('#settings-button').focus(); }
+        else if (!$('#theme-menu').hidden) { closeMenu('#theme-menu', '#theme-button'); $('#theme-button').focus(); }
+        else if (state.screen === 'verification' && state.verification === 'armed') { state.verification = 'cancelled'; renderVerification(); focusResult(); }
+        else if (state.screen !== 'home') navigate('home');
+      }
+      if (event.key.toLowerCase() === 'b' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); navigate('browser'); }
+      if (event.key.toLowerCase() === 'o' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); showToast('Native Open dialog would open.'); }
+    });
+
+    let dragDepth = 0;
+    document.addEventListener('dragenter', (event) => { event.preventDefault(); dragDepth++; $('#drop-overlay').hidden = false; });
+    document.addEventListener('dragover', event => event.preventDefault());
+    document.addEventListener('dragleave', () => { dragDepth--; if (dragDepth <= 0) { dragDepth = 0; $('#drop-overlay').hidden = true; } });
+    document.addEventListener('drop', (event) => { event.preventDefault(); dragDepth = 0; $('#drop-overlay').hidden = true; showToast('Dropped file opened in preview.'); });
+
+    systemTheme.addEventListener('change', () => { if (state.theme === 'system') applyTheme('system', false); });
+    applyTheme(state.theme, false);
+    renderHome();
+    navigate('home');
+  </script>
+</body>
+</html>

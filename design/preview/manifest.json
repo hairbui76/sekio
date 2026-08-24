@@ -1,0 +1,13 @@
+{
+  "title": "sekio / Linear design system",
+  "description": "Focused review cards derived from the Web Prototype source project.",
+  "previews": [
+    { "id": "colors", "title": "Colors", "path": "colors-primary.html" },
+    { "id": "typography", "title": "Typography", "path": "typography-specimens.html" },
+    { "id": "spacing", "title": "Spacing", "path": "spacing-tokens.html" },
+    { "id": "radius-shadows", "title": "Radius & shadows", "path": "radius-shadows.html" },
+    { "id": "components", "title": "Components", "path": "components-buttons.html" },
+    { "id": "brand-assets", "title": "Brand assets", "path": "brand-assets.html" },
+    { "id": "applied-ui", "title": "Applied UI", "path": "applied-ui.html" }
+  ]
+}

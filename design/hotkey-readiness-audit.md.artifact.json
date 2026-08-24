@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "kind": "markdown-document",
+  "title": "hotkey-readiness-audit.md",
+  "entry": "hotkey-readiness-audit.md",
+  "renderer": "markdown",
+  "status": "complete",
+  "exports": [
+    "md",
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "createdAt": "2026-08-24T00:48:05.286Z",
+  "updatedAt": "2026-08-24T00:48:05.286Z",
+  "metadata": {
+    "inferred": true
+  }
+}

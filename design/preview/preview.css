@@ -1,0 +1,26 @@
+@import url("../colors_and_type.css");
+
+body { min-width: 320px; }
+.preview-shell { width: min(100% - 32px, 1080px); margin: 0 auto; padding: 48px 0 72px; }
+.preview-head { display: flex; justify-content: space-between; align-items: end; gap: 24px; padding-bottom: 24px; border-bottom: 1px solid var(--border); }
+.preview-head h1 { margin: 0 0 6px; font-size: var(--text-2xl); font-weight: 510; }
+.preview-head p { max-width: 60ch; margin: 0; color: var(--muted); font-size: var(--text-sm); }
+.preview-head a, .source-link { min-height: 44px; display: inline-flex; align-items: center; color: var(--fg-2); text-decoration: none; font-size: var(--text-sm); }
+.preview-head a:hover, .source-link:hover { color: var(--fg); }
+.preview-section { margin-top: 40px; }
+.preview-section h2 { margin: 0 0 16px; color: var(--muted); font-size: 13px; font-weight: 510; letter-spacing: 0; }
+.grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 12px; }
+.panel { grid-column: span 6; padding: 20px; border: 1px solid var(--border); border-radius: var(--radius-md); background: color-mix(in oklab, var(--fg) 2%, transparent); }
+.panel--full { grid-column: 1 / -1; }
+.panel h3 { margin: 0 0 8px; font-size: var(--text-base); font-weight: 510; }
+.panel p { margin: 0; color: var(--muted); font-size: 13px; }
+.token { min-height: 110px; display: flex; flex-direction: column; justify-content: end; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius-md); }
+.token strong { font-size: 13px; }
+.token code { color: var(--muted); font-size: 11px; }
+.launcher { margin-top: 32px; }
+.launcher a { grid-column: span 4; min-height: 140px; display: flex; flex-direction: column; justify-content: space-between; padding: 20px; color: var(--fg); text-decoration: none; border: 1px solid var(--border); border-radius: var(--radius-md); background: color-mix(in oklab, var(--fg) 2%, transparent); }
+.launcher a:hover { background: color-mix(in oklab, var(--fg) 5%, transparent); border-color: color-mix(in oklab, var(--fg) 18%, transparent); }
+.launcher span { color: var(--muted); font-size: 13px; }
+.sample-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.source-frame { width: 100%; min-height: 640px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg); }
+@media (max-width: 720px) { .preview-head { align-items: flex-start; flex-direction: column; } .panel, .launcher a { grid-column: 1 / -1; } }

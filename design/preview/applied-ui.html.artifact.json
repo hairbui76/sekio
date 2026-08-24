@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "preview/applied-ui.html",
+  "entry": "preview/applied-ui.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "createdAt": "2026-08-24T00:53:08.580Z",
+  "updatedAt": "2026-08-24T00:53:08.580Z",
+  "metadata": {
+    "inferred": true,
+    "reconciled": true
+  }
+}

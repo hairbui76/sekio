@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "kind": "markdown-document",
+  "title": "PRODUCT.md",
+  "entry": "PRODUCT.md",
+  "renderer": "markdown",
+  "status": "complete",
+  "exports": [
+    "md",
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "createdAt": "2026-08-24T00:48:05.301Z",
+  "updatedAt": "2026-08-24T00:48:05.301Z",
+  "metadata": {
+    "inferred": true
+  }
+}

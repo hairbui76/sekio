@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "preview/colors-primary.html",
+  "entry": "preview/colors-primary.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "createdAt": "2026-08-24T00:53:08.558Z",
+  "updatedAt": "2026-08-24T00:53:08.558Z",
+  "metadata": {
+    "inferred": true,
+    "reconciled": true
+  }
+}
