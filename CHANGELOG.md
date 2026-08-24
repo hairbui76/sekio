@@ -3,6 +3,16 @@
 Notable changes per release. Versions are the workspace version; every entry
 corresponds to a `v*` tag and its published deb, rpm and msi.
 
+## 0.12.3 — 2026-08-24
+
+### Fixed
+
+- The browser pane could not be dragged narrower than its longest filename.
+  A panel is at least as wide as the widest thing inside it, and the rows were
+  laid out at full width and then clipped — which looks like truncation but
+  keeps the row wide. Names are now cut with an ellipsis, and the full name is
+  on the row's tooltip.
+
 ## 0.12.2 — 2026-08-24
 
 ### Fixed
