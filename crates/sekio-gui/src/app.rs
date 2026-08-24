@@ -1116,8 +1116,25 @@ impl SekioApp {
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Rightmost, where a settings control is looked for.
-                        if let Some(chosen) = self.settings_menu(ui) {
-                            action = Some(chosen);
+                        self.settings_menu(ui);
+                        // One glyph that says what mode it is in and cycles to
+                        // the next: a three-item list in a menu is a lot of
+                        // furniture for a control whose whole job is "not that
+                        // one".
+                        let next = self.theme.cycle();
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new(self.theme.icon()).size(15.0))
+                                    .frame(false),
+                            )
+                            .on_hover_text(format!(
+                                "{} — click for {}",
+                                self.theme.describe(),
+                                next.describe().to_lowercase()
+                            ))
+                            .clicked()
+                        {
+                            action = Some(Action::SetTheme(next));
                         }
                         if self.tracker.is_pending() {
                             ui.add(egui::Spinner::new().size(12.0));
@@ -1163,41 +1180,12 @@ impl SekioApp {
     /// it. Everything else worth setting is either a one-shot flag or lives in
     /// `gui.toml`, and a preferences dialog that duplicated the file would be
     /// two places to disagree.
-    fn settings_menu(&self, ui: &mut egui::Ui) -> Option<Action> {
-        let mut action = None;
+    fn settings_menu(&self, ui: &mut egui::Ui) {
         ui.menu_button("⚙", |ui| {
             ui.set_min_width(212.0);
 
-            menu_heading(ui, &self.palette, "Theme");
-            for theme in [
-                style::Theme::System,
-                style::Theme::Light,
-                style::Theme::Dark,
-            ] {
-                let label = match theme {
-                    // Says what it will do, not just what it is called: on a
-                    // desktop that reports nothing, "System" silently means
-                    // dark, and this is where that is admitted.
-                    style::Theme::System => "Follow the desktop",
-                    style::Theme::Light => "Light",
-                    style::Theme::Dark => "Dark",
-                };
-                if ui
-                    .selectable_label(self.theme == theme, label)
-                    .on_hover_text(match theme {
-                        style::Theme::System => "Switches with your desktop while sekio is open",
-                        _ => "Stays this way whatever the desktop does",
-                    })
-                    .clicked()
-                {
-                    action = Some(Action::SetTheme(theme));
-                    ui.close();
-                }
-            }
-
-            ui.add_space(6.0);
-            ui.separator();
-            ui.add_space(2.0);
+            // Theme lives on the header's own glyph now; what is left here is
+            // the things there is nowhere else to say.
             menu_heading(ui, &self.palette, "About");
             ui.label(format!("sekio {}", env!("CARGO_PKG_VERSION")));
             ui.label(
@@ -1239,8 +1227,7 @@ impl SekioApp {
             );
         })
         .response
-        .on_hover_text("Theme and about");
-        action
+        .on_hover_text("About sekio");
     }
 
     fn footer(&self, ui: &mut egui::Ui) {
@@ -1778,20 +1765,88 @@ fn text_width(ui: &egui::Ui, text: &str, size: f32) -> f32 {
 /// Every key that does anything, so the window never needs the manual.
 fn keys_block(ui: &mut egui::Ui, palette: &Palette) {
     section(ui, palette, "Keys");
-    // A wrapping row of keycap-and-label pairs rather than a two-column grid:
-    // the grid forced one pair per line and left the right half of a wide
-    // column empty, which is what made the legend look longer than the list of
-    // files above it.
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = Vec2::new(20.0, 8.0);
-        for (key, what) in KEYS {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 5.0;
+
+    // Rows are measured and broken here rather than left to
+    // `horizontal_wrapped`. A keycap and its label have to stay together, so
+    // each pair used to be its own nested `horizontal` — and a nested
+    // horizontal does not take part in the parent's wrapping, so the whole
+    // legend ran off the right edge of the column instead of folding onto a
+    // second line.
+    let widths: Vec<f32> = KEYS
+        .iter()
+        .map(|(key, what)| keycap_width(ui, key) + KEY_LABEL_GAP + text_width(ui, what, 12.0))
+        .collect();
+
+    for (i, row) in break_rows(&widths, ui.available_width(), KEY_PAIR_GAP)
+        .iter()
+        .enumerate()
+    {
+        if i > 0 {
+            ui.add_space(8.0);
+        }
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = KEY_LABEL_GAP;
+            for (n, (key, what)) in KEYS[row.clone()].iter().enumerate() {
+                if n > 0 {
+                    ui.add_space(KEY_PAIR_GAP - KEY_LABEL_GAP);
+                }
                 style::kbd(ui, palette, key);
                 ui.label(RichText::new(*what).color(palette.dim).size(12.0));
-            });
+            }
+        });
+    }
+}
+
+/// Greedily pack `widths` into rows no wider than `avail`, separated by `gap`.
+///
+/// Pure so the packing can be asserted without a window: this is the logic
+/// that decides whether the key legend folds onto a second line or runs off
+/// the edge of the column, and it got that wrong once already.
+///
+/// An item wider than `avail` still gets a row — clipping one entry beats
+/// looping forever or dropping it silently.
+fn break_rows(widths: &[f32], avail: f32, gap: f32) -> Vec<std::ops::Range<usize>> {
+    let mut rows = Vec::new();
+    let mut start = 0;
+    let mut used = 0.0_f32;
+    for (i, w) in widths.iter().enumerate() {
+        if i == start {
+            used = *w;
+            continue;
         }
+        if used + gap + w > avail {
+            rows.push(start..i);
+            start = i;
+            used = *w;
+        } else {
+            used += gap + w;
+        }
+    }
+    if start < widths.len() {
+        rows.push(start..widths.len());
+    }
+    rows
+}
+
+/// Between a keycap and the words describing it.
+const KEY_LABEL_GAP: f32 = 5.0;
+/// Between one key/label pair and the next.
+const KEY_PAIR_GAP: f32 = 20.0;
+
+/// How wide `style::kbd` will draw this key, including its padding and border.
+fn keycap_width(ui: &egui::Ui, key: &str) -> f32 {
+    let glyphs = ui.ctx().fonts_mut(|fonts| {
+        fonts
+            .layout_no_wrap(
+                key.to_owned(),
+                egui::FontId::monospace(11.0),
+                egui::Color32::PLACEHOLDER,
+            )
+            .size()
+            .x
     });
+    // 6 px of inner margin either side, plus the 1 px stroke.
+    glyphs + 14.0
 }
 
 /// How many recent files the home screen lists. The whole point is the last
@@ -1826,17 +1881,13 @@ fn section(ui: &mut egui::Ui, palette: &Palette, title: &str) {
 fn paint_browser(ui: &mut egui::Ui, browser: &mut Browser, palette: &Palette) -> Option<Action> {
     let mut action = None;
 
+    // A titled head rather than two bare glyphs. The pane used to open with an
+    // unlabelled "↑" and "✕" over a raw path, which reads as a debug panel.
     ui.horizontal(|ui| {
-        if ui
-            .add_enabled(browser.parent().is_some(), egui::Button::new("↑"))
-            .on_hover_text("Parent directory (←)")
-            .clicked()
-        {
-            action = Some(Action::Parent);
-        }
+        ui.label(RichText::new("Browse files").strong().size(14.0));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
-                .button("✕")
+                .add(egui::Button::new("✕").frame(false))
                 .on_hover_text("Close the pane (Esc)")
                 .clicked()
             {
@@ -1847,12 +1898,165 @@ fn paint_browser(ui: &mut egui::Ui, browser: &mut Browser, palette: &Palette) ->
             }
         });
     });
-    ui.label(
-        RichText::new(browser::compact(browser.dir()))
-            .color(palette.dim)
-            .size(11.0),
-    );
-    ui.separator();
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        if ui
+            .add_enabled(
+                browser.parent().is_some(),
+                egui::Button::new(RichText::new("↑").size(11.0)),
+            )
+            .on_hover_text("Parent directory (←)")
+            .clicked()
+        {
+            action = Some(Action::Parent);
+        }
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+        ui.label(
+            RichText::new(browser::compact(browser.dir()))
+                .color(palette.dim)
+                .size(11.0),
+        );
+    });
+
+    ui.add_space(10.0);
+    rule(ui, palette, ui.available_width());
+    ui.add_space(10.0);
+
+    // Places rail beside the listing where there is room, a strip above it
+    // where there is not — the same fold the design system makes at 700 px.
+    if ui.available_width() >= PLACES_SIDE_BY_SIDE {
+        ui.horizontal_top(|ui| {
+            let rail = PLACES_WIDTH;
+            ui.allocate_ui_with_layout(
+                Vec2::new(rail, 0.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    if let Some(chosen) = places_rail(ui, browser, palette, true) {
+                        action = Some(chosen);
+                    }
+                },
+            );
+            ui.add_space(12.0);
+            ui.allocate_ui_with_layout(
+                Vec2::new(ui.available_width(), 0.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    if let Some(chosen) = listing(ui, browser, palette) {
+                        action = Some(chosen);
+                    }
+                },
+            );
+        });
+    } else {
+        if let Some(chosen) = places_rail(ui, browser, palette, false) {
+            action = Some(chosen);
+        }
+        ui.add_space(10.0);
+        if let Some(chosen) = listing(ui, browser, palette) {
+            action = Some(chosen);
+        }
+    }
+
+    action
+}
+
+/// A one-pixel rule in the palette's own outline, rather than
+/// `ui.separator()`, which spans whatever the parent allocated and picks its
+/// own colour.
+fn rule(ui: &mut egui::Ui, palette: &Palette, width: f32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 1.0), egui::Sense::hover());
+    ui.painter()
+        .hline(rect.x_range(), rect.center().y, (1.0, palette.outline));
+}
+
+/// Below this the places rail becomes a strip above the listing.
+const PLACES_SIDE_BY_SIDE: f32 = 460.0;
+/// Width of the rail when it is beside the listing.
+const PLACES_WIDTH: f32 = 132.0;
+
+/// The handful of directories worth one click, resolved once.
+///
+/// `is_dir` is a syscall, and this is painted every frame, so the answer is
+/// cached: a home directory does not grow a Documents folder while the pane is
+/// open, and if it does, reopening sekio is a fair price.
+fn places() -> &'static [(String, PathBuf)] {
+    static PLACES: std::sync::OnceLock<Vec<(String, PathBuf)>> = std::sync::OnceLock::new();
+    PLACES.get_or_init(|| {
+        let Some(home) = browser::home() else {
+            return Vec::new();
+        };
+        let mut found = vec![("Home".to_owned(), home.clone())];
+        for name in ["Documents", "Downloads", "Pictures", "Desktop"] {
+            let path = home.join(name);
+            if path.is_dir() {
+                found.push((name.to_owned(), path));
+            }
+        }
+        found
+    })
+}
+
+fn places_rail(
+    ui: &mut egui::Ui,
+    browser: &Browser,
+    palette: &Palette,
+    stacked: bool,
+) -> Option<Action> {
+    let mut action = None;
+    let entries = places();
+    if entries.is_empty() {
+        return action;
+    }
+    section(ui, palette, "Places");
+    if stacked {
+        // A wrapping strip above the listing when the pane is too narrow to
+        // give the rail a column of its own.
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(6.0, 4.0);
+            for (name, path) in entries {
+                let here = browser.dir() == path.as_path();
+                if ui
+                    .selectable_label(here, RichText::new(name).size(12.0))
+                    .clicked()
+                {
+                    action = Some(Action::Descend(path.clone()));
+                }
+            }
+        });
+    } else {
+        let width = ui.available_width();
+        for (name, path) in entries {
+            let here = browser.dir() == path.as_path();
+            if ui
+                .add_sized(
+                    [width, PLACE_HEIGHT],
+                    egui::Button::selectable(
+                        here,
+                        (
+                            egui::Atom::from(RichText::new(name).size(12.0)),
+                            egui::Atom::grow(),
+                        ),
+                    ),
+                )
+                .clicked()
+            {
+                action = Some(Action::Descend(path.clone()));
+            }
+        }
+    }
+    action
+}
+
+/// Height of a row in the places rail and the listing. Short of the design
+/// system's 44 px because a file pane is a dense surface and eight visible
+/// entries beat five, but tall enough that the row — not the word — is the
+/// thing being pointed at.
+const PLACE_HEIGHT: f32 = 26.0;
+
+/// The directory listing itself.
+fn listing(ui: &mut egui::Ui, browser: &mut Browser, palette: &Palette) -> Option<Action> {
+    let mut action = None;
 
     if browser.has_failed() {
         ui.label(
@@ -1860,10 +2064,13 @@ fn paint_browser(ui: &mut egui::Ui, browser: &mut Browser, palette: &Palette) ->
                 .color(palette.error)
                 .size(12.0),
         );
+        return action;
     } else if browser.is_loading() && browser.entries().is_empty() {
         ui.label(RichText::new("listing…").color(palette.dim).size(12.0));
+        return action;
     } else if browser.entries().is_empty() {
         ui.label(RichText::new("empty").color(palette.dim).size(12.0));
+        return action;
     }
 
     let dir_color = palette.accent;
@@ -1873,13 +2080,27 @@ fn paint_browser(ui: &mut egui::Ui, browser: &mut Browser, palette: &Palette) ->
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.style_mut().wrap_mode = Some(style::NO_WRAP);
+            let width = ui.available_width();
             for (i, entry) in browser.entries().iter().enumerate() {
                 let text = if entry.is_dir {
                     RichText::new(format!("{}/", entry.name)).color(dir_color)
                 } else {
                     RichText::new(entry.name.clone()).color(palette.text)
                 };
-                if ui.selectable_label(i == cursor, text.size(12.0)).clicked() {
+                // Sized to the full width so the row is the target. A bare
+                // `selectable_label` is only as wide as its text, which paints
+                // selection as a pill around the word and makes a directory
+                // listing look like a tag cloud.
+                if ui
+                    .add_sized(
+                        [width, PLACE_HEIGHT],
+                        egui::Button::selectable(
+                            i == cursor,
+                            (egui::Atom::from(text.size(12.0)), egui::Atom::grow()),
+                        ),
+                    )
+                    .clicked()
+                {
                     clicked = Some(i);
                 }
             }
@@ -2292,6 +2513,45 @@ mod tests {
             Action::from(Activate::Preview(PathBuf::from("/d/a.txt"))),
             Action::Open(path) if path == Path::new("/d/a.txt")
         ));
+    }
+
+    /// The key legend used to be one `horizontal_wrapped` holding a nested
+    /// `horizontal` per pair — and a nested horizontal does not take part in
+    /// the parent's wrapping, so the legend ran off the right of the column
+    /// instead of folding. Packing is asserted here rather than by eye.
+    #[test]
+    fn no_row_of_keys_is_wider_than_the_column() {
+        let widths = [100.0, 100.0, 100.0, 100.0];
+        let gap = 20.0;
+        for avail in [80.0_f32, 120.0, 240.0, 360.0, 1000.0] {
+            let rows = break_rows(&widths, avail, gap);
+            assert!(!rows.is_empty(), "{avail} produced no rows");
+            let packed: usize = rows.iter().map(|r| r.len()).sum();
+            assert_eq!(packed, widths.len(), "every key must appear exactly once");
+            for row in &rows {
+                let used: f32 = widths[row.clone()].iter().sum::<f32>()
+                    + gap * (row.len().saturating_sub(1)) as f32;
+                // A single item may exceed the column; two never may.
+                assert!(
+                    row.len() == 1 || used <= avail,
+                    "a row of {} is {used} wide in {avail}",
+                    row.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_wide_column_keeps_every_key_on_one_row() {
+        let widths = [50.0, 50.0, 50.0];
+        assert_eq!(break_rows(&widths, 1000.0, 10.0), vec![0..3]);
+    }
+
+    #[test]
+    fn an_item_wider_than_the_column_still_gets_a_row() {
+        let widths = [500.0, 10.0];
+        let rows = break_rows(&widths, 100.0, 10.0);
+        assert_eq!(rows, vec![0..1, 1..2]);
     }
 
     #[test]

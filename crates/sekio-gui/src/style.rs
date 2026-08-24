@@ -116,6 +116,38 @@ impl Theme {
         }
     }
 
+    /// The next mode in the cycle, for the header's one-glyph control.
+    ///
+    /// System first, because that is the default and the one a user returns
+    /// to; then the two explicit modes.
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::System => Self::Light,
+            Self::Light => Self::Dark,
+            Self::Dark => Self::System,
+        }
+    }
+
+    /// The glyph that stands for this mode in the header.
+    pub fn icon(self) -> &'static str {
+        match self {
+            Self::System => "◐",
+            Self::Light => "☀",
+            Self::Dark => "☾",
+        }
+    }
+
+    /// What the control is showing right now, spelled out for its tooltip.
+    pub fn describe(self) -> &'static str {
+        match self {
+            // Says what it will do, not just what it is called: on a desktop
+            // that reports nothing, "System" silently means dark.
+            Self::System => "Following the desktop",
+            Self::Light => "Light",
+            Self::Dark => "Dark",
+        }
+    }
+
     /// egui's own preference type. Handing egui the preference rather than a
     /// resolved mode is what makes "System" live: egui re-resolves it against
     /// the system theme at the start of every pass, and winit keeps that up to
