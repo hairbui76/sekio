@@ -3,6 +3,16 @@
 Notable changes per release. Versions are the workspace version; every entry
 corresponds to a `v*` tag and its published deb, rpm and msi.
 
+## 0.14.2 — 2026-08-24
+
+### Fixed
+
+- Release notes are reflowed before they are published. A release body is
+  GitHub Flavoured Markdown, where a single newline inside a paragraph is a
+  hard line break, so this file's 76-column wrapping was reproduced verbatim
+  and every line stopped short of the page width. Paragraphs are now joined
+  into one line each and the browser does the wrapping.
+
 ## 0.14.1 — 2026-08-24
 
 ### Fixed
