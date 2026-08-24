@@ -96,9 +96,9 @@ mod imp {
         // for any more.
         let max_rows = opts.max_lines.max(1);
 
-        let (names, sheet) = read(path, format, max_rows, cancel)?;
+        let (names, chosen, sheet) = read(path, format, max_rows, opts.sheet, cancel)?;
         cancel.check()?;
-        Ok(table(names, sheet, opts))
+        Ok(table(names, chosen, sheet, opts))
     }
 
     // ------------------------------------------------------------- reading
@@ -118,29 +118,34 @@ mod imp {
         truncated: bool,
     }
 
+    /// Read one sheet. `wanted` is the frontend's zero-based choice; the index
+    /// actually read comes back with the names, because it is clamped both to
+    /// the workbook and to the capped name list — a sheet whose name we would
+    /// not emit is a sheet the frontend could not label.
     fn read(
         path: &Path,
         format: &str,
         max_rows: usize,
+        wanted: usize,
         cancel: &CancelToken,
-    ) -> Result<(Vec<String>, Sheet), PreviewError> {
+    ) -> Result<(Vec<String>, usize, Sheet), PreviewError> {
         match format {
             // xlsm is an xlsx container with macros; same reader.
             "xlsx" | "xlsm" => {
                 let wb: Xlsx<_> = open_workbook(path).map_err(|e| fmt_err("xlsx", e))?;
-                read_streaming(wb, max_rows, cancel)
+                read_streaming(wb, max_rows, wanted, cancel)
             }
             "xlsb" => {
                 let wb: Xlsb<_> = open_workbook(path).map_err(|e| fmt_err("xlsb", e))?;
-                read_via_range(wb, max_rows, cancel)
+                read_via_range(wb, max_rows, wanted, cancel)
             }
             "xls" => {
                 let wb: Xls<_> = open_workbook(path).map_err(|e| fmt_err("xls", e))?;
-                read_via_range(wb, max_rows, cancel)
+                read_via_range(wb, max_rows, wanted, cancel)
             }
             "ods" => {
                 let wb: Ods<_> = open_workbook(path).map_err(|e| fmt_err("ods", e))?;
-                read_via_range(wb, max_rows, cancel)
+                read_via_range(wb, max_rows, wanted, cancel)
             }
             other => Err(PreviewError::Format(format!(
                 "no spreadsheet reader for {other}"
@@ -159,19 +164,29 @@ mod imp {
     fn read_streaming(
         mut wb: Xlsx<BufReader<File>>,
         max_rows: usize,
+        wanted: usize,
         cancel: &CancelToken,
-    ) -> Result<(Vec<String>, Sheet), PreviewError> {
+    ) -> Result<(Vec<String>, usize, Sheet), PreviewError> {
         let names = wb.sheet_names();
-        let Some(first) = names.first().cloned() else {
+        let Some(chosen) = pick(&names, wanted) else {
             return Err(PreviewError::Format("workbook has no sheets".into()));
         };
         cancel.check()?;
 
         let mut reader = wb
-            .worksheet_cells_reader(&first)
+            .worksheet_cells_reader(&names[chosen])
             .map_err(|e| fmt_err("xlsx", e))?;
         let sheet = stream_sheet(&mut reader, max_rows, cancel)?;
-        Ok((names, sheet))
+        Ok((names, chosen, sheet))
+    }
+
+    /// The sheet index actually readable, or `None` for a workbook with none.
+    ///
+    /// Clamped to the capped name list as well as to the workbook, so the
+    /// index handed back always points at a name the frontend will be given.
+    fn pick(names: &[String], wanted: usize) -> Option<usize> {
+        let last = names.len().checked_sub(1)?;
+        Some(wanted.min(last).min(MAX_SHEET_NAMES.saturating_sub(1)))
     }
 
     fn stream_sheet(
@@ -262,23 +277,24 @@ mod imp {
     fn read_via_range<R>(
         mut wb: R,
         max_rows: usize,
+        wanted: usize,
         cancel: &CancelToken,
-    ) -> Result<(Vec<String>, Sheet), PreviewError>
+    ) -> Result<(Vec<String>, usize, Sheet), PreviewError>
     where
         R: Reader<BufReader<File>>,
     {
         let names = wb.sheet_names();
-        let Some(first) = names.first().cloned() else {
+        let Some(chosen) = pick(&names, wanted) else {
             return Err(PreviewError::Format("workbook has no sheets".into()));
         };
         cancel.check()?;
 
         let range = wb
-            .worksheet_range(&first)
+            .worksheet_range(&names[chosen])
             .map_err(|e| fmt_err("spreadsheet", e))?;
         cancel.check()?;
         let sheet = sheet_from_range(&range, max_rows, cancel)?;
-        Ok((names, sheet))
+        Ok((names, chosen, sheet))
     }
 
     fn sheet_from_range(
@@ -334,7 +350,12 @@ mod imp {
     /// Square the sparse rows off into the IR: every row gets exactly
     /// `columns.len()` cells, absent ones empty, so a frontend indexing by
     /// column never has to cope with a ragged row.
-    fn table(names: Vec<String>, sheet: Sheet, opts: &PreviewOptions) -> (PreviewContent, bool) {
+    fn table(
+        names: Vec<String>,
+        chosen: usize,
+        sheet: Sheet,
+        opts: &PreviewOptions,
+    ) -> (PreviewContent, bool) {
         let min_col = min_col_of(&sheet.rows);
         let max_col = sheet
             .rows
@@ -380,9 +401,9 @@ mod imp {
             columns,
             rows,
             sheets,
-            // The first sheet is the one we read, and it is never dropped from
-            // the (capped) name list.
-            active_sheet: 0,
+            // `pick` clamped this into the capped name list, so it always
+            // points at a sheet the frontend was given a name for.
+            active_sheet: chosen.min(cap.saturating_sub(1)),
             total_rows: sheet.total_rows.max(shown_rows),
             total_cols: sheet.total_cols.max(width as u64),
         };
@@ -876,6 +897,34 @@ mod tests {
         assert_eq!(g.sheets, ["Data", "Notes"]);
         assert_eq!(g.active_sheet, 0);
         assert_eq!(g.sheets[g.active_sheet], "Data");
+    }
+
+    #[test]
+    fn the_frontend_can_ask_for_a_later_sheet() {
+        let bytes = xlsx(&[vec!["a"]]);
+        let opts = PreviewOptions {
+            sheet: 1,
+            ..Default::default()
+        };
+        let p = preview(&bytes, &opts).expect("render");
+        let g = grid(&p);
+        assert_eq!(g.active_sheet, 1);
+        assert_eq!(g.sheets[g.active_sheet], "Notes");
+    }
+
+    /// Out of range is the normal case when a frontend remembers a sheet from
+    /// a workbook it is no longer looking at, so it lands on the last sheet
+    /// rather than failing the whole preview.
+    #[test]
+    fn a_sheet_past_the_end_is_clamped_not_refused() {
+        let bytes = xlsx(&[vec!["a"]]);
+        let opts = PreviewOptions {
+            sheet: 99,
+            ..Default::default()
+        };
+        let p = preview(&bytes, &opts).expect("render");
+        let g = grid(&p);
+        assert_eq!(g.active_sheet, g.sheets.len() - 1);
     }
 
     #[test]

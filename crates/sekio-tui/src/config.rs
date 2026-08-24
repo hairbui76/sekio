@@ -187,6 +187,10 @@ impl Settings {
             // is right now, so it rides on each `Request` instead (see
             // `worker::Request::text_width`).
             text_width: None,
+            // The TUI shows one sheet and one page; choosing between them is a
+            // GUI affordance for now.
+            sheet: 0,
+            page: 0,
         }
     }
 }

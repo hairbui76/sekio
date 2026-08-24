@@ -52,6 +52,19 @@ pub fn primary_button(palette: &Palette, text: &str) -> egui::Button<'static> {
     .corner_radius(RADIUS)
 }
 
+/// A glyph-only control that is transparent at rest and fills under the
+/// pointer.
+///
+/// `frame(false)` looks right until you use it: it removes the frame in *every*
+/// state, hover included, so the control gives no feedback at all. The pair
+/// below is what egui's own selectable buttons use — framed, but only once
+/// there is something to react to.
+pub fn icon_button(glyph: &str, size: f32) -> egui::Button<'static> {
+    egui::Button::new(egui::RichText::new(glyph.to_owned()).size(size))
+        .frame(true)
+        .frame_when_inactive(false)
+}
+
 /// A keycap: the shortcut chips in the home screen's key legend.
 pub fn kbd(ui: &mut egui::Ui, palette: &Palette, key: &str) {
     egui::Frame::new()

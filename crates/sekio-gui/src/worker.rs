@@ -48,6 +48,12 @@ pub struct Request {
     /// Per-request rather than per-worker because the window can be resized at
     /// any moment; `None` means "no hint", and core falls back to its default.
     pub text_width: Option<usize>,
+    /// Which sheet of a workbook, and which page of a paged document, to
+    /// render. Per-request for the same reason as `text_width`: the user can
+    /// move to another one without opening a different file. Core clamps both,
+    /// so a stale index is a nearby preview rather than an error.
+    pub sheet: usize,
+    pub page: usize,
 }
 
 /// A finished preview plus its image already converted to egui's pixel layout.
@@ -242,10 +248,12 @@ fn serve(
     }
 
     let started = std::time::Instant::now();
-    // Everything but the width is fixed for the life of the process; the width
-    // is whatever the text area was when the request went out.
+    // Everything but the width and the chosen part is fixed for the life of
+    // the process; those are whatever the request carried.
     let opts = PreviewOptions {
         text_width: req.text_width,
+        sheet: req.sheet,
+        page: req.page,
         ..opts.clone()
     };
     let outcome = match previewer.preview(&req.path, &opts, &req.cancel) {

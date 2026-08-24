@@ -1868,6 +1868,34 @@ fn the_header_and_footer_sit_above_and_below_the_body() {
     );
 }
 
+/// A workbook is more than its first sheet, and the strip across the top is
+/// the only way to reach the rest. Clicking one re-renders the same file with
+/// that sheet chosen, which is a fresh request rather than anything the
+/// frontend can do to the table it already has.
+#[test]
+fn clicking_a_sheet_asks_the_worker_for_that_sheet() {
+    let path = PathBuf::from("/tmp/book.xlsx");
+    let mut ui = ui_with_path("/tmp/book.xlsx");
+    ui.deliver(FIRST, &path, table_content());
+
+    ui.assert_shows("[Tong]", "the active sheet");
+    ui.assert_shows("Chi tiết", "the sheet that is not being shown");
+
+    // Drain the request that opened the file, so what is left is the click's.
+    let _ = ui.requests.try_iter().count();
+
+    ui.harness.get_by_label("Chi tiết").click();
+    ui.run();
+
+    let request = ui
+        .requests
+        .try_iter()
+        .find(|request| request.kind == Kind::Preview)
+        .expect("clicking a sheet must ask for a new preview");
+    assert_eq!(request.sheet, 1, "the sheet the user clicked");
+    assert_eq!(request.path, path, "the same workbook, a different sheet");
+}
+
 /// A pane cannot be dragged narrower than the widest thing inside it, so a
 /// listing that draws its names in full pins the pane open at the width of its
 /// longest filename — which is exactly what happened when the rows were laid

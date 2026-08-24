@@ -298,6 +298,8 @@ fn start_preview(
             // yet: core lays out for `DEFAULT_TEXT_WIDTH`, and the first frame
             // re-requests if the real text area turns out to differ.
             text_width: None,
+            sheet: 0,
+            page: 0,
         });
         timing.log("first request queued");
     }
@@ -583,6 +585,8 @@ fn probe_daemon(
                     kind: worker::Kind::Preview,
                     // `--daemon` with no window attached: nothing to measure.
                     text_width: None,
+                    sheet: 0,
+                    page: 0,
                 });
                 let outcome = match worker.wait() {
                     Some(response) if tracker.accept(response.id) => {

@@ -42,6 +42,15 @@ pub struct PreviewOptions {
     /// [`DEFAULT_TEXT_WIDTH`]: a preview must render sensibly for a caller that
     /// has no idea how wide it is.
     pub text_width: Option<usize>,
+    /// Which sheet of a workbook to lay out, zero-based.
+    ///
+    /// Out of range is clamped rather than refused: a frontend asking for a
+    /// sheet that a re-read no longer has should show the last one, not an
+    /// error. The sheet actually chosen comes back as `Table::active_sheet`.
+    pub sheet: usize,
+    /// Which page of a paged document to draw, zero-based. Same clamping rule
+    /// as `sheet`.
+    pub page: usize,
 }
 
 impl Default for PreviewOptions {
@@ -52,6 +61,8 @@ impl Default for PreviewOptions {
             image_max_dim: 1024,
             max_entries: 1000,
             text_width: None,
+            sheet: 0,
+            page: 0,
         }
     }
 }

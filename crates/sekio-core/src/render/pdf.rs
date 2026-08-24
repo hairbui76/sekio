@@ -650,10 +650,26 @@ mod imp {
             let pages = document.pages();
             let page_count = pages.len();
             fields.push(MetaField::new("pages", page_count.to_string()));
-            // Never iterate the collection: page 1 only, no matter how long.
+            // Never iterate the collection: one page, fetched by index, no
+            // matter how long the document is. The index is clamped rather
+            // than refused — a frontend paging past the end should land on the
+            // last page, not on an error.
+            let wanted = opts
+                .page
+                .min(page_count.saturating_sub(1) as usize)
+                .min(u16::MAX as usize) as u16;
             let page = pages
-                .first()
+                .get(wanted)
                 .map_err(|e| PreviewError::Format(format!("malformed PDF: {e}")))?;
+
+            // Which page this is, so a frontend can label it and know when it
+            // has reached the end without counting for itself.
+            if page_count > 1 {
+                fields.push(MetaField::new(
+                    "page",
+                    format!("{} of {page_count}", wanted as usize + 1),
+                ));
+            }
 
             let (ow, oh) = (page.width().value, page.height().value);
             if !(ow.is_finite() && oh.is_finite()) || ow <= 0.0 || oh <= 0.0 {
@@ -689,8 +705,8 @@ mod imp {
                     format: "application/pdf".to_string(),
                     fields,
                 },
-                // Page 1 of many is a partial view of the document; so is a page
-                // we had to scale down to fit `image_max_dim`.
+                // One page of many is a partial view of the document; so is a
+                // page we had to scale down to fit `image_max_dim`.
                 truncated: page_count > 1 || scale < 1.0,
             })
         }

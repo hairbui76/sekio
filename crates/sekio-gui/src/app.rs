@@ -103,6 +103,8 @@ enum Action {
     Descend(PathBuf),
     /// List the directory above the browser pane's.
     Parent,
+    /// Re-render the current workbook showing this sheet.
+    SetSheet(usize),
 }
 
 /// Everything the app needs at startup. A struct rather than a fistful of
@@ -214,6 +216,14 @@ pub struct SekioApp {
     /// Characters the central panel could paint on the last frame, measured
     /// from the monospace font's own advance (see [`text_columns`]).
     text_columns: Option<usize>,
+    /// Where the preview surface was painted last frame, so the wheel can tell
+    /// "over the preview" from "over the browser pane".
+    content_rect: Option<egui::Rect>,
+    /// Which sheet of the current workbook, and which page of the current
+    /// paged document, is on screen. Both reset when a different file is
+    /// shown: they belong to the document, not to the window.
+    sheet: usize,
+    page: usize,
     /// Decides when a resize is worth re-requesting the preview for.
     reflow: Reflow,
     /// The in-flight preview is a re-layout of the file already on screen, so
@@ -323,6 +333,9 @@ impl SekioApp {
             // width, which is exactly what the first request (issued before
             // this window existed, with no hint) is rendered at.
             text_columns: None,
+            content_rect: None,
+            sheet: 0,
+            page: 0,
             reflow: Reflow::new(REFLOW_THRESHOLD, REFLOW_SETTLE),
             reflowing: false,
         }
@@ -381,6 +394,9 @@ impl SekioApp {
         self.siblings = Siblings::scan(&self.path, self.wrap);
         self.view = View::Loading;
         self.zoom = 1.0;
+        // A sheet and a page belong to the document, not to the window.
+        self.sheet = 0;
+        self.page = 0;
         // Each popup is a new file, so the window refits to it.
         self.sized = false;
         self.request_current();
@@ -426,6 +442,8 @@ impl SekioApp {
         self.path = PathBuf::new();
         self.siblings = Siblings::default();
         self.zoom = 1.0;
+        self.sheet = 0;
+        self.page = 0;
         self.sized = false;
         self.refresh_recent();
         ctx.set_zoom_factor(1.0);
@@ -458,6 +476,8 @@ impl SekioApp {
                 self.path = PathBuf::new();
                 self.siblings = Siblings::default();
                 self.zoom = 1.0;
+                self.sheet = 0;
+                self.page = 0;
                 self.browser.close();
                 self.visible = false;
                 ctx.send_viewport_cmd(ViewportCommand::Visible(false));
@@ -779,6 +799,8 @@ impl SekioApp {
             cancel,
             kind: Kind::Preview,
             text_width: self.text_columns,
+            sheet: self.sheet,
+            page: self.page,
         });
     }
 
@@ -791,8 +813,10 @@ impl SekioApp {
             path: self.browser.dir().to_path_buf(),
             cancel,
             kind: Kind::Browse,
-            // A listing has no columns to lay out.
+            // A listing has no columns to lay out, and no parts to choose.
             text_width: None,
+            sheet: 0,
+            page: 0,
         });
     }
 
@@ -1057,6 +1081,17 @@ impl SekioApp {
             Action::SetTheme(theme) => self.set_theme(ctx, theme),
             Action::Open(path) => self.open(ctx, path),
             Action::Descend(dir) => self.browse(dir),
+            // Re-renders the file already on screen with a different part of
+            // it chosen. Straight through `send_preview`, so the in-flight
+            // render is cancelled and a stale one is discarded exactly as it
+            // is for any other request. Paging does the same thing from the
+            // wheel handler, which has no painted control to route through.
+            Action::SetSheet(sheet) => {
+                if self.sheet != sheet {
+                    self.sheet = sheet;
+                    self.send_preview();
+                }
+            }
             Action::Parent => {
                 let parent = self.browser.parent();
                 if let Some(parent) = parent {
@@ -1080,21 +1115,77 @@ impl SekioApp {
         matches!(&self.view, View::Ready(shown) if shown.texture.is_some())
     }
 
+    /// Is the pointer over the preview surface, as opposed to a panel beside
+    /// it? `None` for either question means "assume not", so a frame with no
+    /// pointer never zooms.
+    fn pointer_over_preview(&self, ctx: &egui::Context) -> bool {
+        match (self.content_rect, ctx.pointer_latest_pos()) {
+            (Some(rect), Some(pos)) => rect.contains(pos),
+            _ => false,
+        }
+    }
+
     /// Scroll wheel over an image zooms it (everything else scrolls normally).
     /// The scroll delta is *consumed* so the surrounding `ScrollArea` does not
     /// pan at the same time.
+    ///
+    /// Only while the pointer is actually over the preview. The delta is read
+    /// from the context, not from a widget, so an unguarded version ate every
+    /// wheel event in the window — with the browser pane open over a PDF, the
+    /// file tree could not be scrolled at all because each notch was being
+    /// spent zooming the page behind it.
     fn handle_wheel_zoom(&mut self, ctx: &egui::Context) {
-        if !self.has_image() {
+        if !self.has_image() || !self.pointer_over_preview(ctx) {
             return;
         }
-        let scroll = ctx.input_mut(|i| {
+        let (scroll, zooming) = ctx.input_mut(|i| {
             let delta = i.smooth_scroll_delta.y;
             i.smooth_scroll_delta = Vec2::ZERO;
-            delta
+            (delta, i.modifiers.ctrl || i.modifiers.command)
         });
-        if scroll != 0.0 {
-            self.zoom = (self.zoom * (1.0 + scroll * 0.002)).clamp(ZOOM_MIN, ZOOM_MAX);
+        if scroll == 0.0 {
+            return;
         }
+        // On a document with pages, the wheel turns them and Ctrl zooms —
+        // which is the way round every PDF reader does it, and the only
+        // arrangement in which a multi-page document can be read at all.
+        // Everything else is a single picture, where the wheel is the zoom.
+        match self.paged() {
+            Some((current, total)) if !zooming => {
+                let next = if scroll < 0.0 {
+                    (current + 1).min(total.saturating_sub(1))
+                } else {
+                    current.saturating_sub(1)
+                };
+                if next != current {
+                    self.page = next;
+                    self.send_preview();
+                }
+            }
+            _ => {
+                self.zoom = (self.zoom * (1.0 + scroll * 0.002)).clamp(ZOOM_MIN, ZOOM_MAX);
+            }
+        }
+    }
+
+    /// `(current, total)` for the paged document on screen, zero-based.
+    ///
+    /// Read back out of the field core emits rather than tracked here, so the
+    /// count is whatever the document really has and paging cannot run past
+    /// the end of it. Core only emits `page` when there is more than one, so
+    /// `None` is the ordinary answer for an image.
+    fn paged(&self) -> Option<(usize, usize)> {
+        let View::Ready(shown) = &self.view else {
+            return None;
+        };
+        let PreviewContent::Image { fields, .. } = &shown.loaded.preview.content else {
+            return None;
+        };
+        let value = &fields.iter().find(|field| field.key == "page")?.value;
+        let (current, total) = value.split_once(" of ")?;
+        let current: usize = current.trim().parse().ok()?;
+        let total: usize = total.trim().parse().ok()?;
+        Some((current.checked_sub(1)?, total))
     }
 
     fn header(&self, ui: &mut egui::Ui) -> Option<Action> {
@@ -1123,10 +1214,7 @@ impl SekioApp {
                         // one".
                         let next = self.theme.cycle();
                         if ui
-                            .add(
-                                egui::Button::new(RichText::new(self.theme.icon()).size(15.0))
-                                    .frame(false),
-                            )
+                            .add(style::icon_button(self.theme.icon(), 15.0))
                             .on_hover_text(format!(
                                 "{} — click for {}",
                                 self.theme.describe(),
@@ -1329,7 +1417,7 @@ impl SekioApp {
         // rather than from the window, because the browser pane and the
         // scrollbar both eat into it.
         let mut columns = None;
-        let action = egui::CentralPanel::default()
+        let panel = egui::CentralPanel::default()
             // The one surface that is not chrome: the preview sits on a card
             // raised off the panels around it, which is the whole of the
             // hierarchy this app needs. Same margin as egui's own central
@@ -1361,15 +1449,12 @@ impl SekioApp {
                         });
                         None
                     }
-                    View::Ready(shown) => {
-                        paint_content(ui, shown, zoom, &palette);
-                        None
-                    }
+                    View::Ready(shown) => paint_content(ui, shown, zoom, &palette),
                 }
-            })
-            .inner;
+            });
+        self.content_rect = Some(panel.response.rect);
         self.text_columns = columns;
-        action
+        panel.inner
     }
 }
 
@@ -1950,7 +2035,7 @@ fn paint_browser(ui: &mut egui::Ui, browser: &mut Browser, palette: &Palette) ->
         ui.label(RichText::new("Browse files").strong().size(14.0));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
-                .add(egui::Button::new(RichText::new("×").size(15.0)).frame(false))
+                .add(style::icon_button("×", 15.0))
                 .on_hover_text("Close the pane (Esc)")
                 .clicked()
             {
@@ -2217,18 +2302,23 @@ fn table_view(content: &PreviewContent) -> Option<table::Table<'_>> {
     }
 }
 
-fn paint_content(ui: &mut egui::Ui, shown: &mut Shown, zoom: f32, palette: &Palette) {
+/// Returns whatever the user asked for by clicking inside the preview — today
+/// only a different sheet.
+fn paint_content(
+    ui: &mut egui::Ui,
+    shown: &mut Shown,
+    zoom: f32,
+    palette: &Palette,
+) -> Option<Action> {
     match &shown.loaded.preview.content {
         PreviewContent::Table { .. } => {
-            let Some(view) = table_view(&shown.loaded.preview.content) else {
-                return;
-            };
+            let view = table_view(&shown.loaded.preview.content)?;
             // Measured on the preview's first frame and kept: sizing a column
             // lays real text out, which is not a per-frame cost worth paying.
             let grid = shown
                 .grid
                 .get_or_insert_with(|| table::Grid::measure(ui.ctx(), &view));
-            table::paint(ui, &view, grid, palette);
+            return table::paint(ui, &view, grid, palette).map(Action::SetSheet);
         }
         PreviewContent::Text { lines, .. } => {
             let job = shown
@@ -2266,6 +2356,7 @@ fn paint_content(ui: &mut egui::Ui, shown: &mut Shown, zoom: f32, palette: &Pale
         }
         PreviewContent::HexDump { data, .. } => paint_hex(ui, data, palette),
     }
+    None
 }
 
 fn paint_image(ui: &mut egui::Ui, texture: &TextureHandle, zoom: f32) {

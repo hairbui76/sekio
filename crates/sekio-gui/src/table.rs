@@ -222,8 +222,9 @@ fn widest_cells(rows: &[TableRow], column: usize) -> Vec<&str> {
 }
 
 /// Paint the sheet strip, then the grid, filling `ui`.
-pub fn paint(ui: &mut Ui, table: &Table<'_>, grid: &Grid, palette: &Palette) {
-    paint_sheets(ui, table, palette);
+/// Returns the sheet the user clicked, if any.
+pub fn paint(ui: &mut Ui, table: &Table<'_>, grid: &Grid, palette: &Palette) -> Option<usize> {
+    let chosen = paint_sheets(ui, table, palette);
 
     let rule = Stroke::new(1.0, palette.faint);
     // The strips that the cells slide *under* have to be the surface the grid
@@ -344,6 +345,8 @@ pub fn paint(ui: &mut Ui, table: &Table<'_>, grid: &Grid, palette: &Palette) {
                 paint_text(&strip, rect, label, palette.dim, false);
             }
         });
+
+    chosen
 }
 
 /// One string inside `rect`, elided if it does not fit, flush left or right.
@@ -361,11 +364,15 @@ fn paint_text(painter: &egui::Painter, rect: Rect, text: &str, color: Color32, r
 }
 
 /// The sheet names across the top, the previewed one bracketed — the same
-/// shape the CLI's first line has always had.
-fn paint_sheets(ui: &mut Ui, table: &Table<'_>, palette: &Palette) {
+/// shape the CLI's first line has always had, except that here they are
+/// buttons: the CLI cannot switch sheets and a window can.
+///
+/// Returns the index the user picked, or `None` if they picked nothing.
+fn paint_sheets(ui: &mut Ui, table: &Table<'_>, palette: &Palette) -> Option<usize> {
     if table.sheets.is_empty() {
-        return;
+        return None;
     }
+    let mut chosen = None;
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         ui.label(
@@ -376,14 +383,22 @@ fn paint_sheets(ui: &mut Ui, table: &Table<'_>, palette: &Palette) {
         );
         for (index, name) in table.sheets.iter().take(MAX_SHEETS).enumerate() {
             let name = style::one_line(name);
-            let text = if index == table.active_sheet {
+            let active = index == table.active_sheet;
+            let text = if active {
                 RichText::new(format!("[{name}]"))
                     .color(palette.active)
                     .strong()
             } else {
                 RichText::new(name).color(palette.faint)
             };
-            ui.label(text.monospace().size(11.0));
+            if ui
+                .selectable_label(active, text.monospace().size(11.0))
+                .on_hover_text("Show this sheet")
+                .clicked()
+                && !active
+            {
+                chosen = Some(index);
+            }
         }
         if table.sheets.len() > MAX_SHEETS {
             ui.label(
@@ -395,6 +410,7 @@ fn paint_sheets(ui: &mut Ui, table: &Table<'_>, palette: &Palette) {
         }
     });
     ui.add_space(2.0);
+    chosen
 }
 
 #[cfg(test)]
