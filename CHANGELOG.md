@@ -3,6 +3,25 @@
 Notable changes per release. Versions are the workspace version; every entry
 corresponds to a `v*` tag and its published deb, rpm and msi.
 
+## 0.12.1 — 2026-08-24
+
+### Fixed
+
+- The key legend ran off the right edge of the home column instead of folding
+  onto a second line. Each keycap-and-label pair was a nested horizontal row
+  inside a wrapping one, and a nested row does not take part in its parent's
+  wrapping. Rows are measured and broken explicitly now, so a keycap always
+  stays with its label and no row is wider than the column.
+- The browser pane read as a debug panel: two unlabelled glyphs over a raw
+  path, and entries drawn as bare selectable labels — only as wide as their
+  text, so selection was a pill around a word. It has a title, a places rail
+  for Home and the usual folders, and full-width rows.
+
+### Changed
+
+- Theme is one glyph in the header that shows the current mode and cycles to
+  the next, rather than a three-item list inside the gear menu.
+
 ## 0.12.0 — 2026-08-24
 
 ### Changed
