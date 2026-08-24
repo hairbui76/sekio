@@ -3,6 +3,22 @@
 Notable changes per release. Versions are the workspace version; every entry
 corresponds to a `v*` tag and its published deb, rpm and msi.
 
+## 0.14.0 — 2026-08-24
+
+### Added
+
+- A search box in the browser pane, fzf-style: it takes the keyboard as soon
+  as the pane opens, and matches a subsequence rather than a substring, so
+  `cts` finds `components/tests`. Best match first. Up, down and Enter steer
+  the list while typing; Escape clears the search before closing the pane.
+- pptx decks are drawn as slides rather than transcribed as text. LibreOffice
+  lays the deck out, its PDF export goes through the page renderer, and paging
+  through slides is the PDF paging added in 0.13.0.
+
+  This needs LibreOffice on PATH and a loadable pdfium — both present in the
+  deb, rpm and msi. Where either is missing the deck previews as text exactly
+  as it did before; nothing that previewed stops previewing.
+
 ## 0.13.0 — 2026-08-24
 
 ### Added
