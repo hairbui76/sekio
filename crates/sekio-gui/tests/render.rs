@@ -1868,6 +1868,77 @@ fn the_header_and_footer_sit_above_and_below_the_body() {
     );
 }
 
+/// A pane cannot be dragged narrower than the widest thing inside it, so a
+/// listing that draws its names in full pins the pane open at the width of its
+/// longest filename — which is exactly what happened when the rows were laid
+/// out with `TextWrapMode::Extend`. Names are truncated instead, so one long
+/// entry cannot decide how much of the window the browser owns.
+#[test]
+fn a_very_long_filename_does_not_pin_the_browser_pane_open() {
+    let path = PathBuf::from("/tmp/main.rs");
+    let mut ui = ui_with_path("/tmp/main.rs");
+    ui.deliver(FIRST, &path, text_content());
+
+    ui.harness
+        .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::B);
+    ui.run();
+
+    let listing = ui
+        .requests
+        .try_iter()
+        .find(|request| request.kind == Kind::Browse)
+        .expect("opening the browser must request a directory listing");
+
+    let long = "a".repeat(400);
+    ui.responses
+        .send(Response {
+            id: listing.id,
+            path: listing.path.clone(),
+            outcome: Outcome::Ready(Box::new(Loaded {
+                preview: Preview {
+                    content: PreviewContent::Listing {
+                        entries: vec![ListEntry {
+                            name: long.clone(),
+                            is_dir: false,
+                            size: Some(1),
+                        }],
+                    },
+                    truncated: false,
+                },
+                image: None,
+            })),
+            elapsed: Duration::from_millis(1),
+            kind: Kind::Browse,
+        })
+        .expect("the app still owns the response channel");
+    ui.run();
+
+    // The pane's configured ceiling is 640; allow a little for its own margins
+    // and the separator. Laid out with `Extend`, 400 characters at 12 px draw
+    // something like 2400 px wide and drag the pane along with them.
+    const CEILING: f32 = 700.0;
+    let entry = ui
+        .painted()
+        .into_iter()
+        .find(|painted| painted.text.starts_with("aaa"))
+        .expect("the entry should still be listed, just cut short");
+    assert!(
+        entry.rect.max.x < CEILING,
+        "the row is painted out to x={}, past the pane's ceiling of {CEILING}",
+        entry.rect.max.x
+    );
+    assert!(
+        entry.text.chars().count() < long.chars().count(),
+        "the name should be cut, not merely clipped: {} characters were laid out",
+        entry.text.chars().count()
+    );
+    assert!(
+        entry.text.ends_with('…'),
+        "a cut name should say so: {:?}",
+        entry.text.chars().rev().take(4).collect::<String>()
+    );
+}
+
 #[test]
 fn the_browser_pane_opens_beside_the_preview_and_lists_a_directory() {
     let path = PathBuf::from("/tmp/main.rs");

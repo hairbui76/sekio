@@ -1765,6 +1765,42 @@ fn recent_block(ui: &mut egui::Ui, home: &HomeScreen<'_>, palette: &Palette) -> 
 /// plus the row itself is the design system's 44 px minimum.
 const ROW_PAD: f32 = 8.0;
 
+/// `text` cut to fit `max` points wide, with an ellipsis where it was cut.
+///
+/// egui's own `TextWrapMode::Truncate` does not reach the text inside a
+/// `Button`'s atoms: the galley is laid out at its full width and then merely
+/// *clipped* by whatever contains it. Clipping looks similar and is not the
+/// same thing — a panel cannot be dragged narrower than the widest galley
+/// inside it, so a 400-character filename still pinned the browser open even
+/// though only 280 points of it were visible. Cutting the string is what
+/// actually makes the row narrow.
+///
+/// Binary search over character boundaries, so a long name costs about nine
+/// text layouts rather than one per character, and only when it overflows.
+fn elide(ui: &egui::Ui, text: &str, size: f32, max: f32) -> String {
+    if max <= 0.0 || text_width(ui, text, size) <= max {
+        return text.to_owned();
+    }
+    let budget = max - text_width(ui, "…", size);
+    if budget <= 0.0 {
+        return "…".to_owned();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let (mut lo, mut hi) = (0usize, chars.len());
+    while lo < hi {
+        let mid = lo.midpoint(hi).max(lo + 1);
+        let candidate: String = chars[..mid].iter().collect();
+        if text_width(ui, &candidate, size) <= budget {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    let mut out: String = chars[..lo].iter().collect();
+    out.push('…');
+    out
+}
+
 /// The app mark on the home screen, sized to sit on the wordmark's line.
 const MARK_SIZE: f32 = 36.0;
 
@@ -2106,14 +2142,26 @@ fn listing(ui: &mut egui::Ui, browser: &mut Browser, palette: &Palette) -> Optio
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.style_mut().wrap_mode = Some(style::NO_WRAP);
+            // Truncated, never extended. An extended row is as wide as its
+            // longest filename, and a panel cannot be dragged narrower than the
+            // widest thing inside it — so one long name pinned the pane open.
+            // The name is on the row's tooltip, so eliding it loses nothing.
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
             let width = ui.available_width();
+            // What is left of the row once the button's own padding is taken.
+            let room = width - 24.0;
             for (i, entry) in browser.entries().iter().enumerate() {
-                let text = if entry.is_dir {
-                    RichText::new(format!("{}/", entry.name)).color(dir_color)
+                let full = if entry.is_dir {
+                    format!("{}/", entry.name)
                 } else {
-                    RichText::new(entry.name.clone()).color(palette.text)
+                    entry.name.clone()
                 };
+                let color = if entry.is_dir {
+                    dir_color
+                } else {
+                    palette.text
+                };
+                let text = RichText::new(elide(ui, &full, 12.0, room)).color(color);
                 // Sized to the full width so the row is the target. A bare
                 // `selectable_label` is only as wide as its text, which paints
                 // selection as a pill around the word and makes a directory
@@ -2124,8 +2172,10 @@ fn listing(ui: &mut egui::Ui, browser: &mut Browser, palette: &Palette) -> Optio
                         egui::Button::selectable(
                             i == cursor,
                             (egui::Atom::from(text.size(12.0)), egui::Atom::grow()),
-                        ),
+                        )
+                        .wrap_mode(egui::TextWrapMode::Truncate),
                     )
+                    .on_hover_text(&entry.name)
                     .clicked()
                 {
                     clicked = Some(i);
