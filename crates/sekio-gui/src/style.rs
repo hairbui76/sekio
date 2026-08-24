@@ -9,7 +9,7 @@
 
 use egui::style::{Selection, WidgetVisuals, Widgets};
 use egui::text::{LayoutJob, TextFormat, TextWrapping};
-use egui::{Color32, CornerRadius, FontId, Margin, Stroke, TextWrapMode, Visuals};
+use egui::{Color32, CornerRadius, FontId, Margin, RichText, Stroke, TextWrapMode, Visuals};
 use sekio_core::{CellKind, Span, StyledLine};
 
 /// Font size used for every monospace surface (text, hexdump, listings).
@@ -27,6 +27,47 @@ const RADIUS: CornerRadius = CornerRadius::same(6);
 /// A step above [`RADIUS`] because the design system separates control
 /// rounding (6) from surface rounding (8) — a menu is a card, not a button.
 const SURFACE_RADIUS: CornerRadius = CornerRadius::same(8);
+
+/// Minimum height of an interactive control, from the design system.
+///
+/// Every button, row and toggle the user can hit is at least this tall. It is
+/// a pointer target on a desktop rather than a thumb one, but the rule is the
+/// same rule and a 20 px button next to a 44 px one reads as a mistake.
+pub const CONTROL_HEIGHT: f32 = 44.0;
+
+/// The one filled action in a group: `--accent` behind `--accent-on`.
+///
+/// A `Button` rather than a style, because egui has no notion of a primary
+/// variant — the fill and the label colour have to be set per widget, and
+/// setting them in one place is what stops two primaries appearing in one
+/// group.
+pub fn primary_button(palette: &Palette, text: &str) -> egui::Button<'static> {
+    egui::Button::new(
+        egui::RichText::new(text.to_owned())
+            .color(palette.accent_on)
+            .size(14.0),
+    )
+    .fill(palette.accent_fill)
+    .stroke(Stroke::new(1.0, palette.accent_fill))
+    .corner_radius(RADIUS)
+}
+
+/// A keycap: the shortcut chips in the home screen's key legend.
+pub fn kbd(ui: &mut egui::Ui, palette: &Palette, key: &str) {
+    egui::Frame::new()
+        .fill(palette.fill)
+        .stroke(Stroke::new(1.0, palette.outline))
+        .corner_radius(CornerRadius::same(4))
+        .inner_margin(Margin::symmetric(6, 2))
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new(key)
+                    .monospace()
+                    .size(11.0)
+                    .color(palette.text),
+            );
+        });
+}
 
 /// Wrap mode for surfaces that must never reflow (code, hex).
 pub const NO_WRAP: TextWrapMode = TextWrapMode::Extend;
@@ -162,6 +203,12 @@ pub struct Palette {
     /// Selection, focus and links. One colour, so "this is the thing you are
     /// pointing at" always looks the same.
     pub accent: Color32,
+    /// The same indigo used as a *background* rather than as text: the fill of
+    /// the one primary button in a group. `--accent` proper, which is too dark
+    /// to read as text on `card` but is exactly right under white.
+    pub accent_fill: Color32,
+    /// What sits on `accent_fill` — `--accent-on`.
+    pub accent_on: Color32,
     /// Hairlines: panel separators, button outlines, the edge of a card.
     pub outline: Color32,
     /// A button at rest, and a disabled one.
@@ -215,12 +262,14 @@ impl Palette {
             card: rgb(0x2b303b),   // base00 — the ground syntect paints against
             sunken: rgb(0x0a0b0c),
             stripe: rgb(0x141517),
-            text: rgb(0xd0d6e0),    // --fg-2
-            strong: rgb(0xf7f8f8),  // --fg
-            dim: rgb(0x979ca5),     // --muted, lightened to clear 4.5:1 on `card`
-            faint: rgb(0x62666d),   // --meta
-            accent: rgb(0x828fff),  // --accent-hover: the text-safe indigo
-            outline: rgb(0x1f2021), // --border: white at 8%
+            text: rgb(0xd0d6e0),        // --fg-2
+            strong: rgb(0xf7f8f8),      // --fg
+            dim: rgb(0x979ca5),         // --muted, lightened to clear 4.5:1 on `card`
+            faint: rgb(0x62666d),       // --meta
+            accent: rgb(0x828fff),      // --accent-hover: the text-safe indigo
+            accent_fill: rgb(0x5e6ad2), // --accent, under white — 4.7:1
+            accent_on: rgb(0xffffff),   // --accent-on
+            outline: rgb(0x1f2021),     // --border: white at 8%
             fill: rgb(0x17181a),
             hover: rgb(0x232427),
             press: rgb(0x2c2d31),
@@ -252,11 +301,13 @@ impl Palette {
             card: rgb(0xeff1f5),   // base00 — the ground syntect paints against
             sunken: rgb(0xffffff), // --surface (light)
             stripe: rgb(0xe9ecf1),
-            text: rgb(0x4f545c),   // --fg-2 (light) — 6.7:1
-            strong: rgb(0x2b2e33), // --fg (light) — 12.1:1
-            dim: rgb(0x5c616a),    // --muted (light) — 5.5:1
-            faint: rgb(0xb9bec7),  // hairlines only, never text
-            accent: rgb(0x4752c4), // --accent-active: the indigo that reads on white
+            text: rgb(0x4f545c),        // --fg-2 (light) — 6.7:1
+            strong: rgb(0x2b2e33),      // --fg (light) — 12.1:1
+            dim: rgb(0x5c616a),         // --muted (light) — 5.5:1
+            faint: rgb(0xb9bec7),       // hairlines only, never text
+            accent: rgb(0x4752c4),      // --accent-active: the indigo that reads on white
+            accent_fill: rgb(0x4752c4), // under white — 6.3:1
+            accent_on: rgb(0xffffff),   // --accent-on
             outline: rgb(0xd3d7de),
             fill: rgb(0xe4e8ef),
             hover: rgb(0xd8dde6),

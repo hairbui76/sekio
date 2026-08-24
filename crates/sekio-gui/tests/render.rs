@@ -1593,13 +1593,13 @@ impl AppUi {
     }
 }
 
-/// The home screen's one-line tagline, built the way the app builds it so this
-/// file does not pin a version number.
+/// The home screen's one-line tagline.
+///
+/// The version used to live at the end of this string and now rides beside the
+/// wordmark as its own mono chip, so the tagline is a fixed sentence and the
+/// build number is asserted separately by `the_home_screen_shows_its_version`.
 fn subtitle() -> String {
-    format!(
-        "Quick preview for any file · v{}",
-        env!("CARGO_PKG_VERSION")
-    )
+    "Quick preview for any file".to_owned()
 }
 
 #[test]

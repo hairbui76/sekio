@@ -1592,93 +1592,94 @@ fn home_column(
 ) -> Option<Action> {
     let mut action = None;
 
-    // The mark beside the wordmark, not above it: the block stays one line
-    // tall, so the actions below it do not get pushed down the window.
-    ui.horizontal(|ui| {
+    // Centred, mark above wordmark: the design system's home is one column
+    // read top to bottom, and a left-aligned intro over centred blocks reads
+    // as two different screens stacked.
+    ui.vertical_centered(|ui| {
+        ui.add_space(32.0);
         if let Some(logo) = logo {
             ui.add(
                 egui::Image::new(logo)
-                    .fit_to_exact_size(Vec2::splat(52.0))
-                    .corner_radius(10.0),
+                    .fit_to_exact_size(Vec2::splat(48.0))
+                    .corner_radius(12.0),
             );
-            ui.add_space(4.0);
+            ui.add_space(12.0);
         }
-        ui.vertical(|ui| {
-            ui.add_space(2.0);
-            ui.label(RichText::new("sekio").size(34.0).strong());
+        // The version rides beside the wordmark as a mono chip rather than
+        // inside the tagline: the tagline is what sekio *is*, and a build
+        // number in the middle of it makes the sentence about the build.
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.label(RichText::new("sekio").size(32.0).strong());
             ui.label(
-                RichText::new(format!(
-                    "Quick preview for any file · v{}",
-                    env!("CARGO_PKG_VERSION")
-                ))
-                .color(palette.dim),
+                RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                    .monospace()
+                    .size(11.0)
+                    .color(palette.faint),
             );
         });
+        ui.add_space(8.0);
+        ui.label(RichText::new("Quick preview for any file").color(palette.dim));
     });
 
-    ui.add_space(20.0);
+    ui.add_space(32.0);
+
+    // One primary and one secondary, equal width. The pair is the whole point
+    // of the screen, so it gets the column rather than sitting inline with a
+    // hint the way a toolbar would.
+    let gap = 12.0;
+    let half = ((width - gap) / 2.0).floor();
+    let button = Vec2::new(half, style::CONTROL_HEIGHT);
     ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = gap;
         if ui
-            .add_enabled(!home.dialog_open, egui::Button::new("Open file…"))
+            .add_enabled(
+                !home.dialog_open,
+                style::primary_button(palette, "Open file…").min_size(button),
+            )
             .clicked()
         {
             action = Some(Action::OpenDialog);
         }
-        if ui.button("Browse files").clicked() {
+        if ui
+            .add(egui::Button::new(RichText::new("Browse files").size(14.0)).min_size(button))
+            .clicked()
+        {
             action = Some(Action::ToggleBrowser);
         }
-        ui.add_space(4.0);
+    });
+
+    ui.add_space(16.0);
+    ui.vertical_centered(|ui| {
         if home.dialog_open {
-            ui.add(egui::Spinner::new().size(12.0));
-            ui.label(RichText::new("waiting for the dialog…").color(palette.dim));
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new().size(12.0));
+                ui.label(RichText::new("waiting for the dialog…").color(palette.dim));
+            });
         } else {
             ui.label(
                 RichText::new("or drop a file anywhere in this window")
                     .color(palette.dim)
-                    .size(12.0),
+                    .size(13.0),
             );
         }
     });
     if let Some(note) = home.note {
         ui.add_space(6.0);
-        ui.label(RichText::new(note).color(palette.warn).size(12.0));
-    }
-
-    ui.add_space(22.0);
-    hairline(ui, palette, width);
-    ui.add_space(18.0);
-
-    // Side by side where the window is wide enough, stacked where it is not.
-    // The threshold is where the key column stops being able to hold
-    // "previous / next file in the folder" on one line.
-    if width >= 560.0 {
-        let gap = 32.0;
-        let left = ((width - gap) * 0.56).floor();
-        let right = width - gap - left;
-        ui.horizontal_top(|ui| {
-            ui.allocate_ui_with_layout(
-                Vec2::new(left, 0.0),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| {
-                    if let Some(chosen) = recent_block(ui, home, palette) {
-                        action = Some(chosen);
-                    }
-                },
-            );
-            ui.add_space(gap);
-            ui.allocate_ui_with_layout(
-                Vec2::new(right, 0.0),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| keys_block(ui, palette),
-            );
+        ui.vertical_centered(|ui| {
+            ui.label(RichText::new(note).color(palette.warn).size(12.0));
         });
-    } else {
-        if let Some(chosen) = recent_block(ui, home, palette) {
-            action = Some(chosen);
-        }
-        ui.add_space(22.0);
-        keys_block(ui, palette);
     }
+
+    // Stacked, full width, one rhythm apart. They used to sit side by side to
+    // use a wide window; the design system reads the home column as a single
+    // vertical list, and Recent is the thing people came for.
+    ui.add_space(32.0);
+    if let Some(chosen) = recent_block(ui, home, palette) {
+        action = Some(chosen);
+    }
+    ui.add_space(32.0);
+    keys_block(ui, palette);
 
     action
 }
@@ -1696,6 +1697,10 @@ fn recent_block(ui: &mut egui::Ui, home: &HomeScreen<'_>, palette: &Palette) -> 
         return action;
     }
     for path in home.recent.iter().take(HOME_RECENT) {
+        // Rows are separated by a rule rather than by air. A recent list is
+        // scanned down the left edge, and a hairline under each entry is what
+        // turns eight labels into eight rows.
+        ui.add_space(ROW_PAD);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             let total = ui.available_width();
@@ -1740,9 +1745,18 @@ fn recent_block(ui: &mut egui::Ui, home: &HomeScreen<'_>, palette: &Palette) -> 
                 });
             }
         });
+        ui.add_space(ROW_PAD);
+        let (rule, _) =
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), egui::Sense::hover());
+        ui.painter()
+            .hline(rule.x_range(), rule.center().y, (1.0, palette.outline));
     }
     action
 }
+
+/// Air above and below a recent row, either side of its rule. Two of these
+/// plus the row itself is the design system's 44 px minimum.
+const ROW_PAD: f32 = 8.0;
 
 /// Point size of the folder beside a recent file.
 const FOLDER_SIZE: f32 = 11.0;
@@ -1764,27 +1778,20 @@ fn text_width(ui: &egui::Ui, text: &str, size: f32) -> f32 {
 /// Every key that does anything, so the window never needs the manual.
 fn keys_block(ui: &mut egui::Ui, palette: &Palette) {
     section(ui, palette, "Keys");
-    egui::Grid::new("sekio-keys")
-        .num_columns(2)
-        .spacing([16.0, 4.0])
-        .show(ui, |ui| {
-            for (key, what) in KEYS {
-                ui.label(RichText::new(*key).monospace().size(11.0));
-                ui.label(RichText::new(*what).color(palette.dim).size(11.0));
-                ui.end_row();
-            }
-        });
-}
-
-/// A one-pixel rule the width of the content column.
-///
-/// `ui.separator()` spans whatever the parent allocated and picks its own
-/// colour; this one belongs to the column and uses the palette's outline, so
-/// it reads as structure rather than as a divider dropped on top.
-fn hairline(ui: &mut egui::Ui, palette: &Palette, width: f32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 1.0), egui::Sense::hover());
-    ui.painter()
-        .hline(rect.x_range(), rect.center().y, (1.0, palette.outline));
+    // A wrapping row of keycap-and-label pairs rather than a two-column grid:
+    // the grid forced one pair per line and left the right half of a wide
+    // column empty, which is what made the legend look longer than the list of
+    // files above it.
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(20.0, 8.0);
+        for (key, what) in KEYS {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 5.0;
+                style::kbd(ui, palette, key);
+                ui.label(RichText::new(*what).color(palette.dim).size(12.0));
+            });
+        }
+    });
 }
 
 /// How many recent files the home screen lists. The whole point is the last
