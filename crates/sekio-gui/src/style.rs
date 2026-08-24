@@ -22,6 +22,12 @@ pub const MONO_SIZE: f32 = 13.0;
 /// look deliberate at 100% and still square-ish next to monospace text.
 const RADIUS: CornerRadius = CornerRadius::same(6);
 
+/// Menus, popovers and the window edge: `--radius-md`.
+///
+/// A step above [`RADIUS`] because the design system separates control
+/// rounding (6) from surface rounding (8) — a menu is a card, not a button.
+const SURFACE_RADIUS: CornerRadius = CornerRadius::same(8);
+
 /// Wrap mode for surfaces that must never reflow (code, hex).
 pub const NO_WRAP: TextWrapMode = TextWrapMode::Extend;
 
@@ -204,23 +210,23 @@ impl Palette {
     pub const fn dark() -> Self {
         Self {
             theme: egui::Theme::Dark,
-            window: rgb(0x1c2027),
-            panel: rgb(0x232830),
-            card: rgb(0x2b303b), // base00
-            sunken: rgb(0x1f242c),
-            stripe: rgb(0x323845),
-            text: rgb(0xc0c5ce),   // base05
-            strong: rgb(0xeff1f5), // base07
-            dim: rgb(0x8fa1b3),    // base0D
-            faint: rgb(0x65737e),  // base03
-            accent: rgb(0x7aa2c8),
-            outline: rgb(0x3b4351),
-            fill: rgb(0x333b47),
-            hover: rgb(0x3f4959),
-            press: rgb(0x4b5668),
-            active: rgb(0xa3be8c), // base0B
-            warn: rgb(0xebcb8b),   // base0A
-            error: rgb(0xe08a92),
+            window: rgb(0x08090a), // --bg
+            panel: rgb(0x0d0e0f),  // --fg at 2% over --bg, as the kit's chrome
+            card: rgb(0x2b303b),   // base00 — the ground syntect paints against
+            sunken: rgb(0x0a0b0c),
+            stripe: rgb(0x141517),
+            text: rgb(0xd0d6e0),    // --fg-2
+            strong: rgb(0xf7f8f8),  // --fg
+            dim: rgb(0x979ca5),     // --muted, lightened to clear 4.5:1 on `card`
+            faint: rgb(0x62666d),   // --meta
+            accent: rgb(0x828fff),  // --accent-hover: the text-safe indigo
+            outline: rgb(0x1f2021), // --border: white at 8%
+            fill: rgb(0x17181a),
+            hover: rgb(0x232427),
+            press: rgb(0x2c2d31),
+            active: rgb(0x3ecf68),      // --success, lightened for text use
+            warn: rgb(0xeab308),        // --warning
+            error: rgb(0xf87171),       // --danger, lightened for text use
             cell_text: rgb(0xc0c5ce),   // base05
             cell_number: rgb(0xd08770), // base09
             cell_bool: rgb(0xb48ead),   // base0E
@@ -241,23 +247,23 @@ impl Palette {
     pub const fn light() -> Self {
         Self {
             theme: egui::Theme::Light,
-            window: rgb(0xf7f9fb),
-            panel: rgb(0xe1e6ee),
-            card: rgb(0xeff1f5), // base00
-            sunken: rgb(0xffffff),
-            stripe: rgb(0xe4e8ef),
-            text: rgb(0x343d46),   // base06 — 9.8:1
-            strong: rgb(0x22282f), // a rank darker again
-            dim: rgb(0x5b6672),    // 5.2:1, so an 11 px footer label still reads
-            faint: rgb(0x949cab),  // as faint against white as base03 is on base00
-            accent: rgb(0x2f6096), // 5.7:1
-            outline: rgb(0xccd3de),
-            fill: rgb(0xdfe4ec),
-            hover: rgb(0xd2dae6),
-            press: rgb(0xc3ccdb),
-            active: rgb(0x46742c),      // 4.9:1
-            warn: rgb(0x8a6100),        // 4.9:1
-            error: rgb(0xa3232f),       // 6.5:1
+            window: rgb(0xf7f8f8), // --bg (light)
+            panel: rgb(0xe6e9ee),
+            card: rgb(0xeff1f5),   // base00 — the ground syntect paints against
+            sunken: rgb(0xffffff), // --surface (light)
+            stripe: rgb(0xe9ecf1),
+            text: rgb(0x4f545c),   // --fg-2 (light) — 6.7:1
+            strong: rgb(0x2b2e33), // --fg (light) — 12.1:1
+            dim: rgb(0x5c616a),    // --muted (light) — 5.5:1
+            faint: rgb(0xb9bec7),  // hairlines only, never text
+            accent: rgb(0x4752c4), // --accent-active: the indigo that reads on white
+            outline: rgb(0xd3d7de),
+            fill: rgb(0xe4e8ef),
+            hover: rgb(0xd8dde6),
+            press: rgb(0xc9d0dc),
+            active: rgb(0x0f7a35),      // --success darkened for white — 4.8:1
+            warn: rgb(0x8a6100),        // --warning darkened for white — 4.9:1
+            error: rgb(0xb91c1c),       // --danger darkened for white — 5.7:1
             cell_text: rgb(0x4f5b66),   // base05 — 6.2:1
             cell_number: rgb(0x9c5426), // 5.0:1
             cell_bool: rgb(0x7d4e93),   // 5.5:1
@@ -496,8 +502,8 @@ fn visuals_of(palette: &Palette) -> Visuals {
     visuals.panel_fill = panel;
     visuals.window_fill = window;
     visuals.window_stroke = Stroke::new(1.0, outline);
-    visuals.window_corner_radius = RADIUS;
-    visuals.menu_corner_radius = RADIUS;
+    visuals.window_corner_radius = SURFACE_RADIUS;
+    visuals.menu_corner_radius = SURFACE_RADIUS;
     visuals.extreme_bg_color = sunken;
     visuals.faint_bg_color = stripe;
     visuals.code_bg_color = card;
@@ -713,19 +719,43 @@ mod tests {
 
     // ---- the palettes ----
 
+    /// The cell colours are a *cross-frontend* contract, not a style choice:
+    /// the same sheet has to read the same in the CLI and the GUI, and core's
+    /// IR carries a `CellKind` rather than a colour precisely so both ends
+    /// agree. A change here is a regression, not a redesign — the chrome
+    /// around them is themed (see `the_dark_chrome_comes_from_the_design_system`),
+    /// but the cells stay base16-ocean.dark.
     #[test]
-    fn the_dark_palette_is_still_base16_ocean_dark() {
-        // The values a dark-mode sheet has always been painted in. A change
-        // here is a regression, not a redesign.
+    fn the_dark_cell_palette_is_still_base16_ocean_dark() {
         let dark = Palette::dark();
-        assert_eq!(dark.dim, Color32::from_rgb(143, 161, 179));
-        assert_eq!(dark.active, Color32::from_rgb(0xa3, 0xbe, 0x8c));
-        assert_eq!(dark.faint, Color32::from_rgb(0x65, 0x73, 0x7e));
         assert_eq!(dark.cell_text, Color32::from_rgb(0xc0, 0xc5, 0xce));
         assert_eq!(dark.cell_number, Color32::from_rgb(0xd0, 0x87, 0x70));
         assert_eq!(dark.cell_bool, Color32::from_rgb(0xb4, 0x8e, 0xad));
         assert_eq!(dark.cell_date, Color32::from_rgb(0x96, 0xb5, 0xb4));
         assert_eq!(dark.cell_error, Color32::from_rgb(0xbf, 0x61, 0x6a));
+        // The surface those cells are painted on is base00, and stays that way:
+        // it is the background syntect's theme was designed against.
+        assert_eq!(dark.card, Color32::from_rgb(0x2b, 0x30, 0x3b));
+    }
+
+    /// The chrome roles now come from `design/colors_and_type.css`. Pinned so
+    /// that drifting away from the design system is a deliberate edit rather
+    /// than something that happens by accident.
+    #[test]
+    fn the_dark_chrome_comes_from_the_design_system() {
+        let dark = Palette::dark();
+        assert_eq!(dark.window, Color32::from_rgb(0x08, 0x09, 0x0a)); // --bg
+        assert_eq!(dark.strong, Color32::from_rgb(0xf7, 0xf8, 0xf8)); // --fg
+        assert_eq!(dark.text, Color32::from_rgb(0xd0, 0xd6, 0xe0)); // --fg-2
+        assert_eq!(dark.faint, Color32::from_rgb(0x62, 0x66, 0x6d)); // --meta
+        assert_eq!(dark.warn, Color32::from_rgb(0xea, 0xb3, 0x08)); // --warning
+
+        // `dim`, `accent`, `active` and `error` are the design hues moved to
+        // the nearest value that still clears 4.5:1 on `card`, which is lighter
+        // than the kit's own canvas. `every_*_reads_on_*` proves the ratios;
+        // this only proves they did not drift back to base16.
+        assert_ne!(dark.accent, Color32::from_rgb(0x7a, 0xa2, 0xc8));
+        assert_ne!(dark.active, Color32::from_rgb(0xa3, 0xbe, 0x8c));
     }
 
     #[test]
