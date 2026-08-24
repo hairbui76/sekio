@@ -391,8 +391,7 @@ fn paint_sheets(ui: &mut Ui, table: &Table<'_>, palette: &Palette) -> Option<usi
             } else {
                 RichText::new(name).color(palette.faint)
             };
-            if ui
-                .selectable_label(active, text.monospace().size(11.0))
+            if style::selectable(ui, active, text.monospace().size(11.0))
                 .on_hover_text("Show this sheet")
                 .clicked()
                 && !active

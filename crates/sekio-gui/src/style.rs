@@ -52,17 +52,62 @@ pub fn primary_button(palette: &Palette, text: &str) -> egui::Button<'static> {
     .corner_radius(RADIUS)
 }
 
-/// A glyph-only control that is transparent at rest and fills under the
-/// pointer.
+/// A control that is invisible at rest, fills under the pointer, and — this is
+/// the point — occupies exactly the same space in all three states.
 ///
-/// `frame(false)` looks right until you use it: it removes the frame in *every*
-/// state, hover included, so the control gives no feedback at all. The pair
-/// below is what egui's own selectable buttons use — framed, but only once
-/// there is something to react to.
-pub fn icon_button(glyph: &str, size: f32) -> egui::Button<'static> {
-    egui::Button::new(egui::RichText::new(glyph.to_owned()).size(size))
-        .frame(true)
-        .frame_when_inactive(false)
+/// egui offers `frame_when_inactive(false)` for the "quiet until hovered" look
+/// and it is a trap: a `Frame`'s footprint is `inner_margin + stroke.width`, so
+/// dropping the frame at rest drops a pixel of stroke from each side and
+/// hovering puts it back. The control grows by two pixels under the pointer and
+/// shoves its neighbours along — the shake in the header and the browser rail.
+/// `selectable_label` has the same shape internally and the same symptom.
+///
+/// So the frame is kept in every state and made *transparent* in the resting
+/// one. Only colour changes on hover; the geometry never moves.
+fn quiet(ui: &mut egui::Ui) {
+    let widgets = &mut ui.style_mut().visuals.widgets;
+    widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+    widgets.inactive.bg_fill = Color32::TRANSPARENT;
+    // Width preserved, colour removed: this is the whole trick.
+    widgets.inactive.bg_stroke.color = Color32::TRANSPARENT;
+}
+
+/// A glyph-only control, quiet at rest. See [`quiet`].
+pub fn icon_button(ui: &mut egui::Ui, glyph: &str, size: f32) -> egui::Response {
+    ui.scope(|ui| {
+        quiet(ui);
+        ui.add(egui::Button::new(
+            RichText::new(glyph.to_owned()).size(size),
+        ))
+    })
+    .inner
+}
+
+/// A row or tab that can be the chosen one, quiet at rest. The replacement for
+/// `ui.selectable_label`, which shifts its neighbours when hovered.
+pub fn selectable(ui: &mut egui::Ui, selected: bool, text: RichText) -> egui::Response {
+    ui.scope(|ui| {
+        quiet(ui);
+        ui.add(egui::Button::new(text).selected(selected))
+    })
+    .inner
+}
+
+/// The same, filling `size` so a list of them cannot jitter either.
+pub fn selectable_sized(
+    ui: &mut egui::Ui,
+    selected: bool,
+    text: RichText,
+    size: [f32; 2],
+) -> egui::Response {
+    ui.scope(|ui| {
+        quiet(ui);
+        ui.add_sized(
+            size,
+            egui::Button::new((egui::Atom::from(text), egui::Atom::grow())).selected(selected),
+        )
+    })
+    .inner
 }
 
 /// A keycap: the shortcut chips in the home screen's key legend.
@@ -956,6 +1001,35 @@ mod tests {
     }
 
     // ---- the style built from a palette ----
+
+    /// Every interactive state must outline itself with the *same* stroke
+    /// width.
+    ///
+    /// A `Frame` occupies `inner_margin + stroke.width`, so a widget whose
+    /// stroke thickens when hovered grows under the pointer and shoves its
+    /// neighbours along. That is the shake that was reported in the header and
+    /// the browser rail, and `quiet` only removes the resting stroke's
+    /// *colour* for exactly this reason — the width has to stay.
+    #[test]
+    fn every_widget_state_outlines_itself_with_the_same_width() {
+        for palette in [Palette::dark(), Palette::light()] {
+            let widgets = style_of(&palette).visuals.widgets;
+            let inactive = widgets.inactive.bg_stroke.width;
+            for (what, state) in [
+                ("hovered", widgets.hovered),
+                ("active", widgets.active),
+                ("open", widgets.open),
+                ("noninteractive", widgets.noninteractive),
+            ] {
+                assert_eq!(
+                    state.bg_stroke.width, inactive,
+                    "{:?}: the {what} stroke is {} where inactive is {inactive} — a widget \
+                     that changes width on hover moves everything beside it",
+                    palette.theme, state.bg_stroke.width
+                );
+            }
+        }
+    }
 
     #[test]
     fn the_style_paints_body_text_and_separators_from_the_palette() {

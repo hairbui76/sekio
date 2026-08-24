@@ -1223,8 +1223,7 @@ impl SekioApp {
                         // furniture for a control whose whole job is "not that
                         // one".
                         let next = self.theme.cycle();
-                        if ui
-                            .add(style::icon_button(self.theme.icon(), 15.0))
+                        if style::icon_button(ui, self.theme.icon(), 15.0)
                             .on_hover_text(format!(
                                 "{} — click for {}",
                                 self.theme.describe(),
@@ -1251,8 +1250,7 @@ impl SekioApp {
                         {
                             action = Some(Action::OpenDialog);
                         }
-                        if ui
-                            .selectable_label(self.browser.is_open(), "Browse")
+                        if style::selectable(ui, self.browser.is_open(), RichText::new("Browse"))
                             .on_hover_text("Built-in file browser (Ctrl+B)")
                             .clicked()
                         {
@@ -2044,8 +2042,7 @@ fn paint_browser(ui: &mut egui::Ui, browser: &mut Browser, palette: &Palette) ->
     ui.horizontal(|ui| {
         ui.label(RichText::new("Browse files").strong().size(14.0));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui
-                .add(style::icon_button("×", 15.0))
+            if style::icon_button(ui, "×", 15.0)
                 .on_hover_text("Close the pane (Esc)")
                 .clicked()
             {
@@ -2191,10 +2188,7 @@ fn places_rail(
             ui.spacing_mut().item_spacing = Vec2::new(6.0, 4.0);
             for (name, path) in entries {
                 let here = browser.dir() == path.as_path();
-                if ui
-                    .selectable_label(here, RichText::new(name).size(12.0))
-                    .clicked()
-                {
+                if style::selectable(ui, here, RichText::new(name).size(12.0)).clicked() {
                     action = Some(Action::Descend(path.clone()));
                 }
             }
@@ -2203,18 +2197,13 @@ fn places_rail(
         let width = ui.available_width();
         for (name, path) in entries {
             let here = browser.dir() == path.as_path();
-            if ui
-                .add_sized(
-                    [width, PLACE_HEIGHT],
-                    egui::Button::selectable(
-                        here,
-                        (
-                            egui::Atom::from(RichText::new(name).size(12.0)),
-                            egui::Atom::grow(),
-                        ),
-                    ),
-                )
-                .clicked()
+            if style::selectable_sized(
+                ui,
+                here,
+                RichText::new(name).size(12.0),
+                [width, PLACE_HEIGHT],
+            )
+            .clicked()
             {
                 action = Some(Action::Descend(path.clone()));
             }
@@ -2288,15 +2277,7 @@ fn listing(ui: &mut egui::Ui, browser: &mut Browser, palette: &Palette) -> Optio
                 // `selectable_label` is only as wide as its text, which paints
                 // selection as a pill around the word and makes a directory
                 // listing look like a tag cloud.
-                if ui
-                    .add_sized(
-                        [width, PLACE_HEIGHT],
-                        egui::Button::selectable(
-                            i == cursor,
-                            (egui::Atom::from(text.size(12.0)), egui::Atom::grow()),
-                        )
-                        .wrap_mode(egui::TextWrapMode::Truncate),
-                    )
+                if style::selectable_sized(ui, i == cursor, text.size(12.0), [width, PLACE_HEIGHT])
                     .on_hover_text(&entry.name)
                     .clicked()
                 {

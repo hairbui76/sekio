@@ -216,6 +216,32 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
+
+      # Only for CHANGELOG.md — the packages themselves were built by the jobs
+      # above and arrive as artifacts.
+      - uses: actions/checkout@v4
+
+      # The release page should say what changed, in the words the changelog
+      # uses, rather than only listing commits. The section for this tag is
+      # lifted out verbatim; GitHub's generated notes are still appended below
+      # it by `generate_release_notes`, so the commit list is not lost.
+      - name: Take this version's section out of the changelog
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            $0 ~ "^## " v "( |$)" { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          # A tag with no changelog section is a mistake worth seeing on the
+          # release page rather than one worth failing the build over: the
+          # packages are already built and this is the last step.
+          if [ ! -s notes.md ]; then
+            echo "No CHANGELOG.md section for $version." > notes.md
+          fi
+          echo "--- release notes ---"
+          cat notes.md
+
       - uses: softprops/action-gh-release@v2
         with:
           # The .deb keeps dpkg's canonical sekio_<version>-1_amd64.deb name,
@@ -228,4 +254,5 @@ jobs:
             sekio*.rpm
             sekio*.msi
             sekio*.sha256
+          body_path: notes.md
           generate_release_notes: true
