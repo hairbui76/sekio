@@ -3,6 +3,23 @@
 Notable changes per release. Versions are the workspace version; every entry
 corresponds to a `v*` tag and its published deb, rpm and msi.
 
+## 0.14.1 — 2026-08-24
+
+### Fixed
+
+- Controls no longer resize when hovered. A frame occupies its inner margin
+  plus its stroke width, so drawing no frame until a control is pointed at
+  dropped a pixel from each side at rest and put it back on hover — the
+  control grew by two pixels and pushed its neighbours along. That was the
+  shake in the header and the browser rail, and the sheet strip, places rail
+  and Browse tab moved for the same reason. The frame is now kept in every
+  state and made transparent at rest, so only colour changes.
+
+### Changed
+
+- Release pages lead with this changelog's section for the tag, with GitHub's
+  generated commit list appended after it.
+
 ## 0.14.0 — 2026-08-24
 
 ### Added
