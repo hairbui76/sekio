@@ -3,6 +3,23 @@
 Notable changes per release. Versions are the workspace version; every entry
 corresponds to a `v*` tag and its published deb, rpm and msi.
 
+## 0.13.0 — 2026-08-24
+
+### Added
+
+- Workbooks can be read past their first sheet: the sheet strip above a table
+  is buttons, and clicking one re-renders that sheet.
+- Multi-page PDFs can be paged through with the wheel; Ctrl and the wheel
+  still zoom, as in every other reader.
+
+### Fixed
+
+- With an image or PDF on screen, the wheel zoomed it no matter where the
+  pointer was — so with the browser pane open the file tree could not be
+  scrolled at all. Zooming now requires the pointer to be over the preview.
+- The theme and close controls gave no hover feedback: they were drawn with no
+  frame in any state, hover included.
+
 ## 0.12.3 — 2026-08-24
 
 ### Fixed
