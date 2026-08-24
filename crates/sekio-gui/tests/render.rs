@@ -1400,6 +1400,40 @@ fn a_table_is_not_re_requested_when_the_window_is_resized() {
 // 2. The home screen
 // ---------------------------------------------------------------------------
 
+/// The utilities live in the footer now, and the whole justification for
+/// taking them out of the header is that they are on *every* screen — a
+/// control that appears on one screen and not another is one the hand has to
+/// go looking for, and the header does not exist on the home screen at all.
+#[test]
+fn the_utilities_are_reachable_from_both_screens() {
+    const UTILITIES: [&str; 3] = ["Open…", "Browse", "⚙"];
+
+    let ui = home_ui();
+    for label in UTILITIES {
+        assert!(
+            ui.harness.query_by_label(label).is_some(),
+            "the home screen cannot reach {label:?}; the AccessKit tree is:\n{:#?}",
+            ui.harness
+        );
+    }
+
+    // Now with a document on screen, where the header *is* painted.
+    let path = PathBuf::from("/tmp/main.rs");
+    let mut ui = ui_with_path("/tmp/main.rs");
+    ui.deliver(FIRST, &path, text_content());
+    for label in UTILITIES {
+        assert!(
+            ui.harness.query_by_label(label).is_some(),
+            "a preview cannot reach {label:?}; the AccessKit tree is:\n{:#?}",
+            ui.harness
+        );
+    }
+
+    // And the header earns its space: it names the file, which is the only
+    // thing left in it.
+    ui.assert_shows("main.rs", "the filename in the header");
+}
+
 #[test]
 fn the_home_screen_offers_a_way_to_open_something() {
     let ui = home_ui();

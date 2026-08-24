@@ -1198,14 +1198,19 @@ impl SekioApp {
         Some((current.checked_sub(1)?, total))
     }
 
-    fn header(&self, ui: &mut egui::Ui) -> Option<Action> {
-        let mut action = None;
+    /// The bar above the preview: what is being looked at, and nothing else.
+    ///
+    /// It does not exist on the home screen. There is no document to name
+    /// there, and an empty strip above a centred launcher is a line the eye
+    /// has to cross for no reason — the controls that used to live in it are
+    /// in the footer with the rest of the chrome now.
+    fn header(&self, ui: &mut egui::Ui) {
+        if matches!(self.view, View::Home) {
+            return;
+        }
         let response = egui::Panel::top("sekio-header")
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    // Only the file's name. On the home screen the wordmark
-                    // below already says "sekio", and repeating it in the bar
-                    // above just reads as the same word twice.
                     if let Some(path) = self.current() {
                         ui.label(RichText::new(file_name(path)).strong());
                     }
@@ -1216,23 +1221,6 @@ impl SekioApp {
                         );
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // Rightmost, where a settings control is looked for.
-                        self.settings_menu(ui);
-                        // One glyph that says what mode it is in and cycles to
-                        // the next: a three-item list in a menu is a lot of
-                        // furniture for a control whose whole job is "not that
-                        // one".
-                        let next = self.theme.cycle();
-                        if style::icon_button(ui, self.theme.icon(), 15.0)
-                            .on_hover_text(format!(
-                                "{} — click for {}",
-                                self.theme.describe(),
-                                next.describe().to_lowercase()
-                            ))
-                            .clicked()
-                        {
-                            action = Some(Action::SetTheme(next));
-                        }
                         if self.tracker.is_pending() {
                             ui.add(egui::Spinner::new().size(12.0));
                         }
@@ -1241,31 +1229,70 @@ impl SekioApp {
                                 ui.label(RichText::new("truncated").color(self.palette.dim));
                             }
                         }
-                        // Always reachable, whatever is on screen: this is the
-                        // "open something" the app was missing.
-                        if ui
-                            .add_enabled(!self.dialog_open, egui::Button::new("Open…"))
-                            .on_hover_text("Open a file (Ctrl+O)")
-                            .clicked()
-                        {
-                            action = Some(Action::OpenDialog);
-                        }
-                        if style::selectable(ui, self.browser.is_open(), RichText::new("Browse"))
-                            .on_hover_text("Built-in file browser (Ctrl+B)")
-                            .clicked()
-                        {
-                            action = Some(Action::ToggleBrowser);
-                        }
                     });
                 });
             })
             .response;
 
-        // A borderless popup still has to be movable: dragging the header moves
-        // the window, the way a title bar would.
+        self.allow_drag(ui, &response);
+    }
+
+    /// A borderless window has no title bar, so dragging its own chrome has to
+    /// move it. Both strips offer that, because on the home screen only one of
+    /// them is on screen.
+    fn allow_drag(&self, ui: &mut egui::Ui, response: &egui::Response) {
         if self.borderless && response.interact(egui::Sense::drag()).drag_started() {
             ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
         }
+    }
+
+    /// The utility cluster, bottom right: the four things that act on the
+    /// application rather than on the document.
+    ///
+    /// They were in the header, where they competed with the filename and,
+    /// on the home screen, sat above a launcher that already offers the same
+    /// two actions as full-size buttons. Down here they are out of the way of
+    /// the preview and in one place on every screen — which is what keeps
+    /// "every function also has a visible control" true now that the header
+    /// carries none.
+    fn utilities(&self, ui: &mut egui::Ui) -> Option<Action> {
+        let mut action = None;
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            self.settings_menu(ui);
+
+            let next = self.theme.cycle();
+            if style::icon_button(ui, self.theme.icon(), 14.0)
+                .on_hover_text(format!(
+                    "{} — click for {}",
+                    self.theme.describe(),
+                    next.describe().to_lowercase()
+                ))
+                .clicked()
+            {
+                action = Some(Action::SetTheme(next));
+            }
+
+            if ui
+                .add_enabled(
+                    !self.dialog_open,
+                    egui::Button::new(RichText::new("Open…").size(12.0)),
+                )
+                .on_hover_text("Open a file (Ctrl+O)")
+                .clicked()
+            {
+                action = Some(Action::OpenDialog);
+            }
+            if style::selectable(
+                ui,
+                self.browser.is_open(),
+                RichText::new("Browse").size(12.0),
+            )
+            .on_hover_text("Built-in file browser (Ctrl+B)")
+            .clicked()
+            {
+                action = Some(Action::ToggleBrowser);
+            }
+        });
         action
     }
 
@@ -1326,13 +1353,47 @@ impl SekioApp {
         .on_hover_text("About sekio");
     }
 
-    fn footer(&self, ui: &mut egui::Ui) {
+    /// The strip along the bottom: what the document is, and the controls that
+    /// act on the application.
+    ///
+    /// Unlike the header it is on every screen, because the utilities are, and
+    /// a control that moves between screens is a control the hand has to go
+    /// looking for.
+    fn footer(&self, ui: &mut egui::Ui) -> Option<Action> {
+        let mut action = None;
+        let response = egui::Panel::bottom("sekio-footer")
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    // Left first, then the right-aligned block claims what is
+                    // left: a `right_to_left` layout takes the whole remaining
+                    // width, so anything after it is squeezed to nothing and
+                    // wraps — which turned the footer into a tall paragraph
+                    // and left the preview a few rows tall.
+                    self.document_facts(ui);
+                    if let Some(chosen) = self.utilities(ui) {
+                        action = Some(chosen);
+                    }
+                });
+            })
+            .response;
+        self.allow_drag(ui, &response);
+        action
+    }
+
+    /// The left-hand half of the footer: a line about the file on screen, and
+    /// nothing at all on the home screen.
+    fn document_facts(&self, ui: &mut egui::Ui) {
         let View::Ready(shown) = &self.view else {
             return;
         };
         let palette = &self.palette;
-        egui::Panel::bottom("sekio-footer").show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
+        {
+            // One line, truncated: the footer is a status strip, and a
+            // spreadsheet with a long summary must not push the utilities off
+            // the bottom of the window.
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+            ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 match &shown.loaded.preview.content {
                     PreviewContent::Table { .. } => {
@@ -1384,11 +1445,9 @@ impl SekioApp {
                         );
                     }
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    dim_label(ui, palette, format!("{} ms", shown.elapsed.as_millis()));
-                });
+                dim_label(ui, palette, format!("{} ms", shown.elapsed.as_millis()));
             });
-        });
+        }
     }
 
     /// The built-in browser, as a resizable pane down the left-hand side.
@@ -1566,8 +1625,8 @@ impl eframe::App for SekioApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // Panels first, central panel last — egui lays them out in that order.
-        let mut action = self.header(ui);
-        self.footer(ui);
+        self.header(ui);
+        let mut action = self.footer(ui);
         action = action.or_else(|| self.browser_pane(ui));
         action = action.or_else(|| self.body(ui));
         paint_drop_hint(ui.ctx(), &self.palette);
@@ -2037,23 +2096,10 @@ fn section(ui: &mut egui::Ui, palette: &Palette, title: &str) {
 fn paint_browser(ui: &mut egui::Ui, browser: &mut Browser, palette: &Palette) -> Option<Action> {
     let mut action = None;
 
-    // A titled head rather than two bare glyphs. The pane used to open with an
-    // unlabelled "↑" and "✕" over a raw path, which reads as a debug panel.
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("Browse files").strong().size(14.0));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if style::icon_button(ui, "×", 15.0)
-                .on_hover_text("Close the pane (Esc)")
-                .clicked()
-            {
-                action = Some(Action::CloseBrowser);
-            }
-            if browser.is_loading() {
-                ui.add(egui::Spinner::new().size(11.0));
-            }
-        });
-    });
-    ui.add_space(2.0);
+    // Where we are and the way out, on one line. The pane used to carry a
+    // "Browse files" title above this, which said nothing the pane itself does
+    // not: it is a directory with a search box in it, and the heading only
+    // pushed the contents down.
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
         if ui
@@ -2072,16 +2118,30 @@ fn paint_browser(ui: &mut egui::Ui, browser: &mut Browser, palette: &Palette) ->
                 .color(palette.dim)
                 .size(11.0),
         );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if style::icon_button(ui, "×", 15.0)
+                .on_hover_text("Close the pane (Esc)")
+                .clicked()
+            {
+                action = Some(Action::CloseBrowser);
+            }
+            if browser.is_loading() {
+                ui.add(egui::Spinner::new().size(11.0));
+            }
+        });
     });
 
     // The search box, fzf-style: it has the keyboard the moment the pane
     // opens, so browsing a big directory is "start typing" rather than "reach
     // for the mouse".
-    ui.add_space(8.0);
+    ui.add_space(10.0);
     let mut query = browser.filter().to_owned();
     let search = ui.add(
         egui::TextEdit::singleline(&mut query)
             .hint_text("Search this folder")
+            // Text sat hard against the border without this: a single-line
+            // `TextEdit` takes no padding of its own.
+            .margin(egui::Margin::symmetric(8, 6))
             .desired_width(f32::INFINITY),
     );
     if search.changed() {
