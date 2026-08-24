@@ -222,23 +222,21 @@ jobs:
       - uses: actions/checkout@v4
 
       # The release page should say what changed, in the words the changelog
-      # uses, rather than only listing commits. The section for this tag is
-      # lifted out verbatim; GitHub's generated notes are still appended below
-      # it by `generate_release_notes`, so the commit list is not lost.
+      # uses, rather than only listing commits. GitHub's generated notes are
+      # still appended below it by `generate_release_notes`, so the commit list
+      # is not lost.
+      #
+      # The script reflows as it extracts: a release body is GitHub Flavoured
+      # Markdown, where a single newline inside a paragraph is a hard break, so
+      # the changelog's 76-column wrapping would otherwise be reproduced
+      # verbatim and every line would stop short of the page width.
+      #
+      # A tag with no changelog section says so on the page rather than failing
+      # a build whose packages are already built.
       - name: Take this version's section out of the changelog
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          awk -v v="$version" '
-            $0 ~ "^## " v "( |$)" { found = 1; next }
-            found && /^## / { exit }
-            found { print }
-          ' CHANGELOG.md > notes.md
-          # A tag with no changelog section is a mistake worth seeing on the
-          # release page rather than one worth failing the build over: the
-          # packages are already built and this is the last step.
-          if [ ! -s notes.md ]; then
-            echo "No CHANGELOG.md section for $version." > notes.md
-          fi
+          python3 .github/scripts/release-notes.py \
+            CHANGELOG.md "${GITHUB_REF_NAME#v}" > notes.md
           echo "--- release notes ---"
           cat notes.md
 
