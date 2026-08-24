@@ -213,13 +213,18 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
+      # First, and this order is load-bearing: `actions/checkout` cleans the
+      # working directory, so checking out *after* downloading the artifacts
+      # deletes every package before they can be uploaded. v0.14.1 and v0.14.2
+      # published with no binaries at all that way.
+      #
+      # Only CHANGELOG.md and the notes script are wanted from the repository;
+      # the packages themselves were built by the jobs above.
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
-
-      # Only for CHANGELOG.md — the packages themselves were built by the jobs
-      # above and arrive as artifacts.
-      - uses: actions/checkout@v4
 
       # The release page should say what changed, in the words the changelog
       # uses, rather than only listing commits. GitHub's generated notes are
