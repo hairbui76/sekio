@@ -35,7 +35,7 @@
 pub use ole::ole_format;
 
 #[cfg(feature = "office-legacy")]
-pub use imp::render;
+pub use imp::{render, slides};
 
 // ---------------------------------------------------------------- OLE sniffer
 
@@ -438,6 +438,57 @@ mod imp {
         match kind {
             Kind::Doc => text_preview(&converted, kind, opts, cancel),
             Kind::Ppt => ooxml_preview(&converted, kind, opts, cancel),
+            // Unreachable: `from_format` only yields Doc or Ppt, and the
+            // slide path builds its `Kind` itself. An error rather than a
+            // panic, because a renderer never panics.
+            Kind::Slides => Err(PreviewError::Format(
+                "slides are rendered by `slides`, not by `render`".into(),
+            )),
+        }
+    }
+
+    /// Draw a presentation as its slides, by way of a PDF.
+    ///
+    /// The OOXML reader in `render/document.rs` gets the *words* off a deck
+    /// but not the deck: a slide is a layout, and a bulleted transcript of one
+    /// is not what anybody means by previewing a presentation. LibreOffice can
+    /// lay it out, and the shortest route from there to pixels is its PDF
+    /// export followed by the page renderer this crate already has — which
+    /// means slide navigation is the PDF paging, for free.
+    ///
+    /// An `Err` here is not a failure to show the file. Every caller falls
+    /// back to the text reader, so a machine with no LibreOffice, or a build
+    /// with no `pdf-render`, still previews the deck exactly as it did before.
+    pub fn slides(
+        path: &Path,
+        opts: &PreviewOptions,
+        cancel: &CancelToken,
+    ) -> Result<Preview, PreviewError> {
+        cancel.check()?;
+        let Some(bin) = find_libreoffice() else {
+            return Err(PreviewError::Format("LibreOffice is not installed".into()));
+        };
+
+        // Holds the converted PDF alive for exactly as long as it takes to
+        // render a page out of it.
+        let work = Workspace::create()?;
+        let converted = convert(&bin, path, Kind::Slides, &work, cancel)?;
+        cancel.check()?;
+        let Some(converted) = converted else {
+            return Err(PreviewError::Format(
+                "LibreOffice could not lay this presentation out".into(),
+            ));
+        };
+
+        let preview = crate::render::pdf::render(&converted, Vec::new(), opts, cancel)?;
+        // A deck drawn as pages is a picture; if the PDF tier degraded to text
+        // or to a metadata card, the pptx reader's own text is the better of
+        // the two and the caller should use it.
+        match preview.content {
+            crate::PreviewContent::Image { .. } => Ok(preview),
+            _ => Err(PreviewError::Format(
+                "the converted deck did not render as pages".into(),
+            )),
         }
     }
 
@@ -447,6 +498,10 @@ mod imp {
     enum Kind {
         Doc,
         Ppt,
+        /// A presentation being turned into page images rather than text —
+        /// the modern `.pptx` path, and the only `Kind` that is never reached
+        /// from `from_format`.
+        Slides,
     }
 
     impl Kind {
@@ -473,13 +528,18 @@ mod imp {
             match self {
                 Self::Doc => ("txt:Text", "txt"),
                 Self::Ppt => ("pptx", "pptx"),
+                // PDF is the one export every LibreOffice build has, and it
+                // lands the slides on the PDF page renderer — which already
+                // knows how to draw page N of many, so paging through a deck
+                // costs nothing extra here.
+                Self::Slides => ("pdf", "pdf"),
             }
         }
 
         fn label(self) -> &'static str {
             match self {
                 Self::Doc => "Word document",
-                Self::Ppt => "PowerPoint presentation",
+                Self::Ppt | Self::Slides => "PowerPoint presentation",
             }
         }
 
@@ -489,7 +549,7 @@ mod imp {
         fn language(self) -> &'static str {
             match self {
                 Self::Doc => "Word Document (converted)",
-                Self::Ppt => "PowerPoint Presentation (converted)",
+                Self::Ppt | Self::Slides => "PowerPoint Presentation (converted)",
             }
         }
 
@@ -497,6 +557,7 @@ mod imp {
             match self {
                 Self::Doc => "Word document (binary, pre-2007)",
                 Self::Ppt => "PowerPoint presentation (binary, pre-2007)",
+                Self::Slides => "PowerPoint presentation",
             }
         }
     }
@@ -1409,6 +1470,68 @@ mod tests {
             )
             .expect_err("should refuse");
             assert!(matches!(err, PreviewError::Format(_)), "{format}: {err:?}");
+        }
+    }
+
+    /// A flat-ODP presentation LibreOffice will actually load, so a real
+    /// `.pptx` can be built from it. The synthetic zip the pptx *reader* is
+    /// tested with is deliberately minimal and LibreOffice refuses it, which
+    /// is fine for a reader and useless for a converter.
+    #[cfg(feature = "office-legacy")]
+    const FLAT_ODP: &str = concat!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>"#,
+        r#"<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0""#,
+        r#" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0""#,
+        r#" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0""#,
+        r#" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0""#,
+        r#" office:version="1.2""#,
+        r#" office:mimetype="application/vnd.oasis.opendocument.presentation">"#,
+        "<office:body><office:presentation>",
+        r#"<draw:page draw:name="One"><draw:frame svg:width="20cm" svg:height="3cm" svg:x="2cm" svg:y="3cm">"#,
+        "<draw:text-box><text:p>First slide</text:p></draw:text-box></draw:frame></draw:page>",
+        r#"<draw:page draw:name="Two"><draw:frame svg:width="20cm" svg:height="3cm" svg:x="2cm" svg:y="3cm">"#,
+        "<draw:text-box><text:p>Second slide</text:p></draw:text-box></draw:frame></draw:page>",
+        "</office:presentation></office:body></office:document>",
+    );
+
+    /// The slide path, end to end, on whatever this machine actually has.
+    ///
+    /// Two outcomes are correct and the test accepts both, because they are
+    /// two different machines rather than two different behaviours:
+    ///
+    /// * pdfium loadable → an `Image`, which is the point of the feature;
+    /// * pdfium missing → the specific "did not render as pages" error, which
+    ///   is what makes the pptx reader's text the preview instead.
+    ///
+    /// What it refuses is a *conversion* failure. That one would mean the
+    /// LibreOffice invocation itself is wrong — the filter, the profile, the
+    /// output directory — and it is the half of this that has no fallback and
+    /// no other test.
+    #[cfg(feature = "office-legacy")]
+    #[test]
+    fn a_presentation_converts_and_reaches_the_page_renderer() {
+        let source = temp_file("deck.fodp", FLAT_ODP.as_bytes());
+        let Some(fixture) = convert_with_libreoffice(source.path(), "pptx") else {
+            eprintln!("no LibreOffice on PATH; skipping");
+            return;
+        };
+
+        let result = super::slides(
+            &fixture.file,
+            &PreviewOptions::default(),
+            &CancelToken::new(),
+        );
+        match result {
+            Ok(preview) => assert!(
+                matches!(preview.content, PreviewContent::Image { .. }),
+                "a laid-out deck is a picture, got {:?}",
+                preview.content
+            ),
+            Err(PreviewError::Format(message)) => assert!(
+                message.contains("did not render as pages"),
+                "conversion itself failed: {message}"
+            ),
+            Err(other) => panic!("unexpected: {other:?}"),
         }
     }
 

@@ -28,12 +28,24 @@ pub struct Browser {
     open: bool,
     dir: PathBuf,
     entries: Vec<ListEntry>,
-    /// Index into `entries`; meaningless (and unused) while `entries` is empty.
+    /// Index into `matches` — a position in what is *on screen*, not in the
+    /// full listing, so the cursor still means "the highlighted row" when a
+    /// filter is hiding most of the directory.
     cursor: usize,
+    /// What the user has typed into the search box.
+    filter: String,
+    /// Indices into `entries` that survive `filter`, best first. Equal to
+    /// `0..entries.len()` when nothing is typed, which is the common case and
+    /// costs one `collect`.
+    matches: Vec<usize>,
     /// A listing is in flight for `dir`.
     loading: bool,
     /// The listing for `dir` came back unusable (unreadable directory).
     failed: bool,
+    /// The search box should take the keyboard on the next frame it is drawn.
+    /// Set when the pane opens, so it can be typed into straight away the way
+    /// a launcher can, and cleared once the focus has been handed over.
+    focus_search: bool,
 }
 
 impl Browser {
@@ -53,6 +65,62 @@ impl Browser {
         &self.entries
     }
 
+    /// What the pane should paint, in order: the entries that survive the
+    /// filter. Rows the user can see and click are exactly these.
+    pub fn visible(&self) -> impl Iterator<Item = &ListEntry> {
+        self.matches.iter().filter_map(|i| self.entries.get(*i))
+    }
+
+    pub fn visible_len(&self) -> usize {
+        self.matches.len()
+    }
+
+    pub fn filter(&self) -> &str {
+        &self.filter
+    }
+
+    /// Type into the search box. The cursor goes back to the best match,
+    /// because after a keystroke the row it used to point at is usually gone.
+    pub fn set_filter(&mut self, filter: String) {
+        if filter == self.filter {
+            return;
+        }
+        self.filter = filter;
+        self.rematch();
+        self.cursor = 0;
+    }
+
+    /// Empty the search box. Returns whether there was anything to clear, so a
+    /// caller can decide whether Escape meant "clear the filter" or "close the
+    /// pane".
+    pub fn clear_filter(&mut self) -> bool {
+        if self.filter.is_empty() {
+            return false;
+        }
+        self.set_filter(String::new());
+        true
+    }
+
+    /// Recompute `matches` from `entries` and `filter`.
+    fn rematch(&mut self) {
+        if self.filter.trim().is_empty() {
+            self.matches = (0..self.entries.len()).collect();
+            return;
+        }
+        let needle = self.filter.trim();
+        let mut scored: Vec<(i32, usize)> = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, entry)| score(&entry.name, needle).map(|s| (s, i)))
+            .collect();
+        // Best first, and ties keep the listing's own order — which is already
+        // directories-then-names, so an exact-ish match never jumps below a
+        // worse one just because it sorted later.
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        self.matches = scored.into_iter().map(|(_, i)| i).collect();
+    }
+
     pub fn cursor(&self) -> usize {
         self.cursor
     }
@@ -69,11 +137,22 @@ impl Browser {
     /// then ask the worker for the listing; until it lands the pane says
     /// "listing…" rather than showing the previous directory's contents, which
     /// would be a lie you could click on.
+    /// Take (and clear) the pending request for keyboard focus.
+    pub fn take_focus_request(&mut self) -> bool {
+        std::mem::take(&mut self.focus_search)
+    }
+
     pub fn show(&mut self, dir: PathBuf) {
         self.open = true;
+        self.focus_search = true;
         self.dir = dir;
         self.entries.clear();
+        self.matches.clear();
         self.cursor = 0;
+        // A search is about the directory it was typed in. Carrying it into
+        // the next one hides most of that one for no reason the user asked
+        // for.
+        self.filter.clear();
         self.loading = true;
         self.failed = false;
     }
@@ -83,6 +162,7 @@ impl Browser {
     /// while the pane was shut.
     pub fn reopen(&mut self) {
         self.open = true;
+        self.focus_search = true;
         self.loading = true;
     }
 
@@ -96,10 +176,11 @@ impl Browser {
             return false;
         }
         self.entries = entries;
+        self.rematch();
         // Clamp rather than reset: a refresh of the directory we are already
         // in must not throw the cursor back to the top. Entering a *new*
         // directory goes through `show`, which zeroes it.
-        self.cursor = self.cursor.min(self.entries.len().saturating_sub(1));
+        self.cursor = self.cursor.min(self.matches.len().saturating_sub(1));
         self.loading = false;
         self.failed = false;
         true
@@ -112,6 +193,7 @@ impl Browser {
             return false;
         }
         self.entries.clear();
+        self.matches.clear();
         self.cursor = 0;
         self.loading = false;
         self.failed = true;
@@ -122,11 +204,11 @@ impl Browser {
     /// key does not loop around a long directory, and never out of bounds on
     /// an empty or freshly-cleared list.
     pub fn move_cursor(&mut self, delta: isize) {
-        if self.entries.is_empty() {
+        if self.matches.is_empty() {
             self.cursor = 0;
             return;
         }
-        let last = (self.entries.len() - 1) as isize;
+        let last = (self.matches.len() - 1) as isize;
         let next = (self.cursor as isize).saturating_add(delta).clamp(0, last);
         self.cursor = next as usize;
     }
@@ -134,18 +216,18 @@ impl Browser {
     /// Point the cursor at a row (clicked). Out-of-range indices are clamped
     /// rather than ignored.
     pub fn select(&mut self, index: usize) {
-        if self.entries.is_empty() {
+        if self.matches.is_empty() {
             self.cursor = 0;
             return;
         }
-        self.cursor = index.min(self.entries.len() - 1);
+        self.cursor = index.min(self.matches.len() - 1);
     }
 
     /// What the row at `index` means. Entry names come from core as lossy
     /// strings, so a name that was not valid UTF-8 yields a path that will fail
     /// to preview — visibly, in the window, rather than silently.
     pub fn activate(&self, index: usize) -> Option<Activate> {
-        let entry = self.entries.get(index)?;
+        let entry = self.entries.get(*self.matches.get(index)?)?;
         let path = self.dir.join(&entry.name);
         Some(if entry.is_dir {
             Activate::Descend(path)
@@ -161,6 +243,64 @@ impl Browser {
             .filter(|parent| !parent.as_os_str().is_empty())
             .map(Path::to_path_buf)
     }
+}
+
+/// fzf-style subsequence score for `name` against `needle`, or `None` when
+/// `name` does not contain every character of `needle` in order.
+///
+/// Matching is a subsequence rather than a substring because that is what
+/// makes typing `cts` find `components/tests` — the whole point of the box.
+/// The score exists so the *best* of those is first, and it rewards the three
+/// things that make a match feel intended rather than incidental:
+///
+/// * characters that ran together, so `read` beats `r..e..a..d`;
+/// * a match at the start of a word — the beginning of the name, or just after
+///   a separator — so `md` finds `my-doc` ahead of `formatted`;
+/// * an early match, so a short name that starts with the query wins.
+///
+/// Case-insensitive, and ASCII-case-insensitive only: a fuzzy filter over
+/// filenames does not need to reason about Turkish dotted i, and pulling in a
+/// full case-folding table for it would be a lot of weight for a search box.
+pub fn score(name: &str, needle: &str) -> Option<i32> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    let mut total = 0;
+    let mut run = 0;
+    let mut previous: Option<char> = None;
+    let mut chars = name.chars().enumerate().peekable();
+
+    for wanted in needle.chars() {
+        let wanted = wanted.to_ascii_lowercase();
+        loop {
+            let (index, c) = chars.next()?;
+            if c.to_ascii_lowercase() == wanted {
+                total += 1;
+                // Consecutive characters compound, so a solid run outscores
+                // the same number of scattered hits.
+                run += 1;
+                total += run;
+                if index == 0 {
+                    total += 8;
+                } else if previous.is_some_and(is_boundary) {
+                    total += 4;
+                }
+                // Earlier is better, but only mildly: this must not outweigh a
+                // genuinely tighter match later in a long name.
+                total += (16 - index.min(16)) as i32 / 4;
+                previous = Some(c);
+                break;
+            }
+            run = 0;
+            previous = Some(c);
+        }
+    }
+    Some(total)
+}
+
+/// Is this the sort of character a new "word" starts after?
+fn is_boundary(c: char) -> bool {
+    matches!(c, '_' | '-' | '.' | ' ' | '/' | '\\')
 }
 
 /// Where to open the browser, given whatever is on screen.
@@ -219,6 +359,119 @@ pub fn compact_with(dir: &Path, home: Option<&Path>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A subsequence, not a substring — this is the whole reason the box is
+    /// worth having over a plain "contains".
+    #[test]
+    fn a_scattered_subsequence_matches() {
+        assert!(score("components/tests", "cts").is_some());
+        assert!(score("Cargo.toml", "cgt").is_some());
+        // Order still has to hold.
+        assert!(score("abc", "cba").is_none());
+        // And every character has to appear.
+        assert!(score("abc", "abcd").is_none());
+    }
+
+    #[test]
+    fn matching_ignores_case_either_way() {
+        assert!(score("README.md", "rm").is_some());
+        assert!(score("readme.md", "RM").is_some());
+    }
+
+    #[test]
+    fn a_run_beats_the_same_characters_scattered() {
+        let together = score("read", "rea").expect("matches");
+        let apart = score("rxexax", "rea").expect("matches");
+        assert!(together > apart, "{together} should beat {apart}");
+    }
+
+    #[test]
+    fn a_word_boundary_beats_the_middle_of_a_word() {
+        let boundary = score("my-doc", "md").expect("matches");
+        let middle = score("formatted", "md").expect("matches");
+        assert!(boundary > middle, "{boundary} should beat {middle}");
+    }
+
+    #[test]
+    fn an_empty_needle_matches_everything() {
+        assert_eq!(score("anything", ""), Some(0));
+    }
+
+    #[test]
+    fn filtering_hides_rows_and_the_cursor_indexes_what_is_left() {
+        let mut browser = Browser::default();
+        browser.show(PathBuf::from("/tmp"));
+        browser.fill(
+            Path::new("/tmp"),
+            vec![
+                entry("alpha.txt", false),
+                entry("beta.rs", false),
+                entry("gamma.rs", false),
+            ],
+        );
+        assert_eq!(browser.visible_len(), 3);
+
+        browser.set_filter("rs".to_owned());
+        assert_eq!(browser.visible_len(), 2, "only the two .rs files survive");
+
+        // The cursor is a position in what is on screen, so activating row 1
+        // must open the second *visible* entry, not the second of the listing.
+        browser.select(1);
+        assert_eq!(
+            browser.activate(1),
+            Some(Activate::Preview(PathBuf::from("/tmp/gamma.rs")))
+        );
+    }
+
+    #[test]
+    fn clearing_the_filter_brings_every_row_back() {
+        let mut browser = Browser::default();
+        browser.show(PathBuf::from("/tmp"));
+        browser.fill(
+            Path::new("/tmp"),
+            vec![entry("one", false), entry("two", false)],
+        );
+        browser.set_filter("one".to_owned());
+        assert_eq!(browser.visible_len(), 1);
+
+        assert!(browser.clear_filter(), "there was a filter to clear");
+        assert_eq!(browser.visible_len(), 2);
+        assert!(
+            !browser.clear_filter(),
+            "an empty box reports nothing to clear, so Escape can close the pane"
+        );
+    }
+
+    /// A search belongs to the directory it was typed in.
+    #[test]
+    fn moving_to_another_directory_drops_the_search() {
+        let mut browser = Browser::default();
+        browser.show(PathBuf::from("/tmp"));
+        browser.fill(Path::new("/tmp"), vec![entry("one", false)]);
+        browser.set_filter("one".to_owned());
+
+        browser.show(PathBuf::from("/tmp/sub"));
+        assert_eq!(browser.filter(), "");
+    }
+
+    #[test]
+    fn a_cursor_past_the_filtered_end_is_clamped() {
+        let mut browser = Browser::default();
+        browser.show(PathBuf::from("/tmp"));
+        browser.fill(
+            Path::new("/tmp"),
+            vec![
+                entry("a.rs", false),
+                entry("b.rs", false),
+                entry("c.md", false),
+            ],
+        );
+        browser.select(2);
+        browser.set_filter("md".to_owned());
+        assert_eq!(browser.visible_len(), 1);
+        browser.move_cursor(5);
+        assert_eq!(browser.cursor(), 0, "one row means the cursor is on it");
+    }
 
     fn entry(name: &str, is_dir: bool) -> ListEntry {
         ListEntry {

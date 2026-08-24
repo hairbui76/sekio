@@ -100,6 +100,30 @@ mod imp {
     /// Display width of [`COL_SEP`].
     const COL_SEP_WIDTH: usize = 3;
 
+    /// The slide-image tier, or `None` when this build or this machine cannot
+    /// reach it. `Err` only for cancellation, which must never be swallowed.
+    #[cfg(feature = "office-legacy")]
+    fn slides(
+        path: &Path,
+        opts: &PreviewOptions,
+        cancel: &CancelToken,
+    ) -> Result<Option<Preview>, PreviewError> {
+        match crate::render::legacy_office::slides(path, opts, cancel) {
+            Ok(preview) => Ok(Some(preview)),
+            Err(PreviewError::Cancelled) => Err(PreviewError::Cancelled),
+            Err(_) => Ok(None),
+        }
+    }
+
+    #[cfg(not(feature = "office-legacy"))]
+    fn slides(
+        _path: &Path,
+        _opts: &PreviewOptions,
+        _cancel: &CancelToken,
+    ) -> Result<Option<Preview>, PreviewError> {
+        Ok(None)
+    }
+
     pub fn render(
         path: &Path,
         format: &str,
@@ -112,6 +136,17 @@ mod imp {
         // `_head` is the detection sample and is deliberately unused: a zip's
         // central directory lives at the end of the file, so a 64 KB prefix
         // can't be opened as an archive.
+
+        // A deck is a layout, and the words off a slide are not the slide. If
+        // this build can lay one out — LibreOffice on PATH, pdfium loadable —
+        // the slides are drawn as pages and paging works the way it does for a
+        // PDF. Every way that can fail is an ordinary outcome that falls
+        // through to the text below, which is what the reader has always done.
+        if format == "pptx" {
+            if let Some(preview) = slides(path, opts, cancel)? {
+                return Ok(preview);
+            }
+        }
 
         // Third-party XML and zip data: an unwind must degrade to the hexdump
         // rather than take the process down. Cancellation passes through.

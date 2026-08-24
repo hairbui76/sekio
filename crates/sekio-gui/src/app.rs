@@ -1024,12 +1024,22 @@ impl SekioApp {
             self.toggle_browser();
         }
 
+        // Whether a text box owns the keyboard. The search field in the
+        // browser pane is the only one, and while it has focus a space is a
+        // space and an arrow moves the caret — not "dismiss the window" and
+        // "change directory". Up, down and Enter still steer the list, which
+        // is what makes the box usable without reaching for the mouse.
+        let typing = ctx.egui_wants_keyboard_input();
+
         // Escape backs out of the browser pane first — it is the thing the
-        // user most recently opened. Space is the Quick Look dismiss and goes
-        // straight to the rule.
+        // user most recently opened, and inside it the search comes off before
+        // the pane does. Space is the Quick Look dismiss and goes straight to
+        // the rule.
         if keys.escape && self.browser.is_open() {
-            self.browser.close();
-        } else if keys.escape || keys.space {
+            if !self.browser.clear_filter() {
+                self.browser.close();
+            }
+        } else if keys.escape || (keys.space && !typing) {
             self.dismiss(ctx);
             return;
         }
@@ -1043,13 +1053,13 @@ impl SekioApp {
             if keys.down {
                 self.browser.move_cursor(1);
             }
-            if keys.left {
+            if keys.left && !typing {
                 let parent = self.browser.parent();
                 if let Some(parent) = parent {
                     self.browse(parent);
                 }
             }
-            if keys.right || keys.enter {
+            if (keys.right && !typing) || keys.enter {
                 let activated = self.browser.activate(self.browser.cursor());
                 if let Some(activated) = activated {
                     self.apply(ctx, activated.into());
@@ -2067,6 +2077,23 @@ fn paint_browser(ui: &mut egui::Ui, browser: &mut Browser, palette: &Palette) ->
         );
     });
 
+    // The search box, fzf-style: it has the keyboard the moment the pane
+    // opens, so browsing a big directory is "start typing" rather than "reach
+    // for the mouse".
+    ui.add_space(8.0);
+    let mut query = browser.filter().to_owned();
+    let search = ui.add(
+        egui::TextEdit::singleline(&mut query)
+            .hint_text("Search this folder")
+            .desired_width(f32::INFINITY),
+    );
+    if search.changed() {
+        browser.set_filter(query);
+    }
+    if browser.take_focus_request() {
+        search.request_focus();
+    }
+
     ui.add_space(10.0);
     rule(ui, palette, ui.available_width());
     ui.add_space(10.0);
@@ -2219,6 +2246,16 @@ fn listing(ui: &mut egui::Ui, browser: &mut Browser, palette: &Palette) -> Optio
     } else if browser.entries().is_empty() {
         ui.label(RichText::new("empty").color(palette.dim).size(12.0));
         return action;
+    } else if browser.visible_len() == 0 {
+        // The directory has things in it; the search is what is hiding them,
+        // and saying so is the difference between "empty folder" and "try a
+        // different query".
+        ui.label(
+            RichText::new(format!("nothing matches {:?}", browser.filter()))
+                .color(palette.dim)
+                .size(12.0),
+        );
+        return action;
     }
 
     let dir_color = palette.accent;
@@ -2235,7 +2272,7 @@ fn listing(ui: &mut egui::Ui, browser: &mut Browser, palette: &Palette) -> Optio
             let width = ui.available_width();
             // What is left of the row once the button's own padding is taken.
             let room = width - 24.0;
-            for (i, entry) in browser.entries().iter().enumerate() {
+            for (i, entry) in browser.visible().enumerate() {
                 let full = if entry.is_dir {
                     format!("{}/", entry.name)
                 } else {
