@@ -3,6 +3,22 @@
 Notable changes per release. Versions are the workspace version; every entry
 corresponds to a `v*` tag and its published deb, rpm and msi.
 
+## 0.12.2 — 2026-08-24
+
+### Fixed
+
+- The theme control painted a tofu square. `◐` and `☾` are not in the bundled
+  Noto Sans, so they rasterised as the replacement box; the modes are now
+  `◑ ☀ 🌑`. The browser's close and parent buttons had the same problem —
+  arrows exist only in the monospace face, which is why the key legend drew
+  them correctly and a button did not. Every glyph the chrome paints is now
+  asserted against the bundled faces by a test.
+- The app mark sat above the wordmark while the wordmark sat left of centre.
+  Mark, name and version are one centred line.
+- The browser pane could not be resized: with no upper bound it grew to fit
+  its widest filename, took half the window, and left the drag handle nothing
+  to do. It opens at 320 px and ranges from 200 to 640.
+
 ## 0.12.1 — 2026-08-24
 
 ### Fixed
