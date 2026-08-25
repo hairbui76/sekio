@@ -3,6 +3,14 @@
 Notable changes per release. Versions are the workspace version; every entry
 corresponds to a `v*` tag and its published deb, rpm and msi.
 
+## 0.16.0 — 2026-08-25
+
+### Added
+
+- A "Clear" control on the Recent heading, which forgets every remembered
+  file — on screen, in the tray menu and on disk. It is absent while the list
+  is already empty.
+
 ## 0.15.0 — 2026-08-24
 
 ### Changed

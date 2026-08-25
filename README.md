@@ -33,8 +33,8 @@ format added once appears in all of them at once.
 Releases ship three installers, all x86&#95;64.
 
 ```sh
-sudo apt install ./sekio_0.15.0-1_amd64.deb      # Debian / Ubuntu
-sudo dnf install ./sekio-0.15.0-1.x86_64.rpm     # Fedora / RHEL / openSUSE
+sudo apt install ./sekio_0.16.0-1_amd64.deb      # Debian / Ubuntu
+sudo dnf install ./sekio-0.16.0-1.x86_64.rpm     # Fedora / RHEL / openSUSE
 ```
 
 **Windows** — run `sekio-x86_64-pc-windows-msvc.msi`. It installs all three
