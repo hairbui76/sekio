@@ -37,8 +37,8 @@ sudo apt install ./sekio_0.16.0-1_amd64.deb      # Debian / Ubuntu
 sudo dnf install ./sekio-0.16.0-1.x86_64.rpm     # Fedora / RHEL / openSUSE
 ```
 
-**Windows** — run `sekio-x86_64-pc-windows-msvc.msi`. It installs all three
-programs, adds them to `PATH`, and adds a Start Menu entry.
+**Windows** — run `sekio-0.16.0-x86_64-pc-windows-msvc.msi`. It installs all
+three programs, adds them to `PATH`, and adds a Start Menu entry.
 
 Everything is on the [releases page](https://github.com/hairbui76/sekio/releases).
 

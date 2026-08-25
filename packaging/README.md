@@ -7,7 +7,7 @@ tag is pushed. As of v0.16.0 that is exactly three installers, all x86_64:
 |---|---|
 | `sekio_<version>-1_amd64.deb` | all three binaries + pdfium + desktop entry + systemd user unit |
 | `sekio-<version>-1.x86_64.rpm` | same as the `.deb` |
-| `sekio-x86_64-pc-windows-msvc.msi` | all three `.exe` + `pdfium.dll`, PATH entry, Start Menu shortcut |
+| `sekio-<version>-x86_64-pc-windows-msvc.msi` | all three `.exe` + `pdfium.dll`, PATH entry, Start Menu shortcut |
 
 Each is published with a `.sha256` beside it containing the bare hash.
 
@@ -220,9 +220,9 @@ Built with [cargo-wix](https://github.com/volks73/cargo-wix) and **WiX Toolset
 v3**. Double-click it, or:
 
 ```powershell
-msiexec /i sekio-x86_64-pc-windows-msvc.msi
-msiexec /i sekio-x86_64-pc-windows-msvc.msi /quiet    # unattended
-msiexec /x sekio-x86_64-pc-windows-msvc.msi           # uninstall
+msiexec /i sekio-0.16.0-x86_64-pc-windows-msvc.msi
+msiexec /i sekio-0.16.0-x86_64-pc-windows-msvc.msi /quiet    # unattended
+msiexec /x sekio-0.16.0-x86_64-pc-windows-msvc.msi           # uninstall
 ```
 
 Layout:

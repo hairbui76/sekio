@@ -196,17 +196,24 @@ jobs:
       - name: Collect and checksum
         shell: bash
         run: |
-          # cargo-wix names it sekio-<version>-x86_64.msi; rename to match the
-          # sibling archive naming used by the rest of this release.
-          mv target/wix/*.msi sekio-x86_64-pc-windows-msvc.msi
-          sha256sum sekio-x86_64-pc-windows-msvc.msi | awk '{print $1}' \
-            > sekio-x86_64-pc-windows-msvc.msi.sha256
-          ls -l sekio-x86_64-pc-windows-msvc.msi*
+          # cargo-wix names it sekio-<version>-x86_64.msi; rename to carry the
+          # target triple as well, the way the sibling packages name theirs.
+          #
+          # The version comes from Cargo.toml rather than from the tag, because
+          # that is where cargo-deb and cargo-generate-rpm get theirs — reading
+          # it from the same place is what stops the three installers in one
+          # release disagreeing about which version they are.
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          test -n "$version"
+          name="sekio-${version}-x86_64-pc-windows-msvc.msi"
+          mv target/wix/*.msi "$name"
+          sha256sum "$name" | awk '{print $1}' > "$name.sha256"
+          ls -l sekio-*.msi*
 
       - uses: actions/upload-artifact@v4
         with:
           name: sekio-msi
-          path: sekio-x86_64-pc-windows-msvc.msi*
+          path: sekio-*-x86_64-pc-windows-msvc.msi*
 
   release:
     needs: [linux-packages, msi]
