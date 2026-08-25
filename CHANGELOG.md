@@ -3,6 +3,14 @@
 Notable changes per release. Versions are the workspace version; every entry
 corresponds to a `v*` tag and its published deb, rpm and msi.
 
+## 0.16.1 — 2026-08-25
+
+### Fixed
+
+- The Windows installer carries its version in its filename, the way the deb
+  and the rpm always have: `sekio-<version>-x86_64-pc-windows-msvc.msi`. Two
+  downloaded copies of different versions used to share one name.
+
 ## 0.16.0 — 2026-08-25
 
 ### Added

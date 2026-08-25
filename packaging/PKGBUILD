@@ -1,6 +1,6 @@
 # Maintainer: sekio contributors
 pkgname=sekio
-pkgver=0.16.0
+pkgver=0.16.1
 pkgrel=1
 pkgdesc="Fast quick-view for any filetype (CLI, TUI, and GUI previewer)"
 arch=('x86_64' 'aarch64')

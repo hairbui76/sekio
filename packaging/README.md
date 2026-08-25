@@ -1,7 +1,7 @@
 # Packaging
 
 Release artifacts are produced by `.github/workflows/release.yml` when a `v*`
-tag is pushed. As of v0.16.0 that is exactly three installers, all x86_64:
+tag is pushed. As of v0.16.1 that is exactly three installers, all x86_64:
 
 | Asset | Contents |
 |---|---|
@@ -96,8 +96,8 @@ Both are built from the same metadata in `crates/sekio-cli/Cargo.toml` — one
 from the release page, then:
 
 ```sh
-sudo apt install ./sekio_0.16.0-1_amd64.deb     # Debian/Ubuntu
-sudo dnf install ./sekio-0.16.0-1.x86_64.rpm    # Fedora/RHEL/openSUSE
+sudo apt install ./sekio_0.16.1-1_amd64.deb     # Debian/Ubuntu
+sudo dnf install ./sekio-0.16.1-1.x86_64.rpm    # Fedora/RHEL/openSUSE
 ```
 
 Layout:
@@ -220,9 +220,9 @@ Built with [cargo-wix](https://github.com/volks73/cargo-wix) and **WiX Toolset
 v3**. Double-click it, or:
 
 ```powershell
-msiexec /i sekio-0.16.0-x86_64-pc-windows-msvc.msi
-msiexec /i sekio-0.16.0-x86_64-pc-windows-msvc.msi /quiet    # unattended
-msiexec /x sekio-0.16.0-x86_64-pc-windows-msvc.msi           # uninstall
+msiexec /i sekio-0.16.1-x86_64-pc-windows-msvc.msi
+msiexec /i sekio-0.16.1-x86_64-pc-windows-msvc.msi /quiet    # unattended
+msiexec /x sekio-0.16.1-x86_64-pc-windows-msvc.msi           # uninstall
 ```
 
 Layout:
