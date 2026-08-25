@@ -3,6 +3,20 @@
 Notable changes per release. Versions are the workspace version; every entry
 corresponds to a `v*` tag and its published deb, rpm and msi.
 
+## 0.17.0 — 2026-08-25
+
+### Added
+
+- "Check for updates" in the settings menu. When a newer release exists the
+  footer offers to download it and open it in the installer — the msi through
+  msiexec on Windows, the deb or rpm through the desktop's own package handler
+  on Linux, both of which ask for the elevation sekio does not have. A build
+  that did not come from a package says so and offers the releases page.
+
+  sekio never checks on its own: there is no check at startup, on a timer, or
+  on anything but a click. The check shells out to `curl`, so no HTTP or TLS
+  dependency was added.
+
 ## 0.16.1 — 2026-08-25
 
 ### Fixed
