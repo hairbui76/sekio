@@ -1400,6 +1400,32 @@ fn a_table_is_not_re_requested_when_the_window_is_resized() {
 // 2. The home screen
 // ---------------------------------------------------------------------------
 
+/// The update control has to be reachable *and* wired: the settings menu
+/// returns what was clicked, and an earlier version of this dropped that value
+/// on the floor, so the button rendered, highlighted, and did nothing.
+///
+/// The assertion is on the state the click puts the app into, which happens
+/// synchronously. The check itself runs on another thread and this test never
+/// waits for it or asserts on it, so nothing here depends on a network.
+#[test]
+fn checking_for_updates_is_reachable_from_the_settings_menu() {
+    let mut ui = home_ui();
+
+    ui.harness.get_by_label("⚙").click();
+    ui.run();
+    ui.assert_shows("Updates", "the updates section of the settings menu");
+
+    ui.harness.get_by_label("Check for updates").click();
+    ui.run();
+
+    // The menu closes on click, as menus do, so the answer shows in the footer
+    // where it can still be seen.
+    ui.assert_shows(
+        "Checking for updates…",
+        "the check the click was supposed to start",
+    );
+}
+
 /// The utilities live in the footer now, and the whole justification for
 /// taking them out of the header is that they are on *every* screen — a
 /// control that appears on one screen and not another is one the hand has to

@@ -26,6 +26,7 @@ use crate::style::{self, Palette, MONO_SIZE};
 use crate::table;
 use crate::timing::Timing;
 use crate::tray;
+use crate::update;
 use crate::worker::{Kind, Loaded, Outcome, Request, Response, Worker};
 use sekio_core::paths;
 
@@ -107,6 +108,10 @@ enum Action {
     SetSheet(usize),
     /// Forget every remembered file.
     ClearRecent,
+    /// Ask GitHub whether there is a newer sekio.
+    CheckUpdate,
+    /// Fetch that version's package and open it in the installer.
+    InstallUpdate(String),
 }
 
 /// Everything the app needs at startup. A struct rather than a fistful of
@@ -221,6 +226,11 @@ pub struct SekioApp {
     /// Where the preview surface was painted last frame, so the wheel can tell
     /// "over the preview" from "over the browser pane".
     content_rect: Option<egui::Rect>,
+    /// What the settings menu is saying about updates, and the channel the
+    /// answer will arrive on. Never touched unless the user asks: sekio does
+    /// not check on startup, on a timer, or on anything but a click.
+    update: update::State,
+    update_rx: Option<std::sync::mpsc::Receiver<update::State>>,
     /// Which sheet of the current workbook, and which page of the current
     /// paged document, is on screen. Both reset when a different file is
     /// shown: they belong to the document, not to the window.
@@ -336,6 +346,8 @@ impl SekioApp {
             // this window existed, with no hint) is rendered at.
             text_columns: None,
             content_rect: None,
+            update: update::State::default(),
+            update_rx: None,
             sheet: 0,
             page: 0,
             reflow: Reflow::new(REFLOW_THRESHOLD, REFLOW_SETTLE),
@@ -763,6 +775,28 @@ impl SekioApp {
     /// Rebuild the home screen's list, dropping anything that has been deleted
     /// since. Done on change, not per frame — ten `stat`s a frame for a list
     /// nobody is looking at would be silly.
+    /// Take the update answer if it has arrived.
+    ///
+    /// A dropped sender — a thread that could not be spawned — leaves the menu
+    /// on "Checking…" forever, so a disconnected channel is turned into a
+    /// failure the user can retry rather than a spinner that never stops.
+    fn poll_update(&mut self) {
+        let Some(rx) = &self.update_rx else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(state) => {
+                self.update = state;
+                self.update_rx = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.update = update::State::Failed("the check could not be started".to_owned());
+                self.update_rx = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+    }
+
     /// Forget the recent list, on screen and on disk.
     ///
     /// Written through the same store as every other change, so the tray's
@@ -1107,6 +1141,14 @@ impl SekioApp {
             Action::Open(path) => self.open(ctx, path),
             Action::Descend(dir) => self.browse(dir),
             Action::ClearRecent => self.clear_recent(),
+            Action::CheckUpdate => {
+                self.update = update::State::Checking;
+                self.update_rx = Some(update::check(ctx.clone(), env!("CARGO_PKG_VERSION")));
+            }
+            Action::InstallUpdate(version) => {
+                self.update = update::State::Downloading(version.clone());
+                self.update_rx = Some(update::install(ctx.clone(), version));
+            }
             // Re-renders the file already on screen with a different part of
             // it chosen. Straight through `send_preview`, so the in-flight
             // render is cancelled and a stale one is discarded exactly as it
@@ -1274,7 +1316,9 @@ impl SekioApp {
     fn utilities(&self, ui: &mut egui::Ui) -> Option<Action> {
         let mut action = None;
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            self.settings_menu(ui);
+            if let Some(chosen) = self.settings_menu(ui) {
+                action = Some(chosen);
+            }
 
             let next = self.theme.cycle();
             if style::icon_button(ui, self.theme.icon(), 14.0)
@@ -1308,7 +1352,59 @@ impl SekioApp {
             {
                 action = Some(Action::ToggleBrowser);
             }
+
+            if let Some(chosen) = self.update_badge(ui) {
+                action = Some(chosen);
+            }
         });
+        action
+    }
+
+    /// What the update check is doing, where it can still be seen once the
+    /// menu that started it has closed.
+    ///
+    /// A menu closes when something in it is clicked — that is what menus do —
+    /// so an answer that only existed inside the menu would arrive on a
+    /// surface nobody is looking at. Nothing shows here until the user has
+    /// asked, and nothing shows once the answer is "you already have it".
+    fn update_badge(&self, ui: &mut egui::Ui) -> Option<Action> {
+        let mut action = None;
+        match &self.update {
+            update::State::Idle | update::State::Current => {}
+            update::State::Checking => {
+                ui.add(egui::Spinner::new().size(11.0));
+                dim_label(ui, &self.palette, "Checking for updates…".to_owned());
+            }
+            update::State::Downloading(version) => {
+                ui.add(egui::Spinner::new().size(11.0));
+                dim_label(ui, &self.palette, format!("Downloading {version}…"));
+            }
+            update::State::Available(version) => {
+                if style::quiet_button(
+                    ui,
+                    RichText::new(format!("{version} available"))
+                        .color(self.palette.accent)
+                        .size(12.0),
+                )
+                .on_hover_text("Download it and open the installer")
+                .clicked()
+                {
+                    action = Some(Action::InstallUpdate(version.clone()));
+                }
+            }
+            update::State::Handed(_) => {
+                dim_label(ui, &self.palette, "Installer opened".to_owned());
+            }
+            update::State::Failed(_) => {
+                // The reason is in the menu, which is where the retry is too:
+                // a full sentence does not belong in a status strip.
+                ui.label(
+                    RichText::new("Update check failed")
+                        .color(self.palette.warn)
+                        .size(12.0),
+                );
+            }
+        }
         action
     }
 
@@ -1319,9 +1415,19 @@ impl SekioApp {
     /// it. Everything else worth setting is either a one-shot flag or lives in
     /// `gui.toml`, and a preferences dialog that duplicated the file would be
     /// two places to disagree.
-    fn settings_menu(&self, ui: &mut egui::Ui) {
+    fn settings_menu(&self, ui: &mut egui::Ui) -> Option<Action> {
+        let mut action = None;
         ui.menu_button("⚙", |ui| {
             ui.set_min_width(212.0);
+
+            menu_heading(ui, &self.palette, "Updates");
+            if let Some(chosen) = self.update_section(ui) {
+                action = Some(chosen);
+            }
+
+            ui.add_space(6.0);
+            ui.separator();
+            ui.add_space(2.0);
 
             // Theme lives on the header's own glyph now; what is left here is
             // the things there is nowhere else to say.
@@ -1366,7 +1472,95 @@ impl SekioApp {
             );
         })
         .response
-        .on_hover_text("About sekio");
+        .on_hover_text("Updates and about");
+        action
+    }
+
+    /// The Updates block: one line saying where things stand, and at most one
+    /// button. The menu is not closed by any of it — the answer arrives on
+    /// another thread and has to have somewhere to land.
+    fn update_section(&self, ui: &mut egui::Ui) -> Option<Action> {
+        let mut action = None;
+        let dim = self.palette.dim;
+        match &self.update {
+            update::State::Idle => {
+                if ui.button("Check for updates").clicked() {
+                    action = Some(Action::CheckUpdate);
+                }
+            }
+            update::State::Checking => {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new().size(11.0));
+                    ui.label(RichText::new("Checking…").color(dim).size(11.0));
+                });
+            }
+            update::State::Current => {
+                ui.label(
+                    RichText::new(format!("sekio {} is the latest", env!("CARGO_PKG_VERSION")))
+                        .color(dim)
+                        .size(11.0),
+                );
+                if ui.button("Check again").clicked() {
+                    action = Some(Action::CheckUpdate);
+                }
+            }
+            update::State::Available(version) => {
+                ui.label(RichText::new(format!("sekio {version} is available")).strong());
+                let known = update::package().is_some();
+                if known {
+                    if ui
+                        .button("Download and install")
+                        .on_hover_text("Downloads the package and opens it in the installer")
+                        .clicked()
+                    {
+                        action = Some(Action::InstallUpdate(version.clone()));
+                    }
+                } else {
+                    // Built from source, or installed some other way: there is
+                    // no package to hand over, and guessing one would install
+                    // a second sekio beside the first.
+                    ui.label(
+                        RichText::new("this build did not come from a package")
+                            .color(dim)
+                            .size(11.0),
+                    );
+                }
+                ui.hyperlink_to(
+                    RichText::new("Release notes").size(11.0),
+                    update::releases_page(),
+                );
+            }
+            update::State::Downloading(version) => {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new().size(11.0));
+                    ui.label(
+                        RichText::new(format!("Downloading {version}…"))
+                            .color(dim)
+                            .size(11.0),
+                    );
+                });
+            }
+            update::State::Handed(path) => {
+                ui.label(RichText::new("The installer has been opened.").size(11.0));
+                ui.label(
+                    RichText::new(browser::compact(path))
+                        .color(dim)
+                        .monospace()
+                        .size(10.0),
+                );
+            }
+            update::State::Failed(why) => {
+                ui.label(RichText::new(why).color(self.palette.warn).size(11.0));
+                if ui.button("Try again").clicked() {
+                    action = Some(Action::CheckUpdate);
+                }
+                ui.hyperlink_to(
+                    RichText::new("Releases").size(11.0),
+                    update::releases_page(),
+                );
+            }
+        }
+        action
     }
 
     /// The strip along the bottom: what the document is, and the controls that
@@ -1629,6 +1823,7 @@ impl eframe::App for SekioApp {
         self.poll_picked(ctx);
         self.poll_drops(ctx);
         self.poll_recent();
+        self.poll_update();
         self.poll_worker(ctx);
         self.ensure_logo(ctx);
         self.handle_close_request(ctx);

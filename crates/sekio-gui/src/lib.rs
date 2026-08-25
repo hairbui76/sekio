@@ -24,4 +24,5 @@ pub mod style;
 pub mod table;
 pub mod timing;
 pub mod tray;
+pub mod update;
 pub mod worker;
