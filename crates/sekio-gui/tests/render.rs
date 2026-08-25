@@ -1513,6 +1513,39 @@ fn a_previewed_file_shows_up_in_the_recent_list_on_the_way_home() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Clearing empties the list rather than hiding it, and the heading's control
+/// only exists while there is something to clear.
+#[test]
+fn clearing_the_recent_list_empties_it() {
+    let dir = std::env::temp_dir().join(format!("sekio-gui-clear-ui-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create the fixture directory");
+    let path = dir.join("forgettable.rs");
+    std::fs::write(&path, b"fn main() {}\n").expect("write the fixture file");
+
+    let mut ui = AppUi::new(Some(path.clone()), Mode::App);
+    ui.run();
+    ui.deliver(FIRST, &path, text_content());
+    ui.harness.key_press(egui::Key::Escape);
+    ui.run();
+    ui.assert_shows("forgettable.rs", "the file just previewed");
+
+    ui.harness.get_by_label("Clear").click();
+    ui.run();
+
+    ui.assert_hides("forgettable.rs", "the entry after clearing");
+    ui.assert_shows(
+        "Nothing yet — what you preview shows up here.",
+        "the empty state",
+    );
+    assert!(
+        ui.harness.query_by_label("Clear").is_none(),
+        "an empty list offers nothing to clear"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---------------------------------------------------------------------------
 // 3. The error state
 // ---------------------------------------------------------------------------

@@ -105,6 +105,8 @@ enum Action {
     Parent,
     /// Re-render the current workbook showing this sheet.
     SetSheet(usize),
+    /// Forget every remembered file.
+    ClearRecent,
 }
 
 /// Everything the app needs at startup. A struct rather than a fistful of
@@ -761,6 +763,19 @@ impl SekioApp {
     /// Rebuild the home screen's list, dropping anything that has been deleted
     /// since. Done on change, not per frame — ten `stat`s a frame for a list
     /// nobody is looking at would be silly.
+    /// Forget the recent list, on screen and on disk.
+    ///
+    /// Written through the same store as every other change, so the tray's
+    /// copy of the list and the file under `$XDG_STATE_HOME` both follow —
+    /// a list cleared in the window that came back on the next launch would
+    /// be worse than no button at all.
+    fn clear_recent(&mut self) {
+        if self.recent.clear() {
+            self.recent_store.remember(&self.recent);
+        }
+        self.refresh_recent();
+    }
+
     fn refresh_recent(&mut self) {
         self.recent_shown = self.recent.existing();
         // The tray's Recent submenu is the same list, so the one place that
@@ -1091,6 +1106,7 @@ impl SekioApp {
             Action::SetTheme(theme) => self.set_theme(ctx, theme),
             Action::Open(path) => self.open(ctx, path),
             Action::Descend(dir) => self.browse(dir),
+            Action::ClearRecent => self.clear_recent(),
             // Re-renders the file already on screen with a different part of
             // it chosen. Straight through `send_preview`, so the in-flight
             // render is cancelled and a stale one is discarded exactly as it
@@ -1846,7 +1862,20 @@ fn home_column(
 /// What was previewed last, most recent first.
 fn recent_block(ui: &mut egui::Ui, home: &HomeScreen<'_>, palette: &Palette) -> Option<Action> {
     let mut action = None;
-    section(ui, palette, "Recent");
+    // The heading carries the way to empty the list, which is the only thing
+    // there is to do to a recent list as a whole. Absent while it is empty:
+    // an enabled control that would do nothing is worse than no control.
+    if home.recent.is_empty() {
+        section(ui, palette, "Recent");
+    } else if section_with_action(
+        ui,
+        palette,
+        "Recent",
+        "Clear",
+        "Forget every file in this list",
+    ) {
+        action = Some(Action::ClearRecent);
+    }
     if home.recent.is_empty() {
         ui.label(
             RichText::new("Nothing yet — what you preview shows up here.")
@@ -2090,6 +2119,30 @@ fn menu_heading(ui: &mut egui::Ui, palette: &Palette, title: &str) {
 fn section(ui: &mut egui::Ui, palette: &Palette, title: &str) {
     ui.label(RichText::new(title).color(palette.dim).size(11.0).strong());
     ui.add_space(2.0);
+}
+
+/// A section heading with one action against the right edge — the shape the
+/// design system gives a block that owns something the user can act on.
+///
+/// Returns whether the action was chosen.
+fn section_with_action(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    title: &str,
+    action: &str,
+    hover: &str,
+) -> bool {
+    let mut clicked = false;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(title).color(palette.dim).size(11.0).strong());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            clicked = style::quiet_button(ui, RichText::new(action).size(11.0))
+                .on_hover_text(hover)
+                .clicked();
+        });
+    });
+    ui.add_space(2.0);
+    clicked
 }
 
 /// The browser pane: where we are, a way up, and one row per entry.

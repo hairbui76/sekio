@@ -62,6 +62,18 @@ impl Recent {
         true
     }
 
+    /// Forget everything.
+    ///
+    /// Returns whether there was anything to forget, so clearing an already
+    /// empty list does not rewrite the file on disk.
+    pub fn clear(&mut self) -> bool {
+        if self.paths.is_empty() {
+            return false;
+        }
+        self.paths.clear();
+        true
+    }
+
     /// The entries that still exist, in order. Called when the home screen is
     /// rebuilt (not per frame): a deleted file must not sit in the list
     /// offering to open itself.
@@ -276,6 +288,35 @@ mod tests {
     /// An absolute path on every platform sekio targets.
     fn abs(name: &str) -> PathBuf {
         std::env::temp_dir().join(name)
+    }
+
+    #[test]
+    fn clearing_empties_the_list_and_says_whether_it_had_to() {
+        let mut recent = Recent::new();
+        assert!(!recent.clear(), "an empty list has nothing to forget");
+
+        recent.add(&abs("one.txt"));
+        recent.add(&abs("two.txt"));
+        assert_eq!(recent.paths().len(), 2);
+
+        assert!(recent.clear(), "there were two entries to forget");
+        assert!(recent.paths().is_empty());
+        assert!(
+            !recent.clear(),
+            "clearing twice must not report a second change, or the list is \
+             written to disk again for nothing"
+        );
+    }
+
+    /// Clearing is not a filter: the list is gone, not merely hidden, and the
+    /// next file previewed starts it again.
+    #[test]
+    fn the_list_still_works_after_being_cleared() {
+        let mut recent = Recent::new();
+        recent.add(&abs("old.txt"));
+        recent.clear();
+        assert!(recent.add(&abs("new.txt")));
+        assert_eq!(recent.paths(), [abs("new.txt")]);
     }
 
     fn scratch(tag: &str) -> PathBuf {

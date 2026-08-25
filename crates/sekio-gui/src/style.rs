@@ -83,6 +83,15 @@ pub fn icon_button(ui: &mut egui::Ui, glyph: &str, size: f32) -> egui::Response 
     .inner
 }
 
+/// A text control, quiet at rest. See [`quiet`].
+pub fn quiet_button(ui: &mut egui::Ui, text: RichText) -> egui::Response {
+    ui.scope(|ui| {
+        quiet(ui);
+        ui.add(egui::Button::new(text))
+    })
+    .inner
+}
+
 /// A row or tab that can be the chosen one, quiet at rest. The replacement for
 /// `ui.selectable_label`, which shifts its neighbours when hovered.
 pub fn selectable(ui: &mut egui::Ui, selected: bool, text: RichText) -> egui::Response {
