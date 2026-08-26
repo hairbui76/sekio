@@ -192,6 +192,16 @@ pub enum Mode {
 }
 
 impl Mode {
+    /// Should a window started this way look for a newer sekio?
+    ///
+    /// Not a popup: it is on screen for a moment and gone, its window is over
+    /// whatever the user was actually doing, and there is nowhere for the
+    /// answer to be read. A daemon checks once per login and an application
+    /// once per launch, which is as often as anyone needs to be told.
+    pub fn checks_updates(self) -> bool {
+        matches!(self, Self::App | Self::Daemon)
+    }
+
     /// A popup becomes an application the moment the user opens something
     /// through the app itself — the dialog, the browser, a drop, a recent
     /// entry. They did not ask for a transient popup at that point; they are
@@ -250,6 +260,16 @@ pub fn human_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A popup is on screen for a moment, over whatever the user was doing.
+    /// Telling it about a new release would put the news somewhere nobody can
+    /// read it, and would ask GitHub once per previewed file.
+    #[test]
+    fn only_a_lasting_window_looks_for_updates() {
+        assert!(Mode::App.checks_updates());
+        assert!(Mode::Daemon.checks_updates());
+        assert!(!Mode::Popup.checks_updates());
+    }
 
     #[test]
     fn ids_increase_and_previous_request_is_cancelled() {

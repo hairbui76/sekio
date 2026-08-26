@@ -4,6 +4,7 @@
 mod cancel;
 mod detect;
 pub mod paths;
+pub mod process;
 mod render;
 
 pub use cancel::CancelToken;

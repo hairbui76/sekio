@@ -783,12 +783,15 @@ mod imp {
     // ------------------------------------------------- child process control
 
     /// Detached from our own stdio in every direction: a preview must not
-    /// print to the terminal a frontend owns, nor read its stdin.
+    /// print to the terminal a frontend owns, nor read its stdin. And on
+    /// Windows, without a console of its own — a helper that flashes a black
+    /// window on screen while it runs looks like the previewer is broken.
     fn base_command(bin: &Path) -> Command {
         let mut cmd = Command::new(bin);
         cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        crate::process::hide_console(&mut cmd);
         cmd
     }
 

@@ -57,6 +57,14 @@ pub const FILE: &str = "gui.toml";
 /// still an ordinary outcome, not a failure.
 pub const DEFAULT_TRAY: bool = true;
 
+/// Ask GitHub for a newer sekio once, at startup, unless told otherwise.
+///
+/// On by default because an update nobody hears about is an update nobody
+/// installs, and off in one line for anyone who would rather their previewer
+/// never spoke to the network. The check runs once per process, never on a
+/// timer, and says nothing at all when the answer is "you already have it".
+pub const DEFAULT_UPDATES: bool = true;
+
 // ---------------------------------------------------------------------------
 // The file
 // ---------------------------------------------------------------------------
@@ -79,6 +87,8 @@ pub struct Config {
     pub hotkey: Option<String>,
     /// Show the tray icon while resident.
     pub tray: Option<bool>,
+    /// Check for a newer release at startup.
+    pub updates: Option<bool>,
     /// Max lines of text per preview.
     pub lines: Option<usize>,
     /// Wrap around at the ends when arrowing through a directory.
@@ -159,6 +169,8 @@ pub struct Overrides {
     /// A future `--tray` / `--no-tray`; wired here so adding the flag is one
     /// clap field and no change to the precedence rules.
     pub tray: Option<bool>,
+    /// `--no-update-check` sets `Some(false)`.
+    pub updates: Option<bool>,
     /// `--lines N`.
     pub lines: Option<usize>,
     /// `--wrap` — `Some(true)` when passed. `Some(false)` is reserved for a
@@ -181,6 +193,8 @@ pub struct Settings {
     /// Which palette to paint in, before the desktop has been asked. Resolving
     /// `System` is `style::Theme::resolve`'s job, and happens every frame.
     pub theme: Theme,
+    /// Look for a newer release once, when the window or the daemon starts.
+    pub updates: bool,
 }
 
 impl Default for Settings {
@@ -236,6 +250,7 @@ pub fn resolve(cli: &Overrides, cfg: &Config) -> Settings {
             )
         },
         tray: cli.tray.or(cfg.tray).unwrap_or(DEFAULT_TRAY),
+        updates: cli.updates.or(cfg.updates).unwrap_or(DEFAULT_UPDATES),
         lines: cli
             .lines
             .or(cfg.lines)
@@ -1203,6 +1218,7 @@ mod tests {
             lines: Some(100),
             wrap: Some(true),
             theme: Some("light".to_owned()),
+            updates: Some(false),
         }
     }
 
@@ -1214,6 +1230,7 @@ mod tests {
             lines: Some(1),
             wrap: Some(false),
             theme: Some(Theme::Dark),
+            updates: Some(true),
         }
     }
 
@@ -1299,6 +1316,29 @@ mod tests {
     /// built-in default value is indistinguishable from an absent flag, so the
     /// config wins when the user's explicit instruction should.
     #[test]
+    fn the_update_check_is_on_unless_something_turns_it_off() {
+        assert!(Settings::default().updates, "on by default");
+
+        // The file can turn it off...
+        let off = Config {
+            updates: Some(false),
+            ..Config::default()
+        };
+        assert!(!resolve(&Overrides::default(), &off).updates);
+
+        // ...and `--no-update-check` can, over a file that says otherwise.
+        let on = Config {
+            updates: Some(true),
+            ..Config::default()
+        };
+        let flag = Overrides {
+            updates: Some(false),
+            ..Overrides::default()
+        };
+        assert!(!resolve(&flag, &on).updates);
+    }
+
+    #[test]
     fn a_flag_typed_with_the_default_value_still_wins() {
         let default_lines = PreviewOptions::default().max_lines;
         let cli = Overrides {
@@ -1308,6 +1348,7 @@ mod tests {
             tray: Some(DEFAULT_TRAY),
             no_hotkey: false,
             theme: Some(Theme::default()),
+            updates: Some(DEFAULT_UPDATES),
         };
         let settings = resolve(&cli, &full_config());
         assert_eq!(settings.lines, default_lines);

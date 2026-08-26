@@ -85,6 +85,10 @@ struct Args {
     #[arg(long)]
     no_tray: bool,
 
+    /// Never look for a newer release
+    #[arg(long)]
+    no_update_check: bool,
+
     /// Read this config file instead of the default location
     #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
     config: Option<PathBuf>,
@@ -195,6 +199,11 @@ fn overrides(args: &Args) -> config::Overrides {
         hotkey: args.hotkey.clone(),
         no_hotkey: args.no_hotkey,
         tray: if args.no_tray { Some(false) } else { None },
+        updates: if args.no_update_check {
+            Some(false)
+        } else {
+            None
+        },
         lines: args.lines,
         // A flag can only be present or absent; absent must defer to the file
         // rather than override it with `false`.
@@ -268,6 +277,7 @@ fn run_once(args: Args, settings: Settings, timing: Timing) -> Result<()> {
             hotkey_spec: None,
             config_path: None,
             theme: settings.theme,
+            updates: settings.updates,
         },
     )
 }
@@ -548,6 +558,7 @@ fn run_daemon(
             // which case a choice lasts as long as the process.
             config_path: location.write_target().map(Path::to_path_buf),
             theme: settings.theme,
+            updates: settings.updates,
         },
     );
     // Explicit, so the socket is gone before the process is.

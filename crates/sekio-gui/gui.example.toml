@@ -74,3 +74,17 @@
 ##
 ## Unparseable values are reported on stderr and the default is used instead.
 # theme = "system"
+
+## Look for a newer sekio once, when the window or the daemon starts.
+##
+## Default: true. The check asks GitHub which release is newest, and says
+## nothing at all unless there is one — an up-to-date sekio prints nothing,
+## shows nothing, and never asks again until the next launch.
+##
+## It happens once per process and never on a timer. A one-shot preview popup
+## does not check at all: it is on screen for a moment, over whatever you were
+## doing, and there would be nowhere to read the answer.
+##
+## Set this to false, or pass --no-update-check, and sekio never contacts the
+## network. Nothing else in the program does.
+# updates = true

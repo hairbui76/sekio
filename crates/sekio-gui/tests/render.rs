@@ -141,6 +141,9 @@ impl AppUi {
             hotkey_spec: None,
             config_path: None,
             theme: sekio_gui::style::Theme::Dark,
+            // No test may reach the network. The one that exercises the check
+            // starts it deliberately, by clicking the control that does.
+            updates: false,
         };
 
         // The app is built inside the closure because it needs the harness's

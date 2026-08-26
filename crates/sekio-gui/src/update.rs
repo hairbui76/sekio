@@ -14,7 +14,9 @@
 //! `-sys` crate at all, which is what lets `cargo check --target
 //! x86_64-pc-windows-msvc` work from Linux with no MSVC toolchain. `curl` is
 //! the same bargain `render/video.rs` makes with ffmpeg: find it on PATH, run
-//! it under a deadline, and treat its absence as an ordinary outcome.
+//! it under a deadline, treat its absence as an ordinary outcome — and start
+//! it with no console of its own, or Windows flashes a black window over the
+//! preview every time the check runs.
 //!
 //! **It reads the version out of a redirect, not out of the API.**
 //! `/releases/latest` redirects to `/releases/tag/vX.Y.Z`, so the version is in
@@ -248,6 +250,7 @@ fn latest_version() -> Result<String, String> {
         return Err("curl is not installed, so sekio cannot check".to_owned());
     };
     let mut command = Command::new(curl);
+    sekio_core::process::hide_console(&mut command);
     command
         .arg("--silent")
         .arg("--show-error")
@@ -279,7 +282,9 @@ fn fetch(url: &str, target: &Path) -> Result<(), String> {
     let Some(curl) = curl() else {
         return Err("curl is not installed, so sekio cannot download".to_owned());
     };
-    let out = Command::new(curl)
+    let mut command = Command::new(curl);
+    sekio_core::process::hide_console(&mut command);
+    let out = command
         .arg("--silent")
         .arg("--show-error")
         .arg("--location")

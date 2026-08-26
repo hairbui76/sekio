@@ -254,8 +254,8 @@ washed out on the wrong one.
 
 `sekio-gui` reads `gui.toml` from `$XDG_CONFIG_HOME/sekio/` (or `~/.config/`)
 on Linux, `%APPDATA%\sekio\` on Windows — a documented copy is
-[`gui.example.toml`](../crates/sekio-gui/gui.example.toml). Five keys:
-`hotkey`, `tray`, `theme`, `lines` and `wrap`.
+[`gui.example.toml`](../crates/sekio-gui/gui.example.toml). Six keys:
+`hotkey`, `tray`, `theme`, `lines`, `wrap` and `updates`.
 
 It is `gui.toml` and not `config.toml` because `sekio-tui` keeps its own
 `config.toml` in the same directory and the two schemas are different.
@@ -272,6 +272,22 @@ Three rules worth knowing:
   in `gui.toml` is read by all of them.
 
 `--config PATH` reads a different file; `--no-config` ignores every file.
+
+### Updates
+
+sekio checks once, at startup, whether a newer release exists, and says nothing
+unless there is one. When there is, the footer offers to fetch it and open it
+in the installer — `msiexec` on Windows, the desktop's own package handler on
+Linux, both of which ask for the elevation sekio does not have and does not
+try to acquire. A build that did not come from a package says so and offers the
+releases page instead.
+
+The check is also in the gear menu, for asking again without restarting.
+
+It is the only thing in sekio that touches the network, it happens once per
+process and never on a timer, and a one-shot preview popup does not do it at
+all. `updates = false` in `gui.toml`, or `--no-update-check`, turns it off
+entirely.
 
 ## The optional formats
 

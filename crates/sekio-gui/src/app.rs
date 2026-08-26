@@ -149,6 +149,9 @@ pub struct Startup {
     /// settings menu ticks this, so it has to survive the round trip through
     /// the desktop's answer.
     pub theme: style::Theme,
+    /// Look for a newer release once, shortly after starting. Whether that
+    /// actually happens also depends on the mode — see `Mode::checks_updates`.
+    pub updates: bool,
 }
 
 pub struct SekioApp {
@@ -231,6 +234,9 @@ pub struct SekioApp {
     /// not check on startup, on a timer, or on anything but a click.
     update: update::State,
     update_rx: Option<std::sync::mpsc::Receiver<update::State>>,
+    /// A startup check is owed. Taken on the first frame that has a context to
+    /// hand, and never set again — one check per process, never on a timer.
+    update_at_start: bool,
     /// Which sheet of the current workbook, and which page of the current
     /// paged document, is on screen. Both reset when a different file is
     /// shown: they belong to the document, not to the window.
@@ -276,6 +282,7 @@ impl SekioApp {
             hotkey_spec,
             config_path,
             theme,
+            updates,
         } = startup;
         let (tray, tray_events) = match tray {
             Some((tray, events)) => (Some(tray), Some(events)),
@@ -348,6 +355,7 @@ impl SekioApp {
             content_rect: None,
             update: update::State::default(),
             update_rx: None,
+            update_at_start: updates && mode.checks_updates(),
             sheet: 0,
             page: 0,
             reflow: Reflow::new(REFLOW_THRESHOLD, REFLOW_SETTLE),
@@ -775,6 +783,20 @@ impl SekioApp {
     /// Rebuild the home screen's list, dropping anything that has been deleted
     /// since. Done on change, not per frame — ten `stat`s a frame for a list
     /// nobody is looking at would be silly.
+    /// Fire the one startup check, if one is owed.
+    ///
+    /// On a frame rather than in the constructor: the check needs a context to
+    /// wake when it answers, and the first frame is the earliest one that
+    /// exists. It costs nothing on every subsequent frame — the flag is taken,
+    /// not read.
+    fn start_update_check(&mut self, ctx: &egui::Context) {
+        if !std::mem::take(&mut self.update_at_start) {
+            return;
+        }
+        self.update = update::State::Checking;
+        self.update_rx = Some(update::check(ctx.clone(), env!("CARGO_PKG_VERSION")));
+    }
+
     /// Take the update answer if it has arrived.
     ///
     /// A dropped sender — a thread that could not be spawned — leaves the menu
@@ -1823,6 +1845,7 @@ impl eframe::App for SekioApp {
         self.poll_picked(ctx);
         self.poll_drops(ctx);
         self.poll_recent();
+        self.start_update_check(ctx);
         self.poll_update();
         self.poll_worker(ctx);
         self.ensure_logo(ctx);
