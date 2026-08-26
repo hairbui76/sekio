@@ -3,6 +3,24 @@
 Notable changes per release. Versions are the workspace version; every entry
 corresponds to a `v*` tag and its published deb, rpm and msi.
 
+## 0.18.0 — 2026-08-26
+
+### Added
+
+- sekio looks for a newer release once at startup, and says nothing unless
+  there is one. It still never runs on a timer, and a one-shot preview popup
+  does not check at all. `updates = false` in `gui.toml`, or the new
+  `--no-update-check`, turns it off entirely.
+
+### Fixed
+
+- Helper programs no longer flash a console window on Windows. curl for the
+  update check, ffmpeg for a video frame and LibreOffice for a deck or a
+  legacy document all opened one, painted it and took it away again, because
+  the GUI has no console of its own for a child to inherit. The installer and
+  the desktop's file handler are deliberately left alone: their window is the
+  point.
+
 ## 0.17.0 — 2026-08-25
 
 ### Added
