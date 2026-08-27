@@ -592,11 +592,21 @@ impl SekioApp {
         let pending: Vec<tray::Event> = events.try_iter().collect();
         for event in pending {
             match event {
+                // Activating the icon means "put your window back", which is
+                // the only thing an icon standing for a hidden window can
+                // sensibly mean. It used to raise the file dialog instead.
+                tray::Event::Show => self.reveal(ctx),
                 tray::Event::OpenFile => {
                     // A daemon's window is hidden; a file dialog owned by
                     // nothing visible is a dialog the user cannot place.
                     self.reveal(ctx);
                     self.open_dialog(ctx);
+                }
+                tray::Event::CheckUpdate => {
+                    // Shown in the window, so the window has to be up to show
+                    // it: the answer lands in the footer.
+                    self.reveal(ctx);
+                    self.apply(ctx, Action::CheckUpdate);
                 }
                 tray::Event::Preview(path) => self.open(ctx, path),
                 tray::Event::SetHotkey(spec) => self.rebind_hotkey(ctx, spec),

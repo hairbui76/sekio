@@ -80,6 +80,10 @@ const MAX_ICON_DIM: u32 = 1024;
 
 /// The label of the item that opens the file dialog.
 const OPEN_LABEL: &str = "Open a file…";
+/// Bring the hidden window back.
+const SHOW_LABEL: &str = "Show sekio";
+/// Ask GitHub for a newer release.
+const UPDATE_LABEL: &str = "Check for updates";
 /// The label of the recent-files submenu.
 const RECENT_LABEL: &str = "Recent";
 /// Shown, disabled, when nothing has been previewed yet. A submenu that opens
@@ -104,6 +108,13 @@ fn build_menu(menu: &Menu) -> Vec<ksni::MenuItem<SekioTray>> {
 
     vec![
         StandardItem {
+            label: SHOW_LABEL.into(),
+            icon_name: "window-new".into(),
+            activate: Box::new(|tray: &mut SekioTray| tray.emit(Event::Show)),
+            ..Default::default()
+        }
+        .into(),
+        StandardItem {
             label: OPEN_LABEL.into(),
             icon_name: "document-open".into(),
             activate: Box::new(|tray: &mut SekioTray| tray.emit(Event::OpenFile)),
@@ -125,6 +136,13 @@ fn build_menu(menu: &Menu) -> Vec<ksni::MenuItem<SekioTray>> {
         }
         .into(),
         ksni::MenuItem::Separator,
+        StandardItem {
+            label: UPDATE_LABEL.into(),
+            icon_name: "system-software-update".into(),
+            activate: Box::new(|tray: &mut SekioTray| tray.emit(Event::CheckUpdate)),
+            ..Default::default()
+        }
+        .into(),
         StandardItem {
             label: QUIT_LABEL.into(),
             icon_name: "application-exit".into(),
@@ -244,6 +262,13 @@ struct SekioTray {
     pixmaps: Vec<ksni::Icon>,
     menu: Menu,
     events: Sender<Event>,
+    /// Wake the UI thread after sending.
+    ///
+    /// A resident daemon's window is hidden, and a hidden window is not being
+    /// repainted — so it never runs the loop that drains this channel. Without
+    /// this the whole menu is inert until something else happens to wake the
+    /// app, which is indistinguishable from a tray that does nothing.
+    wake: Box<dyn Fn() + Send>,
 }
 
 impl SekioTray {
@@ -255,6 +280,7 @@ impl SekioTray {
     /// the daemon is already gone — there is nobody left to tell.
     fn emit(&self, event: Event) {
         let _ = self.events.send(event);
+        (self.wake)();
     }
 }
 
@@ -551,7 +577,11 @@ impl Tray for LinuxTray {
 /// `icon` is PNG bytes. `None` covers every "no tray here" case — headless, no
 /// bus tool, no StatusNotifierHost (stock GNOME), a refused registration — and
 /// is an ordinary outcome the caller carries on from.
-pub fn spawn(icon: &'static [u8], menu: Menu) -> Option<(Box<dyn Tray>, Receiver<Event>)> {
+pub fn spawn(
+    icon: &'static [u8],
+    menu: Menu,
+    wake: impl Fn() + Send + 'static,
+) -> Option<(Box<dyn Tray>, Receiver<Event>)> {
     // No session bus means no tray, and no reason to fork a process to
     // rediscover that. Checked before anything else because it is the case a
     // headless CI run and a bare `ssh` session both land in. The value itself
@@ -569,6 +599,7 @@ pub fn spawn(icon: &'static [u8], menu: Menu) -> Option<(Box<dyn Tray>, Receiver
         pixmaps: pixmaps(icon),
         menu: menu.clone(),
         events,
+        wake: Box::new(wake),
     };
 
     // Everything that can touch D-Bus happens here. `ksni::blocking::spawn`
@@ -635,6 +666,9 @@ mod tests {
                 pixmaps: Vec::new(),
                 menu,
                 events,
+                // The wake is asserted separately, by
+                // `emitting_an_event_wakes_the_ui`.
+                wake: Box::new(|| {}),
             },
             rx,
         )
@@ -693,33 +727,76 @@ mod tests {
     }
 
     #[test]
-    fn the_top_level_is_open_recent_hotkey_then_quit() {
+    fn the_top_level_is_show_open_recent_hotkey_then_updates_and_quit() {
         let items = build_menu(&a_menu());
         assert_eq!(
             labels(&items),
             vec![
+                Some(SHOW_LABEL),
                 Some(OPEN_LABEL),
                 Some(RECENT_LABEL),
                 Some(HOTKEY_LABEL),
                 None, // the separator
+                Some(UPDATE_LABEL),
                 Some(QUIT_LABEL),
             ]
         );
-        assert!(matches!(items[3], ksni::MenuItem::Separator));
+        assert!(matches!(items[4], ksni::MenuItem::Separator));
+    }
+
+    /// The first item, because an icon standing for a hidden window is mostly
+    /// clicked to get the window back.
+    #[test]
+    fn show_asks_for_the_window() {
+        let (mut tray, rx) = probe(a_menu());
+        let items = build_menu(&tray.menu.clone());
+        assert_eq!(click(&mut tray, &rx, &items[0]), Event::Show);
     }
 
     #[test]
     fn open_asks_for_the_file_dialog() {
         let (mut tray, rx) = probe(a_menu());
         let items = build_menu(&tray.menu.clone());
-        assert_eq!(click(&mut tray, &rx, &items[0]), Event::OpenFile);
+        assert_eq!(click(&mut tray, &rx, &items[1]), Event::OpenFile);
+    }
+
+    #[test]
+    fn the_menu_can_ask_for_an_update_check() {
+        let (mut tray, rx) = probe(a_menu());
+        let items = build_menu(&tray.menu.clone());
+        assert_eq!(click(&mut tray, &rx, &items[5]), Event::CheckUpdate);
+    }
+
+    /// Sending is only half of it. A resident daemon's window is hidden and a
+    /// hidden window is not repainted, so an event that does not wake the UI
+    /// sits in the channel and the whole tray appears to do nothing.
+    #[test]
+    fn emitting_an_event_wakes_the_ui() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let woke = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&woke);
+        let (events, rx) = mpsc::channel();
+        let tray = SekioTray {
+            pixmaps: Vec::new(),
+            menu: a_menu(),
+            events,
+            wake: Box::new(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }),
+        };
+
+        tray.emit(Event::Show);
+        assert_eq!(rx.try_recv(), Ok(Event::Show), "the event was sent");
+        assert_eq!(woke.load(Ordering::SeqCst), 1, "and the UI was woken");
     }
 
     #[test]
     fn quit_asks_the_daemon_to_stop() {
         let (mut tray, rx) = probe(a_menu());
         let items = build_menu(&tray.menu.clone());
-        assert_eq!(click(&mut tray, &rx, &items[4]), Event::Quit);
+        assert_eq!(click(&mut tray, &rx, &items[6]), Event::Quit);
     }
 
     #[test]

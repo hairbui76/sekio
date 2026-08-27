@@ -40,8 +40,14 @@ pub struct Menu {
 /// never previews anything itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
+    /// Bring the window up. What activating the icon means — a resident
+    /// daemon's window is hidden, and putting it back on screen is the whole
+    /// reason to click an icon that represents it.
+    Show,
     /// Show the file dialog, as the window's Open button does.
     OpenFile,
+    /// Look for a newer release.
+    CheckUpdate,
     /// Preview a path — a recent entry was chosen.
     Preview(PathBuf),
     /// Register this hotkey instead, and persist it.
@@ -63,14 +69,18 @@ pub trait Tray: Send {
 /// `icon` is a PNG. Returns `None` when there is no tray host — a headless
 /// session, or GNOME without the AppIndicator extension — in which case the
 /// caller carries on without one.
-pub fn spawn(icon: &'static [u8], menu: Menu) -> Option<(Box<dyn Tray>, Receiver<Event>)> {
+pub fn spawn(
+    icon: &'static [u8],
+    menu: Menu,
+    wake: impl Fn() + Send + 'static,
+) -> Option<(Box<dyn Tray>, Receiver<Event>)> {
     #[cfg(unix)]
     {
-        linux::spawn(icon, menu)
+        linux::spawn(icon, menu, wake)
     }
     #[cfg(windows)]
     {
-        windows::spawn(icon, menu)
+        windows::spawn(icon, menu, wake)
     }
     #[cfg(not(any(unix, windows)))]
     {

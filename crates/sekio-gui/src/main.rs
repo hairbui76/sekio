@@ -528,7 +528,7 @@ fn run_daemon(
     // After the hotkey, so the menu can tick the combination that was actually
     // grabbed rather than the one that was asked for. `None` is ordinary: no
     // tray host in this session, or `tray = false`.
-    let tray = start_tray(&settings, hotkey_spec.as_deref(), timing);
+    let tray = start_tray(&settings, hotkey_spec.as_deref(), timing, &ctx);
 
     let (tx, rx) = mpsc::channel::<PathBuf>();
     let wake = ctx.clone();
@@ -636,6 +636,7 @@ fn start_tray(
     settings: &Settings,
     hotkey_spec: Option<&str>,
     timing: Timing,
+    ctx: &egui::Context,
 ) -> Option<(Box<dyn tray::Tray>, std::sync::mpsc::Receiver<tray::Event>)> {
     if !settings.tray {
         timing.log("tray disabled");
@@ -648,7 +649,13 @@ fn start_tray(
         // the list — the same list the home screen shows.
         recent: Vec::new(),
     };
-    match tray::spawn(icon::PNG, menu) {
+    // The same wake the socket thread and the hotkey listener get, and for the
+    // same reason: a resident daemon's window is hidden, a hidden window is not
+    // repainted, and a window that is not repainted never runs the loop that
+    // drains this channel. Without it every menu item is inert until something
+    // else happens to wake the app.
+    let wake = ctx.clone();
+    match tray::spawn(icon::PNG, menu, move || wake.request_repaint()) {
         Some(started) => {
             timing.log("tray icon shown");
             Some(started)
@@ -768,6 +775,9 @@ fn doctor_tray(settings: &Settings) {
             hotkey_choices: tray::hotkey_choices(),
             recent: Vec::new(),
         },
+        // `--doctor` has no window to wake: it starts an icon, reports what
+        // hosted it, and drops it again.
+        || {},
     );
     match probe {
         Some((tray, _events)) => row("icon", format!("yes — {}", tray.describe())),

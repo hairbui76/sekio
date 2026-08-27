@@ -620,27 +620,96 @@ pub fn listen(
     Hotkeys { status, presses }
 }
 
+/// Act on one press. `false` means the UI is gone and the thread should stop.
+///
+/// Resolving the selection takes up to ~200 ms and happens here, on the hotkey
+/// thread, never on the UI thread.
+fn deliver(source: &dyn Source, tx: &mpsc::Sender<PathBuf>, wake: &dyn Fn()) -> bool {
+    let Some(selection) = source.current() else {
+        return true; // Nothing selected is normal: do nothing at all.
+    };
+    if !selection::usable(&selection.path) {
+        return true;
+    }
+    if tx.send(selection.path).is_err() {
+        return false; // UI is gone.
+    }
+    wake();
+    true
+}
+
+/// Is this the press we registered, as opposed to the release, or somebody
+/// else's hotkey on the process-wide channel?
+fn is_our_press(event: &GlobalHotKeyEvent, id: u32) -> bool {
+    event.id == id && event.state == HotKeyState::Pressed
+}
+
 /// Forward presses forever. Returns when the UI drops the channel.
-#[cfg_attr(not(unix), allow(dead_code))]
+///
+/// On X11 `global-hotkey` runs its own thread and pushes to a channel, so
+/// waiting on that channel is the whole job.
+#[cfg(not(windows))]
 fn pump(id: u32, source: &dyn Source, tx: &mpsc::Sender<PathBuf>, wake: &dyn Fn()) {
     let events = GlobalHotKeyEvent::receiver();
     while let Ok(event) = events.recv() {
-        // The process-wide channel carries every hotkey any manager registered,
-        // and both edges of each press.
-        if event.id != id || event.state != HotKeyState::Pressed {
+        if !is_our_press(&event, id) {
             continue;
         }
-        // Up to ~200 ms, on this thread, never on the UI thread.
-        let Some(selection) = source.current() else {
-            continue; // Nothing selected is normal: do nothing at all.
-        };
-        if !selection::usable(&selection.path) {
-            continue;
+        if !deliver(source, tx, wake) {
+            break;
         }
-        if tx.send(selection.path).is_err() {
-            break; // UI is gone.
+    }
+}
+
+/// Forward presses forever — the Windows version, which has to pump messages.
+///
+/// `RegisterHotKey` posts `WM_HOTKEY` to the thread that owns the window it was
+/// registered against, and `global-hotkey` creates that window on whichever
+/// thread calls `GlobalHotKeyManager::new()` — this one. It fills its channel
+/// from inside its window procedure, and a window procedure only runs when
+/// somebody dispatches a message to it.
+///
+/// So waiting on the channel the way X11 does deadlocks in the quietest
+/// possible way: the grab succeeds, `--doctor` reports the key registered,
+/// Windows delivers `WM_HOTKEY` to this thread's queue — and nothing ever
+/// takes it out again, so the press does nothing at all. That is precisely
+/// what it did before this loop existed.
+#[cfg(windows)]
+fn pump(id: u32, source: &dyn Source, tx: &mpsc::Sender<PathBuf>, wake: &dyn Fn()) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, GetMessageW, TranslateMessage, MSG,
+    };
+
+    let events = GlobalHotKeyEvent::receiver();
+    loop {
+        let mut message = MSG::default();
+        // SAFETY: `GetMessageW` writes through the pointer we give it and
+        // borrows nothing else. `None` for the window filter is "every window
+        // belonging to this thread", which is what we want: the crate owns the
+        // only one.
+        let got = unsafe { GetMessageW(&mut message, None, 0, 0) };
+        if got.0 <= 0 {
+            break; // WM_QUIT (0), or an error (-1). Either way we are done.
         }
-        wake();
+        // SAFETY: both take the message we just filled in, by pointer, and
+        // neither retains it. Dispatching is what runs the crate's window
+        // procedure, which is what fills the channel read below.
+        unsafe {
+            let _ = TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+        // The press is queued synchronously from that window procedure, so by
+        // here it is already waiting. `try_recv` rather than `recv`: the
+        // release arrives later from a thread of the crate's own, and blocking
+        // for it would stop this loop pumping.
+        while let Ok(event) = events.try_recv() {
+            if !is_our_press(&event, id) {
+                continue;
+            }
+            if !deliver(source, tx, wake) {
+                return;
+            }
+        }
     }
 }
 

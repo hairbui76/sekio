@@ -66,6 +66,11 @@ use super::{Event, Menu, Tray};
 
 /// The label of the item that opens the file dialog.
 const OPEN_LABEL: &str = "Open a file…";
+/// Bring the hidden window back — the same thing activating the icon does,
+/// spelled out for anyone who reaches for the menu instead.
+const SHOW_LABEL: &str = "Show sekio";
+/// Ask GitHub for a newer release.
+const UPDATE_LABEL: &str = "Check for updates";
 /// The label of the recent-files submenu.
 const RECENT_LABEL: &str = "Recent";
 /// Shown, greyed, when nothing has been previewed yet. A submenu that opens
@@ -169,6 +174,12 @@ fn next_id(counter: &mut u32) -> u32 {
 fn plan(menu: &Menu) -> Vec<Item> {
     let mut counter = 1u32;
 
+    let show = Item::Command {
+        label: escape_mnemonics(SHOW_LABEL),
+        id: next_id(&mut counter),
+        event: Event::Show,
+        checked: false,
+    };
     let open = Item::Command {
         label: escape_mnemonics(OPEN_LABEL),
         id: next_id(&mut counter),
@@ -183,6 +194,12 @@ fn plan(menu: &Menu) -> Vec<Item> {
         label: escape_mnemonics(HOTKEY_LABEL),
         items: hotkey_items(menu.hotkey.as_deref(), &menu.hotkey_choices, &mut counter),
     };
+    let updates = Item::Command {
+        label: escape_mnemonics(UPDATE_LABEL),
+        id: next_id(&mut counter),
+        event: Event::CheckUpdate,
+        checked: false,
+    };
     let quit = Item::Command {
         label: escape_mnemonics(QUIT_LABEL),
         id: next_id(&mut counter),
@@ -190,7 +207,7 @@ fn plan(menu: &Menu) -> Vec<Item> {
         checked: false,
     };
 
-    vec![open, recent, hotkey, Item::Separator, quit]
+    vec![show, open, recent, hotkey, Item::Separator, updates, quit]
 }
 
 /// The recent submenu, most-recent-first as it arrives.
@@ -307,7 +324,11 @@ fn escape_mnemonics(label: &str) -> String {
 // ------------------------------------------------------------ the public face
 
 /// Start the tray. `None` when there is nowhere to put an icon.
-pub fn spawn(icon: &'static [u8], menu: Menu) -> Option<(Box<dyn Tray>, Receiver<Event>)> {
+pub fn spawn(
+    icon: &'static [u8],
+    menu: Menu,
+    wake: impl Fn() + Send + 'static,
+) -> Option<(Box<dyn Tray>, Receiver<Event>)> {
     let (events_tx, events_rx) = mpsc::channel();
     let (updates_tx, updates_rx) = mpsc::channel();
     // The tray thread reports whether it got as far as a live icon. Everything
@@ -320,7 +341,7 @@ pub fn spawn(icon: &'static [u8], menu: Menu) -> Option<(Box<dyn Tray>, Receiver
         .spawn(move || {
             // SAFETY: every Win32 handle created below is created, used and
             // destroyed inside this closure, on this thread and nowhere else.
-            unsafe { tray_thread(icon, menu, events_tx, updates_rx, &ready_tx) }
+            unsafe { tray_thread(icon, menu, events_tx, Box::new(wake), updates_rx, &ready_tx) }
         })
         .ok()?;
 
@@ -418,6 +439,14 @@ struct TrayThread {
     menu: HMENU,
     commands: Vec<(u32, Event)>,
     events: Sender<Event>,
+    /// Wake the UI thread after sending an event.
+    ///
+    /// A resident daemon's window is hidden, and a hidden window is not being
+    /// repainted — so it never runs the loop that drains this channel. Without
+    /// this the icon and every item in its menu are inert until something else
+    /// happens to wake the app, which looks exactly like a tray that does
+    /// nothing at all.
+    wake: Box<dyn Fn() + Send>,
     updates: Receiver<Menu>,
     /// The `TaskbarCreated` message number, resolved once at startup.
     taskbar_created: u32,
@@ -444,10 +473,11 @@ unsafe fn tray_thread(
     icon: &'static [u8],
     menu: Menu,
     events: Sender<Event>,
+    wake: Box<dyn Fn() + Send>,
     updates: Receiver<Menu>,
     ready: &Sender<Option<usize>>,
 ) {
-    let started = unsafe { start(icon, menu, events, updates) };
+    let started = unsafe { start(icon, menu, events, wake, updates) };
     let Some(hwnd) = started else {
         let _ = ready.send(None);
         return;
@@ -475,6 +505,7 @@ unsafe fn start(
     icon: &'static [u8],
     menu: Menu,
     events: Sender<Event>,
+    wake: Box<dyn Fn() + Send>,
     updates: Receiver<Menu>,
 ) -> Option<HWND> {
     let class = w!("sekio_tray_host");
@@ -558,6 +589,7 @@ unsafe fn start(
             menu: hmenu,
             commands: commands(&items),
             events,
+            wake,
             updates,
             taskbar_created,
             version4: version4.version4,
@@ -700,7 +732,10 @@ unsafe fn on_callback(hwnd: HWND, wparam: WPARAM, lparam: LPARAM, version4: bool
         _ => false,
     };
     if opens {
-        dispatch(Event::OpenFile);
+        // The window, not the file dialog. An icon standing for a hidden
+        // window means "put it back"; raising a file chooser instead was
+        // answering a question nobody asked.
+        dispatch(Event::Show);
         return;
     }
 
@@ -838,10 +873,15 @@ unsafe fn refresh_menu() {
 ///
 /// A failed send means the receiver is gone and there is nobody left to tell.
 fn dispatch(event: Event) {
-    let events = TRAY.with(|slot| slot.borrow().as_ref().map(|state| state.events.clone()));
-    if let Some(events) = events {
-        let _ = events.send(event);
-    }
+    TRAY.with(|slot| {
+        let borrow = slot.borrow();
+        let Some(state) = borrow.as_ref() else {
+            return;
+        };
+        let _ = state.events.send(event);
+        // Sent *and* woken: see `TrayState::wake`.
+        (state.wake)();
+    });
 }
 
 // -------------------------------------------------------------- the HMENU side
@@ -1211,20 +1251,37 @@ mod tests {
     }
 
     #[test]
-    fn the_popup_has_the_four_things_it_promises() {
+    fn the_popup_has_the_things_it_promises_in_order() {
         let items = plan(&sample());
         assert_eq!(
             labels(&items),
-            vec![OPEN_LABEL, RECENT_LABEL, HOTKEY_LABEL, "-", QUIT_LABEL]
+            vec![
+                SHOW_LABEL,
+                OPEN_LABEL,
+                RECENT_LABEL,
+                HOTKEY_LABEL,
+                "-",
+                UPDATE_LABEL,
+                QUIT_LABEL,
+            ]
         );
     }
 
     #[test]
-    fn open_and_quit_carry_their_events() {
+    fn every_top_level_command_carries_its_event() {
         let items = plan(&sample());
         let table = commands(&items);
-        assert!(table.iter().any(|(_, event)| *event == Event::OpenFile));
-        assert!(table.iter().any(|(_, event)| *event == Event::Quit));
+        for expected in [
+            Event::Show,
+            Event::OpenFile,
+            Event::CheckUpdate,
+            Event::Quit,
+        ] {
+            assert!(
+                table.iter().any(|(_, event)| *event == expected),
+                "no item sends {expected:?}"
+            );
+        }
     }
 
     /// Zero is what `TrackPopupMenu` reports for "the user chose nothing", so
