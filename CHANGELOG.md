@@ -3,6 +3,25 @@
 Notable changes per release. Versions are the workspace version; every entry
 corresponds to a `v*` tag and its published deb, rpm and msi.
 
+## 0.19.0 — 2026-08-27
+
+### Fixed
+
+- The global hotkey did nothing on Windows. Windows delivers the press to the
+  thread that registered it, and that thread has to dispatch messages for the
+  press to be seen — it was waiting on a channel instead, which is correct on
+  X11 and a silent deadlock here. The grab succeeded and `--doctor` reported
+  the key registered, which is what made it hard to see.
+- The tray icon did nothing. It was the one background source with no way to
+  wake the window, and a resident daemon's window is hidden — so clicks landed
+  in a channel that nothing was reading.
+- Activating the tray icon raised a file dialog. It brings the window back
+  instead, which is what an icon standing for a hidden window means.
+
+### Added
+
+- "Check for updates" and "Show sekio" in the tray menu.
+
 ## 0.18.0 — 2026-08-26
 
 ### Added
