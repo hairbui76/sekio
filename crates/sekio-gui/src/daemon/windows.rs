@@ -47,7 +47,7 @@ use ::windows::Win32::System::Pipes::{
 };
 use ::windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
-use super::{encode_request, tag, Accepted, Bind, Handoff, IO_TIMEOUT, MAX_MESSAGE};
+use super::{encode_request, tag, Accepted, Bind, Handoff, Request, IO_TIMEOUT, MAX_MESSAGE};
 
 /// Exactly one instance ever exists. That is the single-instance guarantee
 /// stated in the kernel rather than in a comment: a second daemon cannot
@@ -504,10 +504,10 @@ pub fn is_running(socket: &Path) -> bool {
 
 /// [`super::try_handoff`] against an explicit pipe name, so tests need no
 /// environment.
-pub fn try_handoff_at(socket: &Path, path: &Path) -> Handoff {
-    let message = match encode_request(path) {
+pub fn try_handoff_at(socket: &Path, request: &Request) -> Handoff {
+    let message = match encode_request(request) {
         Ok(message) => message,
-        Err(err) => return Handoff::Unavailable(format!("cannot hand off this path: {err}")),
+        Err(err) => return Handoff::Unavailable(format!("cannot hand off this request: {err}")),
     };
     let Some(name) = socket.to_str() else {
         return Handoff::Unavailable("the pipe name is not UTF-8".to_owned());

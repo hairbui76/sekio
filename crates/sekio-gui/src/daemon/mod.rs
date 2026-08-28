@@ -4,9 +4,10 @@
 //! Cold start is already cheap (~4 ms to the first preview), but a spacebar
 //! popup should not pay for a process spawn, a cold page cache and a fresh
 //! syntax set every time. `sekio-gui --daemon` keeps one process resident with
-//! its window hidden; every later `sekio-gui <path>` first tries to hand the
-//! path to that process and exits the moment it is acknowledged. The daemon
-//! then un-hides its window on the path it was given.
+//! its window hidden — and so does a plain `sekio-gui`, with its window on
+//! screen. Every later launch first tries to hand its work to that process and
+//! exits the moment it is acknowledged: a path to preview, or `Request::Show`
+//! from a launcher entry that only wants the existing window brought forward.
 //!
 //! Two transports, one contract. Linux uses a Unix domain socket under
 //! `$XDG_RUNTIME_DIR`; Windows uses a named pipe under `\\.\pipe\`. Everything
@@ -22,16 +23,21 @@
 //! did before this module existed. Nothing in here may panic: a daemon that
 //! dies on a malformed byte is worse than no daemon at all.
 //!
-//! Protocol: one line per connection, `<absolute path>\n`, UTF-8, at most
-//! [`MAX_MESSAGE`] bytes including the newline; the daemon answers `ok\n` or
-//! `err\n`. Everything arriving on the transport is untrusted: the length bound
-//! is enforced while reading (never by allocating first and truncating after),
+//! Protocol: one line per connection, UTF-8, at most [`MAX_MESSAGE`] bytes
+//! including the newline; the daemon answers `ok\n` or `err\n`. The line is
+//! either an absolute path to preview or the literal word `show`, which asks
+//! the daemon to put its window on screen — what a launcher entry sends when a
+//! resident sekio already owns the session. The two can never be confused: a
+//! path on this wire is always absolute, and `show` is not.
+//!
+//! Everything arriving on the transport is untrusted: the length bound is
+//! enforced while reading (never by allocating first and truncating after),
 //! the path must be absolute (the daemon's cwd is not the client's), and a
 //! malformed message is logged and dropped — it must never take the daemon
 //! down.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
@@ -107,12 +113,37 @@ impl std::fmt::Display for ProtocolError {
     }
 }
 
-/// Turn a path into the bytes to put on the wire.
+/// The word that means "put your window on screen".
+///
+/// Safe to distinguish from a path by comparison alone: every path on this
+/// wire is absolute, and `show` is not — [`parse_request`] rejects it as a
+/// path either way, so the two spellings cannot collide however the client
+/// spells its own paths.
+const SHOW: &str = "show";
+
+/// What a client is asking the resident sekio to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Request {
+    /// Preview this path. The original message, and still the common one.
+    Preview(PathBuf),
+    /// Put the window on screen, whatever it is showing.
+    ///
+    /// What a launcher entry sends: clicking the Start Menu or dock icon while
+    /// a resident sekio already owns this session must raise *that* window,
+    /// not open a second sekio with a second tray icon beside the first.
+    Show,
+}
+
+/// Turn a request into the bytes to put on the wire.
 ///
 /// Fails for anything the format cannot carry; the caller treats that as "no
 /// daemon" and opens a window itself, so an odd filename never becomes an
 /// error the user sees.
-pub fn encode_request(path: &Path) -> Result<Vec<u8>, ProtocolError> {
+pub fn encode_request(request: &Request) -> Result<Vec<u8>, ProtocolError> {
+    let path = match request {
+        Request::Show => return Ok(format!("{SHOW}\n").into_bytes()),
+        Request::Preview(path) => path,
+    };
     let text = path.to_str().ok_or(ProtocolError::NotUtf8)?;
     if text.is_empty() {
         return Err(ProtocolError::Empty);
@@ -140,7 +171,7 @@ pub fn encode_request(path: &Path) -> Result<Vec<u8>, ProtocolError> {
 /// means. Nothing in this module takes a platform as a parameter, which is the
 /// case CLAUDE.md warns about; the tests build their fixtures for the host for
 /// the same reason.
-pub fn parse_request(bytes: &[u8]) -> Result<PathBuf, ProtocolError> {
+pub fn parse_request(bytes: &[u8]) -> Result<Request, ProtocolError> {
     if bytes.len() > MAX_MESSAGE {
         return Err(ProtocolError::TooLong);
     }
@@ -149,6 +180,9 @@ pub fn parse_request(bytes: &[u8]) -> Result<PathBuf, ProtocolError> {
     if text.is_empty() {
         return Err(ProtocolError::Empty);
     }
+    if text == SHOW {
+        return Ok(Request::Show);
+    }
     if text.contains('\0') {
         return Err(ProtocolError::Unrepresentable);
     }
@@ -156,13 +190,13 @@ pub fn parse_request(bytes: &[u8]) -> Result<PathBuf, ProtocolError> {
     if !path.is_absolute() {
         return Err(ProtocolError::NotAbsolute);
     }
-    Ok(path)
+    Ok(Request::Preview(path))
 }
 
 /// Read one request off a stream with the length bound applied *while*
 /// reading: `take` caps what can ever reach the buffer, so an endless client
 /// costs us [`MAX_MESSAGE`] bytes, not memory.
-pub fn read_request<R: Read>(reader: R) -> Result<PathBuf, ProtocolError> {
+pub fn read_request<R: Read>(reader: R) -> Result<Request, ProtocolError> {
     let mut reader = BufReader::new(reader.take(MAX_MESSAGE as u64));
     let mut buf = Vec::new();
     reader
@@ -242,8 +276,8 @@ pub enum Bind {
 /// What one accepted connection turned out to be.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Accepted {
-    /// A path to preview.
-    Path(PathBuf),
+    /// A well-formed request: a path to preview, or "show your window".
+    Request(Request),
     /// A connection that closed without sending anything. On Unix [`bind`]
     /// makes exactly this connection to tell a live daemon from a stale
     /// socket, so it is routine, not an error.
@@ -260,12 +294,12 @@ pub enum Accepted {
 /// still a connection the daemon survived.
 fn answer<S: Read + Write>(stream: &mut S) -> Accepted {
     match read_request(&mut *stream) {
-        Ok(path) => {
+        Ok(request) => {
             // Acknowledge before any preview work happens, so the client's
             // exit is not gated on rendering.
             let _ = stream.write_all(b"ok\n");
             let _ = stream.flush();
-            Accepted::Path(path)
+            Accepted::Request(request)
         }
         Err(ProtocolError::Empty) => Accepted::Probe,
         Err(err) => {
@@ -284,13 +318,13 @@ fn answer<S: Read + Write>(stream: &mut S) -> Accepted {
 /// Runs on its own thread: the UI thread must never block on the transport.
 /// `wake` is `Context::request_repaint`, which is what makes a hidden window
 /// run its logic again and notice the new path.
-pub fn serve<F: Fn()>(listener: Listener, tx: Sender<PathBuf>, wake: F) {
+pub fn serve<F: Fn()>(listener: Listener, tx: Sender<Request>, wake: F) {
     let mut errors = 0usize;
     loop {
         match accept_one(&listener) {
-            Ok(Accepted::Path(path)) => {
+            Ok(Accepted::Request(request)) => {
                 errors = 0;
-                if tx.send(path).is_err() {
+                if tx.send(request).is_err() {
                     break; // UI is gone; so is the reason to listen.
                 }
                 wake();
@@ -321,9 +355,10 @@ pub enum Handoff {
     Unavailable(String),
 }
 
-/// Try to hand `path` (already canonicalized) to the daemon for this session.
-pub fn try_handoff(path: &Path) -> Handoff {
-    try_handoff_at(&socket_path(), path)
+/// Try to hand `request` to the daemon for this session. Any path inside it
+/// must already be canonicalized: the daemon's cwd is not ours.
+pub fn try_handoff(request: &Request) -> Handoff {
+    try_handoff_at(&socket_path(), request)
 }
 
 /// Send the request and wait for the acknowledgement.
@@ -349,6 +384,7 @@ fn deliver<S: Read + Write>(stream: &mut S, message: &[u8]) -> Handoff {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     /// An absolute path *for the host these tests run on*.
     ///
@@ -366,19 +402,50 @@ mod tests {
         }
     }
 
+    fn preview(path: &Path) -> Request {
+        Request::Preview(path.to_path_buf())
+    }
+
     #[test]
     fn valid_path_round_trips() {
         let path = absolute("a file.txt");
-        let encoded = encode_request(&path).expect("encode");
+        let encoded = encode_request(&preview(&path)).expect("encode");
         assert_eq!(encoded.last(), Some(&b'\n'), "one line per connection");
-        assert_eq!(read_request(&encoded[..]).expect("decode"), path);
+        assert_eq!(
+            read_request(&encoded[..]).expect("decode"),
+            Request::Preview(path)
+        );
+    }
+
+    /// The launcher's message. It has to round trip like any other, and — the
+    /// point of choosing this word — it can never be mistaken for a path,
+    /// because a path on this wire is always absolute and `show` is not.
+    #[test]
+    fn show_round_trips_and_cannot_collide_with_a_path() {
+        let encoded = encode_request(&Request::Show).expect("encode");
+        assert_eq!(encoded, b"show\n");
+        assert_eq!(read_request(&encoded[..]).expect("decode"), Request::Show);
+        assert_eq!(parse_request(b"show\r\n"), Ok(Request::Show));
+
+        // A file actually named `show` is still a path, because the client
+        // canonicalizes before sending and an absolute path never spells the
+        // bare word.
+        let named = absolute("show");
+        let encoded = encode_request(&preview(&named)).expect("encode");
+        assert_eq!(
+            read_request(&encoded[..]).expect("decode"),
+            Request::Preview(named)
+        );
+        // And a relative `./show` is rejected as a path rather than silently
+        // becoming the command.
+        assert_eq!(parse_request(b"./show\n"), Err(ProtocolError::NotAbsolute));
     }
 
     #[test]
     fn relative_paths_are_rejected_on_both_sides() {
         // Relative on every platform, so no host-shaped fixture is needed.
         assert_eq!(
-            encode_request(Path::new("relative/file.txt")),
+            encode_request(&preview(Path::new("relative/file.txt"))),
             Err(ProtocolError::NotAbsolute)
         );
         assert_eq!(
@@ -415,7 +482,7 @@ mod tests {
             Err(ProtocolError::Unrepresentable)
         );
         assert_eq!(
-            encode_request(&absolute("two\nlines")),
+            encode_request(&preview(&absolute("two\nlines"))),
             Err(ProtocolError::Unrepresentable)
         );
     }

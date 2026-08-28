@@ -241,6 +241,26 @@ pub fn close_action(mode: Mode, showing: bool) -> Close {
     }
 }
 
+/// Which rule this window follows *right now*.
+///
+/// One resident process serves two roles: the popup the hotkey throws up over
+/// whatever the user was doing, and the window they launched from a menu and
+/// are sitting in. Escape means opposite things in the two — put this away
+/// versus go back to the home screen — and the difference is not the process,
+/// it is how this particular window got on screen.
+///
+/// `summoned` is true when a hotkey press or a socket handoff put a file up,
+/// false when the user asked for the window itself (a launcher click, the tray
+/// icon) or opened something through the app. So a daemon behaves like the
+/// application it is being used as, and only reverts to popup manners for the
+/// presses that are actually popups.
+pub fn posture(mode: Mode, summoned: bool) -> Mode {
+    match mode {
+        Mode::Daemon if !summoned => Mode::App,
+        other => other,
+    }
+}
+
 /// What closing the window should do, when there is more than one answer.
 ///
 /// Only a resident daemon with a tray icon has two: end the process, or put
@@ -345,6 +365,40 @@ mod tests {
         assert!(Mode::App.checks_updates());
         assert!(Mode::Daemon.checks_updates());
         assert!(!Mode::Popup.checks_updates());
+    }
+
+    /// The regression this function exists to prevent. Making the launcher
+    /// window resident put it in `Mode::Daemon`, where Escape hides the whole
+    /// window — but the key legend on that very screen says "back to this
+    /// screen", and a user sitting in the app does not expect it to vanish.
+    #[test]
+    fn a_daemon_the_user_launched_follows_the_application_rule() {
+        assert_eq!(posture(Mode::Daemon, false), Mode::App);
+        assert_eq!(
+            close_action(posture(Mode::Daemon, false), true),
+            Close::Home,
+            "Escape on a window somebody opened goes home, as the legend says"
+        );
+        assert_eq!(
+            close_action(posture(Mode::Daemon, false), false),
+            Close::Nothing
+        );
+    }
+
+    /// …and the popup manners survive for the presses that really are popups.
+    #[test]
+    fn a_summoned_window_is_still_put_away_by_escape() {
+        assert_eq!(posture(Mode::Daemon, true), Mode::Daemon);
+        assert_eq!(close_action(posture(Mode::Daemon, true), true), Close::Hide);
+    }
+
+    /// Neither of the one-shot modes has two roles to tell apart.
+    #[test]
+    fn only_a_daemon_has_a_posture_to_choose() {
+        for summoned in [true, false] {
+            assert_eq!(posture(Mode::Popup, summoned), Mode::Popup);
+            assert_eq!(posture(Mode::App, summoned), Mode::App);
+        }
     }
 
     /// The whole point of the dialog: it is offered only where both answers

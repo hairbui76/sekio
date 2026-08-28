@@ -121,6 +121,9 @@ struct AppUi {
     requests: Receiver<Request>,
     /// Kept alive so the app's tray receiver never sees a hung-up channel.
     _tray_events: Option<Sender<sekio_gui::tray::Event>>,
+    /// The socket thread's end of the daemon channel, for tests that hand the
+    /// window a request the way a second `sekio-gui` process would.
+    handoffs: Option<Sender<sekio_gui::daemon::Request>>,
     /// Every `ViewportCommand` issued since this was last drained.
     ///
     /// Not `harness.output()`: `Harness::step` runs one frame *per queued
@@ -131,32 +134,88 @@ struct AppUi {
     commands: Arc<Mutex<Vec<egui::ViewportCommand>>>,
 }
 
+/// How one harness differs from the default. A struct rather than six
+/// positional arguments, because most tests care about one of them.
+struct Setup {
+    path: Option<PathBuf>,
+    mode: Mode,
+    size: [f32; 2],
+    /// Give the app a tray icon, and with it a socket channel and a hotkey —
+    /// everything that makes a daemon resident rather than merely hidden.
+    resident: bool,
+    on_close: OnClose,
+    /// Start with the window on screen. False is the autostart daemon, which
+    /// is the only shape in which `reveal` has anything to do.
+    visible: bool,
+}
+
+impl Default for Setup {
+    fn default() -> Self {
+        Self {
+            path: None,
+            mode: Mode::App,
+            size: SIZE,
+            resident: false,
+            on_close: OnClose::default(),
+            visible: true,
+        }
+    }
+}
+
 impl AppUi {
     fn new(path: Option<PathBuf>, mode: Mode) -> Self {
         Self::sized(path, mode, SIZE)
     }
 
     fn sized(path: Option<PathBuf>, mode: Mode, size: [f32; 2]) -> Self {
-        Self::build(path, mode, size, false, OnClose::default())
+        Self::build(Setup {
+            path,
+            mode,
+            size,
+            ..Setup::default()
+        })
     }
 
     /// A daemon with a tray icon: the one configuration in which closing the
     /// window has more than one answer.
     fn resident(on_close: OnClose) -> Self {
-        Self::build(None, Mode::Daemon, SIZE, true, on_close)
+        Self::build(Setup {
+            mode: Mode::Daemon,
+            resident: true,
+            on_close,
+            ..Setup::default()
+        })
     }
 
-    fn build(
-        path: Option<PathBuf>,
-        mode: Mode,
-        size: [f32; 2],
-        tray: bool,
-        on_close: OnClose,
-    ) -> Self {
+    /// The autostart daemon: resident, and not on screen yet.
+    fn hidden_daemon() -> Self {
+        Self::build(Setup {
+            mode: Mode::Daemon,
+            resident: true,
+            visible: false,
+            ..Setup::default()
+        })
+    }
+
+    fn build(setup: Setup) -> Self {
+        let Setup {
+            path,
+            mode,
+            size,
+            resident: tray,
+            on_close,
+            visible,
+        } = setup;
         isolate_state_dir();
 
         let (req_tx, requests) = mpsc::channel::<Request>();
         let (responses, res_rx) = mpsc::channel::<Response>();
+        let (incoming, handoffs) = if tray {
+            let (tx, rx) = mpsc::channel::<sekio_gui::daemon::Request>();
+            (Some(rx), Some(tx))
+        } else {
+            (None, None)
+        };
         let (tray_handle, tray_events) = if tray {
             let (tx, rx) = mpsc::channel::<sekio_gui::tray::Event>();
             let boxed: Box<dyn sekio_gui::tray::Tray> = Box::new(FakeTray);
@@ -181,7 +240,7 @@ impl AppUi {
             wrap: false,
             borderless: false,
             timing: Timing::start(false),
-            incoming: None,
+            incoming,
             presses: None,
             // Usually no tray in a headless render: `tray::spawn` would find
             // no host anyway, and these tests are about what gets painted.
@@ -195,6 +254,7 @@ impl AppUi {
             // starts it deliberately, by clicking the control that does.
             updates: false,
             on_close,
+            visible,
         };
 
         // The app is built inside the closure because it needs the harness's
@@ -231,8 +291,31 @@ impl AppUi {
             responses,
             requests,
             _tray_events: tray_events,
+            handoffs,
             commands,
         }
+    }
+
+    /// The id of the newest preview the UI asked for. Draining the channel is
+    /// the point: a test that delivers against a stale id gets its result
+    /// discarded by `RequestTracker` and then asserts on an empty screen.
+    fn last_preview_id(&self) -> u64 {
+        self.requests
+            .try_iter()
+            .filter(|request| request.kind == Kind::Preview)
+            .last()
+            .expect("the UI asked for a preview")
+            .id
+    }
+
+    /// Deliver a request the way the socket thread would — what a second
+    /// `sekio-gui` process sends when this one already owns the session.
+    fn hand_off(&self, request: sekio_gui::daemon::Request) {
+        self.handoffs
+            .as_ref()
+            .expect("only a resident harness has a socket channel")
+            .send(request)
+            .expect("the app holds the receiver");
     }
 
     /// Paint frames until the UI settles (or until the harness gives up, which
@@ -2933,4 +3016,116 @@ fn a_window_with_only_one_answer_never_asks() {
     ask_to_close(&mut headless);
     headless.assert_hidden("a daemon with no tray icon");
     headless.assert_hides("Close sekio?", "a tray dialog with no tray");
+}
+
+/// Clicking the launcher entry while a sekio is already resident must raise
+/// *that* window, not open a second one. The second process cannot bind the
+/// socket, so it sends `Show` down it and exits — this is the other end.
+#[test]
+fn a_show_request_puts_a_hidden_window_back_on_screen() {
+    let mut ui = AppUi::hidden_daemon();
+    ui.run();
+    ui.forget_commands();
+
+    ui.hand_off(sekio_gui::daemon::Request::Show);
+    ui.run();
+
+    let commands = ui.commands();
+    assert!(
+        commands.contains(&egui::ViewportCommand::Visible(true)),
+        "a launcher click must bring the window forward: {commands:?}"
+    );
+    assert!(
+        commands.contains(&egui::ViewportCommand::Focus),
+        "…and in front of whatever the user was looking at: {commands:?}"
+    );
+}
+
+/// `Show` is not a preview: it must not disturb what is already on screen,
+/// and it must not ask the worker for anything.
+#[test]
+fn a_show_request_leaves_the_preview_alone() {
+    let path = PathBuf::from("/tmp/still-here.rs");
+    let mut ui = AppUi::resident(OnClose::Ask);
+    ui.run();
+    ui.hand_off(sekio_gui::daemon::Request::Preview(path.clone()));
+    ui.run();
+    ui.deliver(ui.last_preview_id(), &path, text_content());
+    ui.assert_shows("fn main() {", "the preview a handoff put up");
+
+    ui.hand_off(sekio_gui::daemon::Request::Show);
+    ui.run();
+
+    ui.assert_shows("fn main() {", "the preview after a bare Show");
+    assert!(
+        ui.requests
+            .try_iter()
+            .all(|request| request.kind != Kind::Preview),
+        "showing a window that is already showing something re-renders nothing"
+    );
+}
+
+/// Escape on a file the user opened *in* this window goes back to the home
+/// screen — which is what the key legend on that screen promises. Making the
+/// launcher window resident put it in `Mode::Daemon`, where Escape hides the
+/// whole window; without `state::posture` the window would vanish from under
+/// someone who was working in it.
+#[test]
+fn escape_on_a_file_opened_in_the_window_goes_home_rather_than_hiding_it() {
+    let dir = std::env::temp_dir().join(format!("sekio-gui-posture-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create the fixture directory");
+    let path = dir.join("opened.rs");
+    std::fs::write(&path, b"fn main() {}\n").expect("write the fixture file");
+
+    // First put it up the way the hotkey does, so it lands in the recent list.
+    let mut ui = AppUi::resident(OnClose::Ask);
+    ui.run();
+    ui.hand_off(sekio_gui::daemon::Request::Preview(path.clone()));
+    ui.run();
+    ui.deliver(ui.last_preview_id(), &path, text_content());
+    ui.harness.key_press(egui::Key::Escape);
+    ui.run();
+    ui.assert_shows("opened.rs", "the recent entry to click");
+
+    // Now open it from inside the window — the route the browser pane, the
+    // Open dialog and a drop all take.
+    ui.forget_commands();
+    ui.harness.get_by_label("opened.rs").click();
+    ui.run();
+    ui.deliver(ui.last_preview_id(), &path, text_content());
+    ui.assert_shows("fn main() {", "the file opened from the recent list");
+
+    ui.forget_commands();
+    ui.harness.key_press(egui::Key::Escape);
+    ui.run();
+
+    let commands = ui.commands();
+    assert!(
+        !commands.contains(&egui::ViewportCommand::Visible(false)),
+        "the window somebody is working in must not disappear: {commands:?}"
+    );
+    ui.assert_hides("fn main() {", "the preview after Escape");
+    ui.assert_shows("Recent", "the home screen Escape went back to");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The other half: a file the *hotkey* put up is a popup, and Escape puts it
+/// away the way a second spacebar closes Quick Look.
+#[test]
+fn escape_on_a_summoned_preview_hides_the_window() {
+    let path = PathBuf::from("/tmp/summoned.rs");
+    let mut ui = AppUi::resident(OnClose::Ask);
+    ui.run();
+    ui.hand_off(sekio_gui::daemon::Request::Preview(path.clone()));
+    ui.run();
+    ui.deliver(ui.last_preview_id(), &path, text_content());
+    ui.assert_shows("fn main() {", "the summoned preview");
+    ui.forget_commands();
+
+    ui.harness.key_press(egui::Key::Escape);
+    ui.run();
+
+    ui.assert_hidden("Escape on a window the hotkey summoned");
 }

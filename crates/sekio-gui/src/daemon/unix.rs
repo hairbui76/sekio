@@ -14,7 +14,7 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
-use super::{encode_request, tag, Accepted, Bind, Handoff, IO_TIMEOUT};
+use super::{encode_request, tag, Accepted, Bind, Handoff, Request, IO_TIMEOUT};
 
 /// What [`bind`] hands back and [`accept_one`] accepts on.
 ///
@@ -269,10 +269,10 @@ pub fn is_running(socket: &Path) -> bool {
 
 /// [`super::try_handoff`] against an explicit socket, so tests need no
 /// environment.
-pub fn try_handoff_at(socket: &Path, path: &Path) -> Handoff {
-    let message = match encode_request(path) {
+pub fn try_handoff_at(socket: &Path, request: &Request) -> Handoff {
+    let message = match encode_request(request) {
         Ok(message) => message,
-        Err(err) => return Handoff::Unavailable(format!("cannot hand off this path: {err}")),
+        Err(err) => return Handoff::Unavailable(format!("cannot hand off this request: {err}")),
     };
 
     let mut stream = match UnixStream::connect(socket) {
@@ -367,7 +367,7 @@ mod tests {
         let dir = scratch("absent");
         let socket = dir.join("nothing.sock");
         assert!(matches!(
-            try_handoff_at(&socket, Path::new("/etc/hostname")),
+            try_handoff_at(&socket, &Request::Preview(PathBuf::from("/etc/hostname"))),
             Handoff::Unavailable(_)
         ));
         assert!(!socket.exists(), "must not create anything");
@@ -383,7 +383,7 @@ mod tests {
         drop(listener);
         assert!(socket.exists(), "the corpse of a crashed daemon");
 
-        match try_handoff_at(&socket, Path::new("/etc/hostname")) {
+        match try_handoff_at(&socket, &Request::Preview(PathBuf::from("/etc/hostname"))) {
             Handoff::Unavailable(_) => {}
             Handoff::Delivered => panic!("nothing is listening, nothing can be delivered"),
         }
@@ -455,7 +455,9 @@ mod tests {
         // One connection only, then the thread ends — no listener is left
         // parked in `accept` when the test process exits.
         let server = std::thread::spawn(move || {
-            if let Accepted::Path(path) = accept_one(&listener).expect("accept") {
+            if let Accepted::Request(Request::Preview(path)) =
+                accept_one(&listener).expect("accept")
+            {
                 tx.send(path).expect("send to ui");
                 woke_tx.send(()).expect("wake ui");
             }
@@ -464,7 +466,10 @@ mod tests {
         let target = dir.join("target.txt");
         fs::write(&target, b"hello").expect("fixture");
         assert!(
-            matches!(try_handoff_at(&socket, &target), Handoff::Delivered),
+            matches!(
+                try_handoff_at(&socket, &Request::Preview(target.clone())),
+                Handoff::Delivered
+            ),
             "a live daemon must acknowledge the handoff"
         );
         server.join().expect("server thread");
@@ -526,12 +531,15 @@ mod tests {
         drop(bad);
 
         assert!(matches!(
-            try_handoff_at(&socket, Path::new("/etc/hostname")),
+            try_handoff_at(&socket, &Request::Preview(PathBuf::from("/etc/hostname"))),
             Handoff::Delivered
         ));
         let (first, second) = server.join().expect("server thread");
         assert_eq!(first, Accepted::Rejected, "the bad request is dropped");
-        assert_eq!(second, Accepted::Path(PathBuf::from("/etc/hostname")));
+        assert_eq!(
+            second,
+            Accepted::Request(Request::Preview(PathBuf::from("/etc/hostname")))
+        );
 
         drop(guard);
         let _ = fs::remove_dir_all(&dir);

@@ -182,10 +182,29 @@ fn main() -> Result<()> {
             output,
         )
     } else if args.daemon {
-        run_daemon(args, settings, location, binding, timing)
+        // An autostart entry: no window until something asks for one.
+        run_daemon(args, settings, location, binding, timing, false)
+    } else if launched_bare(&args) {
+        // A launcher entry — Start Menu, dock, `sekio-gui` with nothing after
+        // it. This is the window the user actually clicks, so it must be the
+        // resident one: closing it can then offer the tray, and the hotkey
+        // works without anyone having had to set up a daemon. If one is
+        // already running it raises *that* window rather than opening a second
+        // sekio with a second icon beside the first.
+        run_daemon(args, settings, location, binding, timing, true)
     } else {
         run_once(args, settings, timing)
     }
+}
+
+/// A launch with nothing to preview and nothing to measure.
+///
+/// `--no-daemon` opts out by name: someone who asked for a standalone window
+/// gets one, and it closes when they close it. `--probe` measures *this*
+/// process against a socket it must not bind, and would otherwise never
+/// return.
+fn launched_bare(args: &Args) -> bool {
+    args.path.is_none() && !args.no_daemon && !args.probe
 }
 
 /// What the user actually typed, in the shape `config::resolve` merges.
@@ -232,11 +251,17 @@ fn run_once(args: Args, settings: Settings, timing: Timing) -> Result<()> {
         None => None,
     };
 
-    // `--probe` measures *this* process, so it never hands off. Neither does a
-    // launch with no path: there is nothing to hand over, and the user asked
-    // for a window here.
+    // `--probe` measures *this* process, so it never hands off.
+    //
+    // A launch with no path does not reach here at all any more: `main` sends
+    // it down the daemon route, where it either becomes the resident sekio or
+    // asks the one already running to come forward. What is left here is a
+    // path to preview, `--no-daemon`, and `--probe`.
     if let Some(path) = &path {
-        if !args.no_daemon && !args.probe && hand_off(path, timing) {
+        if !args.no_daemon
+            && !args.probe
+            && hand_off(&daemon::Request::Preview(path.clone()), timing)
+        {
             return Ok(());
         }
     }
@@ -280,6 +305,8 @@ fn run_once(args: Args, settings: Settings, timing: Timing) -> Result<()> {
             updates: settings.updates,
             // Never consulted: only a daemon has a second answer to give.
             on_close: settings.on_close,
+            // A one-shot window is the whole point of the process.
+            visible: true,
         },
     )
 }
@@ -386,10 +413,12 @@ fn open_window(ctx: egui::Context, startup: Startup) -> Result<()> {
         Some(path) => format!("sekio — {}", path.display()),
         None => "sekio".to_string(),
     };
-    // A daemon with no path yet must not flash an empty window on screen; it
-    // un-hides itself when the first handoff arrives. Every other window
-    // appears immediately, home screen or not.
-    let visible = startup.path.is_some() || startup.mode != Mode::Daemon;
+    // An autostart daemon must not flash an empty window at login; it un-hides
+    // itself when the first handoff arrives, or when a launcher entry asks it
+    // to. Every other window appears immediately, home screen or not. The same
+    // answer `SekioApp` starts with, so the window and the app never disagree
+    // about whether it is on screen.
+    let visible = startup.visible;
     let borderless = startup.borderless;
     let timing = startup.timing;
 
@@ -436,8 +465,8 @@ fn open_window(ctx: egui::Context, startup: Startup) -> Result<()> {
 
 /// Try to let a resident daemon show `path`. `true` means it did, and this
 /// process is done.
-fn hand_off(path: &Path, timing: Timing) -> bool {
-    match daemon::try_handoff(path) {
+fn hand_off(request: &daemon::Request, timing: Timing) -> bool {
+    match daemon::try_handoff(request) {
         daemon::Handoff::Delivered => {
             timing.log("handed off to the daemon");
             true
@@ -460,6 +489,7 @@ fn run_daemon(
     location: config::Location,
     binding: Binding,
     timing: Timing,
+    show_window: bool,
 ) -> Result<()> {
     use std::sync::mpsc;
 
@@ -473,15 +503,21 @@ fn run_daemon(
                 "sekio-gui: a daemon is already listening on {}",
                 socket.display()
             );
-            if let Some(path) = args.path.as_ref() {
-                let path = paths::canonical(path)
-                    .with_context(|| format!("cannot open {}", path.display()))?;
-                if !hand_off(&path, timing) {
-                    // The winner of the race stopped answering in the
-                    // meantime: show the file ourselves rather than silently
-                    // doing nothing.
-                    return run_once(args, settings, timing);
-                }
+            // Whatever this process was going to do, the resident one does it
+            // instead: preview the path, or — for a launcher entry with no
+            // path — simply come forward. Two sekios in one session would
+            // mean two tray icons and a hotkey only one of them holds.
+            let request = match args.path.as_ref() {
+                Some(path) => daemon::Request::Preview(
+                    paths::canonical(path)
+                        .with_context(|| format!("cannot open {}", path.display()))?,
+                ),
+                None => daemon::Request::Show,
+            };
+            if !hand_off(&request, timing) {
+                // The winner of the race stopped answering in the meantime:
+                // open a window here rather than silently doing nothing.
+                return run_once(args, settings, timing);
             }
             return Ok(());
         }
@@ -500,6 +536,7 @@ fn run_daemon(
         None => None,
     };
 
+    let loaded = path.is_some();
     let ctx = egui::Context::default();
     style::install(&ctx, settings.theme);
     let (worker, tracker) = start_preview(&ctx, &settings, timing, path.as_deref());
@@ -532,7 +569,7 @@ fn run_daemon(
     // tray host in this session, or `tray = false`.
     let tray = start_tray(&settings, hotkey_spec.as_deref(), timing, &ctx);
 
-    let (tx, rx) = mpsc::channel::<PathBuf>();
+    let (tx, rx) = mpsc::channel::<daemon::Request>();
     let wake = ctx.clone();
     // Accepting happens here, never on the UI thread: a client that connects
     // and stalls must not be able to freeze the window.
@@ -562,6 +599,9 @@ fn run_daemon(
             theme: settings.theme,
             updates: settings.updates,
             on_close: settings.on_close,
+            // An autostart daemon waits out of sight; one the user launched is
+            // a window they asked to see. A path always wins either way.
+            visible: show_window || loaded,
         },
     );
     // Explicit, so the socket is gone before the process is.
@@ -587,7 +627,7 @@ fn probe_daemon(
 
     loop {
         match daemon::accept_one(listener) {
-            Ok(daemon::Accepted::Path(path)) => {
+            Ok(daemon::Accepted::Request(daemon::Request::Preview(path))) => {
                 let started = std::time::Instant::now();
                 // Same generation counter as the UI: a handoff cancels the
                 // preview in flight and stale results are dropped.
@@ -614,6 +654,12 @@ fn probe_daemon(
                     path.display(),
                     started.elapsed().as_secs_f64() * 1000.0
                 );
+            }
+            // A launcher entry asking the resident window to come forward.
+            // There is no window here to raise, so this only proves the
+            // message arrived.
+            Ok(daemon::Accepted::Request(daemon::Request::Show)) => {
+                println!("received a request to show the window");
             }
             Ok(daemon::Accepted::Rejected) => println!("rejected a malformed request"),
             // Another daemon checking whether this socket is alive.
@@ -992,9 +1038,49 @@ fn doctor_daemon(running: Option<bool>) {
     } else {
         row("running", "no");
         hint(&[
-            "start one with `sekio-gui --daemon &`. Without it there is",
-            "nothing resident for a hotkey to summon, and every popup pays",
-            "for a fresh process.",
+            "launching sekio-gui with no file is enough — it becomes the",
+            "resident one. `sekio-gui --daemon &` does it without a window.",
+            "Without either there is nothing for a hotkey to summon, and",
+            "every popup pays for a fresh process.",
         ]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(argv: &[&str]) -> Args {
+        let mut full = vec!["sekio-gui"];
+        full.extend_from_slice(argv);
+        Args::parse_from(full)
+    }
+
+    /// The launch that made the close dialog unreachable, and the reason this
+    /// function exists. The Start Menu shortcut and the `.desktop` entry both
+    /// run `sekio-gui` with nothing after it: that window is the one the user
+    /// actually clicks, so it has to be the resident one — otherwise it has no
+    /// tray icon, and closing it can only ever mean "quit".
+    #[test]
+    fn a_bare_launch_becomes_the_resident_window() {
+        assert!(launched_bare(&args(&[])));
+        // Flags that say nothing about *what* to open do not change the answer.
+        assert!(launched_bare(&args(&["--borderless"])));
+        assert!(launched_bare(&args(&["--theme", "light"])));
+    }
+
+    /// The three launches that must not take the socket. A path is a Quick
+    /// Look popup that hands off and dies; `--no-daemon` is someone asking in
+    /// so many words for a standalone window; and `--probe` measures *this*
+    /// process, so binding a socket (and never returning) would be the wrong
+    /// thing twice over.
+    #[test]
+    fn a_launch_with_work_of_its_own_stays_one_shot() {
+        assert!(!launched_bare(&args(&["/tmp/a.rs"])));
+        assert!(!launched_bare(&args(&["--no-daemon"])));
+        assert!(!launched_bare(&args(&["--probe"])));
+        // …and `--daemon` never reaches this question: `main` checks it first,
+        // because an autostart daemon must start hidden and this one does not.
+        assert!(launched_bare(&args(&["--daemon"])));
     }
 }

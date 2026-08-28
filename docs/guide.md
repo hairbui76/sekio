@@ -165,8 +165,17 @@ socket on Linux, a named pipe on Windows.
 
 **The installers set this up for you.** The `.deb` and `.rpm` enable the
 systemd user unit for every account, and the MSI writes one `Run` entry; either
-way a daemon is there from your next login, with a tray icon to prove it. To
-run one by hand instead — a source build, or a second one for testing:
+way a daemon is there from your next login, with a tray icon to prove it.
+
+**And launching sekio is enough.** `sekio-gui` with no file — the Start Menu
+entry, the dock icon, the application menu — becomes the resident one if
+nothing else has claimed the session, so the hotkey works without anyone
+setting anything up. If a daemon *is* already running, that same launch brings
+its window forward rather than opening a second sekio beside it: one window,
+one tray icon, one hotkey. Pass `--no-daemon` for a plain window that owns
+nothing and closes when you close it.
+
+To run one explicitly — a source build, or a second one for testing:
 
 ```sh
 sekio-gui --daemon &
@@ -289,10 +298,15 @@ Tick **Don't ask again** and the answer is written to `gui.toml` as
 Escape, or a click outside the dialog, backs out and changes nothing — the box
 is only acted on together with the button you press.
 
-The question is only asked where both answers exist: a window you opened with
-`sekio-gui` has nothing to stay resident for and simply closes, and a daemon in
-a session with no tray host still just hides, because there would be no icon to
-get it back from. The tray's own **Quit** never asks.
+The question is only asked where both answers exist. A `sekio-gui <file>`
+popup and a `--no-daemon` window have nothing to stay resident for and simply
+close, and a daemon in a session with no tray host still just hides, because
+there would be no icon to get it back from. The tray's own **Quit** never asks.
+
+Escape is a different key and keeps its own meaning. On a file you opened in
+the window it goes back to the home screen; on one the hotkey summoned it puts
+the window away, the way a second spacebar closes Quick Look. Only the ✕ and
+Ctrl+Q ask.
 
 ### Updates
 

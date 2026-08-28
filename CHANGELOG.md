@@ -3,6 +3,37 @@
 Notable changes per release. Versions are the workspace version; every entry
 corresponds to a `v*` tag and its published deb, rpm and msi.
 
+## 0.21.0 — 2026-08-28
+
+### Fixed
+
+- The close dialog added in 0.20.0 never appeared for most people. It was
+  offered only to a window that could stay resident *and* had a tray icon to
+  come back from, which is true of the `--daemon` window but not of the one
+  the Start Menu shortcut and the `.desktop` entry open — so the window you
+  actually click closed without asking anything.
+
+  Launching sekio with no file now makes it the resident one: it takes the
+  socket, the tray icon and the hotkey, with its window on screen from the
+  start. So closing it offers the tray, and the hotkey works without anyone
+  having had to set up a daemon.
+
+- Launching sekio while one is already running opened a second window with a
+  second tray icon. It now brings the running one forward instead — a new
+  `show` message on the daemon socket. One window, one icon, one hotkey.
+
+### Changed
+
+- Escape now depends on how the window got on screen rather than on how the
+  process was started. On a file the hotkey summoned it puts the window away,
+  as before; on a file you opened *in* the window it goes back to the home
+  screen, which is what that screen's own key legend promises. Without this,
+  making the launcher window resident would have made Escape throw away the
+  window you were working in.
+
+- `sekio-gui --no-daemon` is how you ask for a plain window that owns nothing
+  and closes when you close it.
+
 ## 0.20.0 — 2026-08-28
 
 ### Added

@@ -9,8 +9,9 @@ Comment=Quick-view any file
 # crates/sekio-cli/Cargo.toml). Without this line the launcher, the app menu
 # and every "Open with" list fall back to a generic placeholder.
 Icon=sekio
-# %f is optional: with a file it previews it, without one it opens to a
-# browser and an Open button, so this works as an ordinary launcher too.
+# %f is optional: with a file it previews it, without one it opens the home
+# screen and becomes the resident sekio (or brings the running one forward),
+# so this works as an ordinary launcher too.
 Exec=sekio-gui %f
 Terminal=false
 Categories=Utility;FileTools;Viewer;

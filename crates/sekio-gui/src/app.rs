@@ -15,6 +15,7 @@ use sekio_core::{ListEntry, MetaField, PreviewContent, Reflow};
 
 use crate::browser::{self, Activate, Browser};
 use crate::config;
+use crate::daemon;
 use crate::dialog;
 use crate::fonts;
 use crate::hotkey::{self, Action as PressAction};
@@ -22,7 +23,8 @@ use crate::icon;
 use crate::recent::{self, Recent};
 use crate::selection;
 use crate::state::{
-    close_action, close_intent, human_size, Close, Intent, Mode, OnClose, RequestTracker, Siblings,
+    close_action, close_intent, human_size, posture, Close, Intent, Mode, OnClose, RequestTracker,
+    Siblings,
 };
 use crate::style::{self, Palette, MONO_SIZE};
 use crate::table;
@@ -131,8 +133,10 @@ pub struct Startup {
     pub wrap: bool,
     pub borderless: bool,
     pub timing: Timing,
-    /// Paths arriving from the daemon socket thread; `None` in one-shot mode.
-    pub incoming: Option<Receiver<PathBuf>>,
+    /// Requests arriving from the daemon socket thread; `None` in one-shot
+    /// mode. A second `sekio-gui` launched from a menu entry sends
+    /// `Request::Show` down this channel rather than opening a second window.
+    pub incoming: Option<Receiver<daemon::Request>>,
     /// Paths the global hotkey resolved, already looked up off the UI thread
     /// (see `hotkey.rs`); `None` when no hotkey is registered.
     pub presses: Option<Receiver<PathBuf>>,
@@ -157,6 +161,13 @@ pub struct Startup {
     /// What the close button should do. Only a resident daemon with a tray
     /// icon ever has a choice; see `state::close_intent`.
     pub on_close: OnClose,
+    /// Put the window on screen at startup.
+    ///
+    /// False for exactly one case — a daemon started by an autostart entry
+    /// with no path — which must not flash an empty window at login. A daemon
+    /// the *user* launched is a window they asked to see, so it appears, and
+    /// `main` decides which of the two this is.
+    pub visible: bool,
 }
 
 pub struct SekioApp {
@@ -187,8 +198,9 @@ pub struct SekioApp {
     borderless: bool,
     wrap: bool,
     mode: Mode,
-    /// Daemon mode when `Some`: paths handed over by the socket thread.
-    incoming: Option<Receiver<PathBuf>>,
+    /// Daemon mode when `Some`: requests handed over by the socket thread —
+    /// a path to preview, or a launcher asking for the window.
+    incoming: Option<Receiver<daemon::Request>>,
     /// Hotkey presses that already resolved to a file.
     presses: Option<Receiver<PathBuf>>,
     tray: Option<Box<dyn tray::Tray>>,
@@ -221,6 +233,9 @@ pub struct SekioApp {
     /// dialog opens — a box the user ticked and then escaped out of has not
     /// been agreed to.
     dont_ask: bool,
+    /// This window was thrown up by a hotkey press or a socket handoff, rather
+    /// than asked for. Decides what Escape means — see `state::posture`.
+    summoned: bool,
     visible: bool,
     browser: Browser,
     /// Paths chosen in the native dialog, delivered from its thread. `None`
@@ -299,16 +314,13 @@ impl SekioApp {
             theme,
             updates,
             on_close,
+            visible,
         } = startup;
         let (tray, tray_events) = match tray {
             Some((tray, events)) => (Some(tray), Some(events)),
             None => (None, None),
         };
         let loaded = path.is_some();
-        // Only a daemon with nothing to show starts hidden. A window the user
-        // launched from a menu must appear, empty or not — that is the whole
-        // point of the home screen.
-        let visible = loaded || mode != Mode::Daemon;
         let path = path.unwrap_or_default();
         let siblings = if loaded {
             Siblings::scan(&path, wrap)
@@ -356,6 +368,9 @@ impl SekioApp {
             on_close,
             closing: false,
             dont_ask: false,
+            // A daemon handed a path on the command line is a popup; anything
+            // else on screen at startup is a window somebody launched.
+            summoned: mode == Mode::Daemon && loaded,
             visible,
             browser: Browser::default(),
             picked,
@@ -431,6 +446,10 @@ impl SekioApp {
     /// its result discarded when it lands, so a handoff during a slow render
     /// cannot paint the previous file.
     fn show(&mut self, ctx: &egui::Context, path: PathBuf) {
+        // Everything that reaches `show` directly is a popup: a hotkey press
+        // or a handoff from another process. `open` — the user choosing a file
+        // in this window — clears it again on the way out.
+        self.summoned = true;
         self.path = path;
         self.siblings = Siblings::scan(&self.path, self.wrap);
         self.view = View::Loading;
@@ -473,6 +492,10 @@ impl SekioApp {
         self.mode = self.mode.promoted();
         self.dialog_note = None;
         self.show(ctx, path);
+        // Opening a file *in* this window is not being summoned to it: Escape
+        // goes back to the home screen, as the key legend on that screen says,
+        // rather than throwing away the window the user is working in.
+        self.summoned = false;
     }
 
     /// Drop the preview and go back to the home screen, keeping the process
@@ -502,30 +525,38 @@ impl SekioApp {
     ///   deliberately launched, before they have opened anything in it, is
     ///   never what they meant.
     fn dismiss(&mut self, ctx: &egui::Context) {
-        match close_action(self.mode, self.view.is_showing()) {
+        match close_action(posture(self.mode, self.summoned), self.view.is_showing()) {
             Close::Window => {
                 self.tracker.cancel_all();
                 self.browse_tracker.cancel_all();
                 ctx.send_viewport_cmd(ViewportCommand::Close);
             }
-            Close::Hide => {
-                self.tracker.cancel_all();
-                self.browse_tracker.cancel_all();
-                // Dropping the preview (and its GPU texture) so a resident
-                // process does not sit on the last hexdump it was shown.
-                self.view = View::Home;
-                self.path = PathBuf::new();
-                self.siblings = Siblings::default();
-                self.zoom = 1.0;
-                self.sheet = 0;
-                self.page = 0;
-                self.browser.close();
-                self.visible = false;
-                ctx.send_viewport_cmd(ViewportCommand::Visible(false));
-            }
+            Close::Hide => self.hide(ctx),
             Close::Home => self.go_home(ctx),
             Close::Nothing => {}
         }
+    }
+
+    /// Put the window away and stay resident.
+    ///
+    /// Called straight, not through `dismiss`: the close dialog's "minimize"
+    /// answer means *this*, and must not be re-derived from the Esc rule —
+    /// which, on the home screen, could well decide there is nothing to
+    /// dismiss and leave the window sitting there after the user answered.
+    fn hide(&mut self, ctx: &egui::Context) {
+        self.tracker.cancel_all();
+        self.browse_tracker.cancel_all();
+        // Dropping the preview (and its GPU texture) so a resident process
+        // does not sit on the last hexdump it was shown.
+        self.view = View::Home;
+        self.path = PathBuf::new();
+        self.siblings = Siblings::default();
+        self.zoom = 1.0;
+        self.sheet = 0;
+        self.page = 0;
+        self.browser.close();
+        self.visible = false;
+        ctx.send_viewport_cmd(ViewportCommand::Visible(false));
     }
 
     /// What closing means for this process right now — see
@@ -546,9 +577,7 @@ impl SekioApp {
     fn quit(&mut self, ctx: &egui::Context) {
         match self.close_intent() {
             Intent::Ask => self.ask_before_closing(),
-            // For a daemon `dismiss` is `Close::Hide`: drop the preview, hide
-            // the window, keep the socket and the hotkey.
-            Intent::Tray => self.dismiss(ctx),
+            Intent::Tray => self.hide(ctx),
             Intent::Quit => self.end(ctx),
         }
     }
@@ -594,7 +623,7 @@ impl SekioApp {
             }
             Intent::Tray => {
                 ctx.send_viewport_cmd(ViewportCommand::CancelClose);
-                self.dismiss(ctx);
+                self.hide(ctx);
             }
         }
     }
@@ -612,7 +641,7 @@ impl SekioApp {
         }
         match answer {
             OnClose::Quit => self.end(ctx),
-            _ => self.dismiss(ctx),
+            _ => self.hide(ctx),
         }
     }
 
@@ -719,16 +748,28 @@ impl SekioApp {
     /// Drain the socket thread's channel. Only the newest path is shown: a
     /// burst of handoffs (a user leaning on the spacebar) costs one preview,
     /// not one per message.
+    ///
+    /// A bare `Show` — someone clicked the launcher entry while this process
+    /// already owns the session — only raises the window, because there is
+    /// nothing to preview and whatever is on screen is what they last left.
+    /// A path in the same batch wins: `show` reveals the window anyway, so
+    /// doing both would be doing the same thing twice.
     fn poll_incoming(&mut self, ctx: &egui::Context) {
         let Some(incoming) = &self.incoming else {
             return;
         };
         let mut latest = None;
-        while let Ok(path) = incoming.try_recv() {
-            latest = Some(path);
+        let mut reveal = false;
+        while let Ok(request) = incoming.try_recv() {
+            match request {
+                daemon::Request::Preview(path) => latest = Some(path),
+                daemon::Request::Show => reveal = true,
+            }
         }
-        if let Some(path) = latest {
-            self.show(ctx, path);
+        match latest {
+            Some(path) => self.show(ctx, path),
+            None if reveal => self.reveal(ctx),
+            None => {}
         }
     }
 
@@ -797,6 +838,10 @@ impl SekioApp {
 
     /// Bring a hidden daemon window up without changing what it is showing.
     fn reveal(&mut self, ctx: &egui::Context) {
+        // Asked for, not summoned: whoever clicked the icon or the launcher
+        // entry wants to use this window, so Escape goes home rather than
+        // putting it straight back where they just fetched it from.
+        self.summoned = false;
         if !self.visible {
             self.visible = true;
             ctx.send_viewport_cmd(ViewportCommand::Visible(true));
