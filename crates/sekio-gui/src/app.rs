@@ -21,7 +21,9 @@ use crate::hotkey::{self, Action as PressAction};
 use crate::icon;
 use crate::recent::{self, Recent};
 use crate::selection;
-use crate::state::{close_action, human_size, Close, Mode, RequestTracker, Siblings};
+use crate::state::{
+    close_action, close_intent, human_size, Close, Intent, Mode, OnClose, RequestTracker, Siblings,
+};
 use crate::style::{self, Palette, MONO_SIZE};
 use crate::table;
 use crate::timing::Timing;
@@ -152,6 +154,9 @@ pub struct Startup {
     /// Look for a newer release once, shortly after starting. Whether that
     /// actually happens also depends on the mode — see `Mode::checks_updates`.
     pub updates: bool,
+    /// What the close button should do. Only a resident daemon with a tray
+    /// icon ever has a choice; see `state::close_intent`.
+    pub on_close: OnClose,
 }
 
 pub struct SekioApp {
@@ -206,6 +211,16 @@ pub struct SekioApp {
     /// [`SekioApp::handle_close_request`]), and this is the one thing that
     /// means it: end the process, do not hide.
     quitting: bool,
+    /// The user's standing answer to "quit or minimise?", from the config file
+    /// and rewritten by the dialog's "don't ask again".
+    on_close: OnClose,
+    /// The close dialog is up. While it is, the window ignores keys and the
+    /// wheel: the only thing on screen that can be answered is the question.
+    closing: bool,
+    /// The state of that dialog's checkbox. Deliberately reset every time the
+    /// dialog opens — a box the user ticked and then escaped out of has not
+    /// been agreed to.
+    dont_ask: bool,
     visible: bool,
     browser: Browser,
     /// Paths chosen in the native dialog, delivered from its thread. `None`
@@ -283,6 +298,7 @@ impl SekioApp {
             config_path,
             theme,
             updates,
+            on_close,
         } = startup;
         let (tray, tray_events) = match tray {
             Some((tray, events)) => (Some(tray), Some(events)),
@@ -337,6 +353,9 @@ impl SekioApp {
             theme,
             logo: None,
             quitting: false,
+            on_close,
+            closing: false,
+            dont_ask: false,
             visible,
             browser: Browser::default(),
             picked,
@@ -509,34 +528,192 @@ impl SekioApp {
         }
     }
 
-    /// Ctrl+Q and the window's close button mean the same thing: end this
-    /// window. A daemon still only hides — it is meant to outlive its windows.
+    /// What closing means for this process right now — see
+    /// `state::close_intent`, where the rule is written down and tested.
+    ///
+    /// `self.tray.is_some()` rather than the `tray` *setting*: an icon that
+    /// was asked for but never appeared (no tray host in this session) is an
+    /// icon the user cannot click, and "minimize to the tray" would be an
+    /// offer to lose the window.
+    fn close_intent(&self) -> Intent {
+        close_intent(self.mode, self.tray.is_some(), self.on_close)
+    }
+
+    /// Ctrl+Q and the window's close button mean the same thing: the user is
+    /// done with this window. What that costs them differs — a popup is gone,
+    /// a daemon has a hotkey and a tray icon still standing behind it — which
+    /// is the whole reason there is a question to ask.
     fn quit(&mut self, ctx: &egui::Context) {
-        if self.mode == Mode::Daemon {
-            self.dismiss(ctx);
-            return;
+        match self.close_intent() {
+            Intent::Ask => self.ask_before_closing(),
+            // For a daemon `dismiss` is `Close::Hide`: drop the preview, hide
+            // the window, keep the socket and the hotkey.
+            Intent::Tray => self.dismiss(ctx),
+            Intent::Quit => self.end(ctx),
         }
+    }
+
+    /// End the process, whatever mode it is in. The one path that does not go
+    /// through `dismiss`: on the home screen `dismiss` is `Close::Nothing`,
+    /// and Ctrl+Q must not be the one key that does nothing.
+    fn end(&mut self, ctx: &egui::Context) {
+        self.quitting = true;
         self.tracker.cancel_all();
         self.browse_tracker.cancel_all();
         ctx.send_viewport_cmd(ViewportCommand::Close);
     }
 
-    /// The window manager's close button must not kill a resident daemon: for
-    /// it, "close" means the same as Esc — hide, stay warm. eframe closes the
-    /// root viewport unless `CancelClose` is sent during this very frame,
-    /// which is why this runs in `logic`.
+    /// Put the question up, with the checkbox cleared.
+    fn ask_before_closing(&mut self) {
+        self.closing = true;
+        self.dont_ask = false;
+    }
+
+    /// The window manager's close button. eframe closes the root viewport
+    /// unless `CancelClose` is sent during this very frame, which is why this
+    /// runs in `logic` — and why asking a question has to cancel first and
+    /// close later, on whichever frame the user answers.
     fn handle_close_request(&mut self, ctx: &egui::Context) {
-        // `quitting` is the tray's Quit, which is the one close a daemon must
-        // honour: it is the only way to stop a resident process that has no
-        // window on screen to close.
-        if self.quitting
-            || self.mode != Mode::Daemon
-            || !ctx.input(|i| i.viewport().close_requested())
-        {
+        // `quitting` is the tray's Quit and the dialog's own Quit button: the
+        // close a daemon must honour, since it is the only way to stop a
+        // resident process that has no window on screen to close.
+        if self.quitting || !ctx.input(|i| i.viewport().close_requested()) {
             return;
         }
-        ctx.send_viewport_cmd(ViewportCommand::CancelClose);
-        self.dismiss(ctx);
+        match self.close_intent() {
+            // Let it close. No `CancelClose`, no further frames.
+            Intent::Quit => {}
+            Intent::Ask => {
+                ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+                // A second close request while the dialog is already up (a
+                // second click on the title bar's ✕) must not clear a
+                // checkbox the user has just ticked.
+                if !self.closing {
+                    self.ask_before_closing();
+                }
+            }
+            Intent::Tray => {
+                ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+                self.dismiss(ctx);
+            }
+        }
+    }
+
+    /// Answer the close dialog, and remember the answer if asked to.
+    ///
+    /// The checkbox and the button are one decision, not two: ticking the box
+    /// and then clicking Quit means "always quit", and there is no third
+    /// control to press afterwards. Escaping the dialog writes nothing, which
+    /// is what makes the box safe to tick and then think better of.
+    fn answer_close(&mut self, ctx: &egui::Context, answer: OnClose) {
+        self.closing = false;
+        if self.dont_ask {
+            self.set_on_close(answer);
+        }
+        match answer {
+            OnClose::Quit => self.end(ctx),
+            _ => self.dismiss(ctx),
+        }
+    }
+
+    /// The close question, as a modal over whatever is on screen.
+    ///
+    /// Two answers and no "Cancel" button: Escape and a click on the backdrop
+    /// already mean "never mind", which is what `ModalResponse::should_close`
+    /// reports, and a third button would make the two that matter harder to
+    /// tell apart. Minimising is the primary because it is the reversible one
+    /// — the wrong click costs a click, not a warm process and its hotkey.
+    fn close_dialog(&mut self, ui: &mut egui::Ui) {
+        if !self.closing {
+            return;
+        }
+        let palette = self.palette;
+        let ctx = ui.ctx().clone();
+        let frame = egui::Frame::new()
+            .fill(palette.panel)
+            .stroke(egui::Stroke::new(1.0, palette.outline))
+            .corner_radius(egui::CornerRadius::same(8))
+            .inner_margin(egui::Margin::same(20));
+
+        let mut answer = None;
+        let modal = egui::Modal::new(egui::Id::new("sekio-close-dialog"))
+            .frame(frame)
+            .show(&ctx, |ui| {
+                ui.set_width(360.0);
+                ui.label(
+                    RichText::new("Close sekio?")
+                        .color(palette.strong)
+                        .size(16.0),
+                );
+                ui.add_space(8.0);
+                // Naming the combination rather than saying "the hotkey":
+                // this is the one moment the user is deciding whether to keep
+                // it, and a daemon started with `--no-hotkey` has none to
+                // keep — in which case saying so would be a lie.
+                let kept = match &self.hotkey_spec {
+                    Some(spec) => format!(
+                        "Keep it in the tray and {spec} stays live — the next \
+                         preview opens instantly."
+                    ),
+                    None => "Keep it in the tray and the next preview opens \
+                             instantly instead of starting cold."
+                        .to_owned(),
+                };
+                ui.label(
+                    RichText::new(format!(
+                        "{kept} Quitting stops it until you start it again."
+                    ))
+                    .color(palette.dim)
+                    .size(13.0),
+                );
+                ui.add_space(16.0);
+                ui.checkbox(&mut self.dont_ask, "Don't ask again");
+                ui.add_space(16.0);
+
+                // Equal halves, the same pair the home screen opens with, and
+                // right to left so the primary sits in the corner the eye ends
+                // at rather than next to the answer that cannot be undone.
+                let gap = 8.0;
+                let half = ((ui.available_width() - gap) / 2.0).floor();
+                let size = Vec2::new(half, style::CONTROL_HEIGHT);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = gap;
+                    if ui
+                        .add(style::primary_button(&palette, "Minimize to tray").min_size(size))
+                        .clicked()
+                    {
+                        answer = Some(OnClose::Tray);
+                    }
+                    if ui
+                        .add(egui::Button::new(RichText::new("Quit").size(14.0)).min_size(size))
+                        .clicked()
+                    {
+                        answer = Some(OnClose::Quit);
+                    }
+                });
+            });
+
+        if let Some(answer) = answer {
+            self.answer_close(&ctx, answer);
+        } else if modal.should_close() {
+            // Escape, or a click outside. Nothing is remembered and nothing
+            // closes: the window stays exactly as it was.
+            self.closing = false;
+        }
+    }
+
+    /// Persist the standing answer, so the next close does not ask.
+    ///
+    /// A config file that cannot be written is a warning on stderr and nothing
+    /// more: the choice still applies to this run, and refusing to close the
+    /// window because a preference could not be saved would be absurd.
+    fn set_on_close(&mut self, on_close: OnClose) {
+        self.on_close = on_close;
+        if let Some(path) = &self.config_path {
+            if let Err(err) = config::save_on_close(path, on_close) {
+                eprintln!("sekio-gui: close preference not saved: {err}");
+            }
+        }
     }
 
     /// Drain the socket thread's channel. Only the newest path is shown: a
@@ -610,12 +787,10 @@ impl SekioApp {
                 }
                 tray::Event::Preview(path) => self.open(ctx, path),
                 tray::Event::SetHotkey(spec) => self.rebind_hotkey(ctx, spec),
-                tray::Event::Quit => {
-                    self.quitting = true;
-                    self.tracker.cancel_all();
-                    self.browse_tracker.cancel_all();
-                    ctx.send_viewport_cmd(ViewportCommand::Close);
-                }
+                // Never asks. The menu item says Quit, the window it would
+                // ask in may not even be visible, and this is the only way to
+                // stop a daemon whose window is hidden.
+                tray::Event::Quit => self.end(ctx),
             }
         }
     }
@@ -1077,6 +1252,14 @@ impl SekioApp {
     }
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
+        // The close dialog owns the keyboard while it is up: Escape must
+        // dismiss the question rather than the window behind it, and Space
+        // must not close the very thing being asked about. Returning without
+        // reading the keys leaves them for `Modal::should_close`, which
+        // consumes Escape itself.
+        if self.closing {
+            return;
+        }
         let keys = ctx.input(|i| Keys {
             escape: i.key_pressed(egui::Key::Escape),
             space: i.key_pressed(egui::Key::Space),
@@ -1235,7 +1418,10 @@ impl SekioApp {
     /// file tree could not be scrolled at all because each notch was being
     /// spent zooming the page behind it.
     fn handle_wheel_zoom(&mut self, ctx: &egui::Context) {
-        if !self.has_image() || !self.pointer_over_preview(ctx) {
+        // Same reason as `handle_keys`: the delta is read from the context
+        // rather than from a widget, so the modal backdrop cannot stop it and
+        // the wheel would turn pages behind the question.
+        if self.closing || !self.has_image() || !self.pointer_over_preview(ctx) {
             return;
         }
         let (scroll, zooming) = ctx.input_mut(|i| {
@@ -1874,6 +2060,9 @@ impl eframe::App for SekioApp {
         action = action.or_else(|| self.browser_pane(ui));
         action = action.or_else(|| self.body(ui));
         paint_drop_hint(ui.ctx(), &self.palette);
+        // Over everything, and after the panels so the frame it is painted on
+        // is the one the user is being asked about.
+        self.close_dialog(ui);
 
         if let Some(action) = action {
             let ctx = ui.ctx().clone();

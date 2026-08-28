@@ -46,6 +46,7 @@ use sekio_core::PreviewOptions;
 use serde::Deserialize;
 
 use crate::hotkey::{self, HotKey};
+use crate::state::OnClose;
 use crate::style::Theme;
 
 /// The file's name inside the platform's `sekio` config directory.
@@ -97,6 +98,10 @@ pub struct Config {
     /// unusable value is a *warning* (rule 4) instead of a parse error that
     /// throws away the rest of the file — the same treatment `hotkey` gets.
     pub theme: Option<String>,
+    /// `"ask"`, `"tray"` or `"quit"`: what the window's close button does when
+    /// there is more than one sensible answer. A string for the same reason
+    /// `theme` is one. Written back by the close dialog's "don't ask again".
+    pub on_close: Option<String>,
 }
 
 /// Parse the file's text. Separate from [`load_file`] so the parser is testable
@@ -135,6 +140,18 @@ pub fn validate(config: &mut Config) -> Vec<String> {
                 default = Theme::default().as_str(),
             ));
             config.theme = None;
+        }
+    }
+
+    if let Some(name) = &config.on_close {
+        if OnClose::parse(name).is_none() {
+            warnings.push(format!(
+                "warning: unknown on_close {name:?} (expected {options}); \
+                 using {default:?} instead",
+                options = OnClose::NAMES.join(", "),
+                default = OnClose::default().as_str(),
+            ));
+            config.on_close = None;
         }
     }
 
@@ -195,6 +212,9 @@ pub struct Settings {
     pub theme: Theme,
     /// Look for a newer release once, when the window or the daemon starts.
     pub updates: bool,
+    /// What the close button does. Only ever consulted by a resident daemon —
+    /// see [`crate::state::close_intent`].
+    pub on_close: OnClose,
 }
 
 impl Default for Settings {
@@ -263,6 +283,14 @@ pub fn resolve(cli: &Overrides, cfg: &Config) -> Settings {
         theme: cli
             .theme
             .or_else(|| cfg.theme.as_deref().and_then(Theme::parse))
+            .unwrap_or_default(),
+        // No command-line layer: this is a preference the user sets by
+        // answering the dialog, and a flag that could pre-answer it would only
+        // ever be typed once, in an autostart entry nobody edits again.
+        on_close: cfg
+            .on_close
+            .as_deref()
+            .and_then(OnClose::parse)
             .unwrap_or_default(),
     }
 }
@@ -522,6 +550,17 @@ pub fn save_hotkey(path: &Path, spec: &str) -> Result<(), SaveError> {
 pub fn save_theme(path: &Path, theme: Theme) -> Result<(), SaveError> {
     let existing = read_for_update(path)?;
     let updated = with_setting(&existing, "theme", theme.as_str());
+    write_atomically(path, &updated).map_err(|source| io_error(path, source))
+}
+
+/// Persist `on_close` as the `on_close` setting in `path`.
+///
+/// What "don't ask again" writes through. Same shape as [`save_theme`], and
+/// the same reason it needs no validation: the caller hands over an
+/// [`OnClose`], which cannot spell itself in a way the reader would reject.
+pub fn save_on_close(path: &Path, on_close: OnClose) -> Result<(), SaveError> {
+    let existing = read_for_update(path)?;
+    let updated = with_setting(&existing, "on_close", on_close.as_str());
     write_atomically(path, &updated).map_err(|source| io_error(path, source))
 }
 
@@ -814,6 +853,7 @@ mod tests {
             lines = 250
             wrap = true
             theme = "light"
+            on_close = "tray"
             "#,
         )
         .expect("full config should parse");
@@ -823,6 +863,7 @@ mod tests {
         assert_eq!(config.lines, Some(250));
         assert_eq!(config.wrap, Some(true));
         assert_eq!(config.theme.as_deref(), Some("light"));
+        assert_eq!(config.on_close.as_deref(), Some("tray"));
     }
 
     #[test]
@@ -898,6 +939,10 @@ mod tests {
         assert_eq!(config.lines, Some(PreviewOptions::default().max_lines));
         assert_eq!(config.wrap, Some(false));
         assert_eq!(config.theme.as_deref(), Some(Theme::default().as_str()));
+        assert_eq!(
+            config.on_close.as_deref(),
+            Some(OnClose::default().as_str())
+        );
         // Uncommented, the example is exactly the built-in behaviour.
         assert_eq!(resolve(&Overrides::default(), &config), Settings::default());
     }
@@ -910,7 +955,9 @@ mod tests {
         let example = include_str!("../gui.example.toml");
         let listing = parse("nope = 1\n").expect_err("unknown key").to_string();
         let mut checked = 0;
-        for key in ["hotkey", "tray", "lines", "wrap", "theme"] {
+        for key in [
+            "hotkey", "tray", "lines", "wrap", "theme", "updates", "on_close",
+        ] {
             assert!(
                 listing.contains(key),
                 "`{key}` is not a field of Config any more; update this test"
@@ -921,7 +968,7 @@ mod tests {
             );
             checked += 1;
         }
-        assert_eq!(checked, 5);
+        assert_eq!(checked, 7);
     }
 
     // ---- degrading, never failing ----
@@ -982,6 +1029,48 @@ mod tests {
         let settings = resolve(&Overrides::default(), &loaded.config);
         assert_eq!(settings.hotkey.as_deref(), Some(hotkey::DEFAULT_SPEC));
         assert_eq!(settings.lines, 7);
+    }
+
+    /// Rule 4 again, for `on_close`. The value is written by the app itself,
+    /// so a bad one means the user hand-edited it — and being told the three
+    /// words that work beats being told nothing.
+    #[test]
+    fn an_unknown_on_close_warns_and_falls_back() {
+        let path = temp_file("bad-on-close", "on_close = \"maybe\"\nlines = 7\n");
+        let loaded = load_file(&path, false);
+
+        assert_eq!(loaded.warnings.len(), 1, "{:?}", loaded.warnings);
+        let warning = &loaded.warnings[0];
+        assert!(warning.contains("maybe"), "{warning}");
+        for name in OnClose::NAMES {
+            assert!(warning.contains(name), "{name} missing from: {warning}");
+        }
+        assert_eq!(loaded.config.on_close, None);
+        assert_eq!(
+            loaded.config.lines,
+            Some(7),
+            "the rest of the file survives"
+        );
+        assert_eq!(
+            resolve(&Overrides::default(), &loaded.config).on_close,
+            OnClose::Ask,
+            "dropping the field is what makes the default apply"
+        );
+    }
+
+    /// Asking is the default, and the file is the only layer that can change
+    /// it: there is deliberately no `--on-close`.
+    #[test]
+    fn on_close_comes_from_the_file_or_the_default() {
+        assert_eq!(
+            resolve(&Overrides::default(), &Config::default()).on_close,
+            OnClose::Ask
+        );
+        let cfg = Config {
+            on_close: Some("quit".to_owned()),
+            ..Config::default()
+        };
+        assert_eq!(resolve(&Overrides::default(), &cfg).on_close, OnClose::Quit);
     }
 
     /// Rule 4, for the newest key: an unusable `theme` is a warning and the
@@ -1219,6 +1308,7 @@ mod tests {
             wrap: Some(true),
             theme: Some("light".to_owned()),
             updates: Some(false),
+            on_close: Some("quit".to_owned()),
         }
     }
 
@@ -1356,9 +1446,18 @@ mod tests {
         assert!(!settings.wrap);
         assert_eq!(settings.tray, DEFAULT_TRAY);
         assert_eq!(settings.theme, Theme::default());
-        // Nothing from the config survived, even though every value the user
-        // typed happens to equal a default.
-        assert_eq!(settings, Settings::default());
+        // Nothing *overridable* from the config survived, even though every
+        // value the user typed happens to equal a default. `on_close` is the
+        // one key with no command-line layer, so the file still owns it —
+        // which is the point, not an exception to the rule.
+        assert_eq!(settings.on_close, OnClose::Quit);
+        assert_eq!(
+            settings,
+            Settings {
+                on_close: OnClose::Quit,
+                ..Settings::default()
+            }
+        );
     }
 
     #[test]
@@ -1557,6 +1656,37 @@ tray = false
         let err = save_hotkey(&path, "Super+P").expect_err("cannot write over a directory");
         assert!(matches!(err, SaveError::Io { .. }), "{err:?}");
         assert!(err.to_string().contains(FILE), "{err}");
+    }
+
+    /// What "don't ask again" writes. The point of the round trip through
+    /// `load_file` is that the value the dialog wrote is a value the *reader*
+    /// accepts without a warning — the two spellings cannot drift apart.
+    #[test]
+    fn saving_an_answer_to_the_close_dialog_round_trips() {
+        let path = temp_file(
+            "on-close-roundtrip",
+            "# mine\nhotkey = \"Super+P\"  # keep me\n",
+        );
+
+        save_on_close(&path, OnClose::Tray).expect("an answer should save");
+        let loaded = load_file(&path, true);
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+        assert_eq!(
+            resolve(&Overrides::default(), &loaded.config).on_close,
+            OnClose::Tray
+        );
+        let text = read(&path);
+        assert!(text.contains("# mine"), "the comment survives: {text}");
+        assert!(text.contains("# keep me"), "{text}");
+
+        // And changing the answer replaces it rather than appending a second.
+        save_on_close(&path, OnClose::Quit).expect("a second answer should save");
+        let text = read(&path);
+        assert_eq!(text.matches("on_close").count(), 1, "{text}");
+        assert_eq!(
+            resolve(&Overrides::default(), &load_file(&path, true).config).on_close,
+            OnClose::Quit
+        );
     }
 
     // ---- the comment-preserving rewrite, as a pure function ----

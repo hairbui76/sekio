@@ -88,3 +88,20 @@
 ## Set this to false, or pass --no-update-check, and sekio never contacts the
 ## network. Nothing else in the program does.
 # updates = true
+
+## What the window's close button does when a daemon is running with a tray
+## icon — the one dismissal with two reasonable answers.
+##
+##   "ask"   Ask, with a "don't ask again" checkbox. Answering it rewrites this
+##           line in place, the way the gear does for `theme`.
+##   "tray"  Hide the window and stay resident. What the close button did
+##           before this setting existed.
+##   "quit"  End the process, tray icon and hotkey with it.
+##
+## Only consulted by a resident daemon that actually has an icon: a window
+## started as `sekio-gui` has nothing to stay resident for and simply closes,
+## and a session with no tray host hides rather than offering to minimise to an
+## icon that is not there. The tray menu's own Quit never asks.
+##
+## Unparseable values are reported on stderr and the default is used instead.
+# on_close = "ask"

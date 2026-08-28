@@ -155,7 +155,7 @@ built-in browser, which needs nothing installed and therefore always works.
 | `Ctrl+ +` / `Ctrl+ -` | Zoom; `Ctrl+0` resets |
 | `Space` | Close the preview |
 | `Esc` | Back to the home screen |
-| `Ctrl+Q` | Quit |
+| `Ctrl+Q` | Close the window |
 
 ### Staying resident
 
@@ -254,8 +254,8 @@ washed out on the wrong one.
 
 `sekio-gui` reads `gui.toml` from `$XDG_CONFIG_HOME/sekio/` (or `~/.config/`)
 on Linux, `%APPDATA%\sekio\` on Windows — a documented copy is
-[`gui.example.toml`](../crates/sekio-gui/gui.example.toml). Six keys:
-`hotkey`, `tray`, `theme`, `lines`, `wrap` and `updates`.
+[`gui.example.toml`](../crates/sekio-gui/gui.example.toml). Seven keys:
+`hotkey`, `tray`, `theme`, `lines`, `wrap`, `updates` and `on_close`.
 
 It is `gui.toml` and not `config.toml` because `sekio-tui` keeps its own
 `config.toml` in the same directory and the two schemas are different.
@@ -272,6 +272,27 @@ Three rules worth knowing:
   in `gui.toml` is read by all of them.
 
 `--config PATH` reads a different file; `--no-config` ignores every file.
+
+### Closing the window
+
+Closing a resident daemon is the one dismissal with two reasonable answers, so
+the first time you do it sekio asks which you meant:
+
+* **Minimize to tray** — the window goes away, the process stays. The hotkey
+  keeps working and the next preview is a five-millisecond handoff rather than
+  a cold start. This is what the ✕ has always done.
+* **Quit** — the process ends. The tray icon goes with it, and so does the
+  hotkey, until you start sekio again.
+
+Tick **Don't ask again** and the answer is written to `gui.toml` as
+`on_close`, so every close after that does the same thing without asking.
+Escape, or a click outside the dialog, backs out and changes nothing — the box
+is only acted on together with the button you press.
+
+The question is only asked where both answers exist: a window you opened with
+`sekio-gui` has nothing to stay resident for and simply closes, and a daemon in
+a session with no tray host still just hides, because there would be no icon to
+get it back from. The tray's own **Quit** never asks.
 
 ### Updates
 

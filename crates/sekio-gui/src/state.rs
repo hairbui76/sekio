@@ -241,6 +241,82 @@ pub fn close_action(mode: Mode, showing: bool) -> Close {
     }
 }
 
+/// What closing the window should do, when there is more than one answer.
+///
+/// Only a resident daemon with a tray icon has two: end the process, or put
+/// the window away and keep answering the hotkey. Everything else has exactly
+/// one, so this preference never reaches [`close_intent`]'s first two arms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OnClose {
+    /// Ask, once, with a "don't ask again" checkbox. The default: the first
+    /// close is the only moment the user is actually thinking about the
+    /// question, so it is the only good moment to ask it.
+    #[default]
+    Ask,
+    /// Put the window away and stay resident. Never ask again.
+    Tray,
+    /// End the process. Never ask again.
+    Quit,
+}
+
+impl OnClose {
+    /// Every value the config file accepts, for the warning `validate` prints.
+    pub const NAMES: [&'static str; 3] = ["ask", "tray", "quit"];
+
+    /// Parse the config file's spelling; `None` for anything else.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "ask" => Some(Self::Ask),
+            "tray" | "minimize" | "hide" => Some(Self::Tray),
+            "quit" | "exit" => Some(Self::Quit),
+            _ => None,
+        }
+    }
+
+    /// How it is written back to the file.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Tray => "tray",
+            Self::Quit => "quit",
+        }
+    }
+}
+
+/// What a close request means for *this* process, given what it can offer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Intent {
+    /// Put the question to the user and do nothing until they answer.
+    Ask,
+    /// Hide the window, stay resident.
+    Tray,
+    /// End the process.
+    Quit,
+}
+
+/// The close-button rule, in one pure function.
+///
+/// `tray` is whether an icon is actually on screen — not whether one was asked
+/// for. Both halves matter: the choice is only real when the process can
+/// outlive its window (a daemon) *and* there is something on screen to get it
+/// back from. Offering "minimize to the tray" with no tray would be offering
+/// the user a way to lose the application.
+pub fn close_intent(mode: Mode, tray: bool, pref: OnClose) -> Intent {
+    match (mode, tray, pref) {
+        // An answer already given is honoured whether or not the icon came
+        // back this session. Quit first: a user who asked to be shut down
+        // must not be left with an invisible process when the tray fails.
+        (Mode::Daemon, _, OnClose::Quit) => Intent::Quit,
+        (Mode::Daemon, true, OnClose::Ask) => Intent::Ask,
+        // Asked, but with no icon: hide, exactly as a daemon always has. The
+        // hotkey and the socket still reach it, so the window is not the only
+        // way back, and closing must not kill a process the user meant to keep.
+        (Mode::Daemon, _, _) => Intent::Tray,
+        // Nothing to stay resident for, so there is nothing to ask about.
+        _ => Intent::Quit,
+    }
+}
+
 /// Human-readable byte count, matching the CLI's formatting.
 pub fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
@@ -269,6 +345,69 @@ mod tests {
         assert!(Mode::App.checks_updates());
         assert!(Mode::Daemon.checks_updates());
         assert!(!Mode::Popup.checks_updates());
+    }
+
+    /// The whole point of the dialog: it is offered only where both answers
+    /// exist. A popup and a plain window have nothing to stay resident for,
+    /// and a daemon with no icon has nowhere to minimise to.
+    #[test]
+    fn only_a_daemon_with_an_icon_is_ever_asked() {
+        for mode in [Mode::Popup, Mode::App] {
+            for tray in [true, false] {
+                assert_eq!(
+                    close_intent(mode, tray, OnClose::Ask),
+                    Intent::Quit,
+                    "{mode:?} with tray={tray} has no second answer to offer"
+                );
+            }
+        }
+        assert_eq!(
+            close_intent(Mode::Daemon, false, OnClose::Ask),
+            Intent::Tray,
+            "no icon means no way back from a hidden window, so do not offer one"
+        );
+        assert_eq!(close_intent(Mode::Daemon, true, OnClose::Ask), Intent::Ask);
+    }
+
+    /// "Don't ask again" has to actually stop the asking, in both directions.
+    #[test]
+    fn a_remembered_answer_is_not_asked_again() {
+        assert_eq!(
+            close_intent(Mode::Daemon, true, OnClose::Tray),
+            Intent::Tray
+        );
+        assert_eq!(
+            close_intent(Mode::Daemon, true, OnClose::Quit),
+            Intent::Quit
+        );
+    }
+
+    /// The icon gates the *question*, not an answer already given: a session
+    /// where the tray host is missing must not quietly reinstate a behaviour
+    /// the user turned off.
+    #[test]
+    fn losing_the_icon_does_not_reopen_the_question() {
+        assert_eq!(
+            close_intent(Mode::Daemon, false, OnClose::Tray),
+            Intent::Tray
+        );
+        assert_eq!(
+            close_intent(Mode::Daemon, false, OnClose::Quit),
+            Intent::Quit,
+            "'always quit' with no icon must not leave a process nothing can show"
+        );
+    }
+
+    #[test]
+    fn every_on_close_name_round_trips() {
+        for name in OnClose::NAMES {
+            let parsed = OnClose::parse(name).expect("a documented name must parse");
+            assert_eq!(parsed.as_str(), name);
+        }
+        assert_eq!(OnClose::parse("Tray"), Some(OnClose::Tray));
+        assert_eq!(OnClose::parse("minimize"), Some(OnClose::Tray));
+        assert_eq!(OnClose::parse("sometimes"), None);
+        assert_eq!(OnClose::default(), OnClose::Ask);
     }
 
     #[test]

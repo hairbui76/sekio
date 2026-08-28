@@ -35,7 +35,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Once;
+use std::sync::{Arc, Mutex, Once};
 use std::time::Duration;
 
 use eframe::App as _;
@@ -46,7 +46,7 @@ use sekio_core::{
     CellKind, ListEntry, MetaField, Preview, PreviewContent, Span, StyledLine, TableCell, TableRow,
 };
 use sekio_gui::app::{SekioApp, Startup};
-use sekio_gui::state::{Mode, RequestTracker};
+use sekio_gui::state::{Mode, OnClose, RequestTracker};
 use sekio_gui::style::{self, Palette};
 
 /// The palette every test below paints in unless it says otherwise: the
@@ -97,6 +97,21 @@ fn isolate_state_dir() {
     });
 }
 
+/// A tray icon that is present and does nothing.
+///
+/// The close dialog is offered only when there is an icon to minimise *to*
+/// (`state::close_intent`), so a test of that dialog has to hand the app one.
+/// Nothing here is painted — the tray lives outside the window — so a pair of
+/// no-op methods is the whole of it.
+struct FakeTray;
+
+impl sekio_gui::tray::Tray for FakeTray {
+    fn update(&mut self, _menu: &sekio_gui::tray::Menu) {}
+    fn describe(&self) -> String {
+        "test".to_owned()
+    }
+}
+
 /// A running, headless `SekioApp`.
 struct AppUi {
     harness: Harness<'static>,
@@ -104,6 +119,16 @@ struct AppUi {
     responses: Sender<Response>,
     /// The requests the UI made. Held so `Worker::request` keeps succeeding.
     requests: Receiver<Request>,
+    /// Kept alive so the app's tray receiver never sees a hung-up channel.
+    _tray_events: Option<Sender<sekio_gui::tray::Event>>,
+    /// Every `ViewportCommand` issued since this was last drained.
+    ///
+    /// Not `harness.output()`: `Harness::step` runs one frame *per queued
+    /// event*, so a four-event Ctrl+Q leaves only the last frame's output —
+    /// and the frame the key was actually pressed on, the one that asked the
+    /// window to close, is thrown away. Recording inside the app closure
+    /// catches every frame instead of the last one.
+    commands: Arc<Mutex<Vec<egui::ViewportCommand>>>,
 }
 
 impl AppUi {
@@ -112,10 +137,33 @@ impl AppUi {
     }
 
     fn sized(path: Option<PathBuf>, mode: Mode, size: [f32; 2]) -> Self {
+        Self::build(path, mode, size, false, OnClose::default())
+    }
+
+    /// A daemon with a tray icon: the one configuration in which closing the
+    /// window has more than one answer.
+    fn resident(on_close: OnClose) -> Self {
+        Self::build(None, Mode::Daemon, SIZE, true, on_close)
+    }
+
+    fn build(
+        path: Option<PathBuf>,
+        mode: Mode,
+        size: [f32; 2],
+        tray: bool,
+        on_close: OnClose,
+    ) -> Self {
         isolate_state_dir();
 
         let (req_tx, requests) = mpsc::channel::<Request>();
         let (responses, res_rx) = mpsc::channel::<Response>();
+        let (tray_handle, tray_events) = if tray {
+            let (tx, rx) = mpsc::channel::<sekio_gui::tray::Event>();
+            let boxed: Box<dyn sekio_gui::tray::Tray> = Box::new(FakeTray);
+            (Some((boxed, rx)), Some(tx))
+        } else {
+            (None, None)
+        };
 
         let mut tracker = RequestTracker::new();
         if path.is_some() {
@@ -135,15 +183,18 @@ impl AppUi {
             timing: Timing::start(false),
             incoming: None,
             presses: None,
-            // No tray in a headless render: `tray::spawn` would find no host
-            // anyway, and these tests are about what gets painted.
-            tray: None,
-            hotkey_spec: None,
+            // Usually no tray in a headless render: `tray::spawn` would find
+            // no host anyway, and these tests are about what gets painted.
+            tray: tray_handle,
+            // A real daemon with an icon has a hotkey too, and the close
+            // dialog names it: the combination is the thing minimising keeps.
+            hotkey_spec: tray.then(|| "Ctrl+Shift+Space".to_owned()),
             config_path: None,
             theme: sekio_gui::style::Theme::Dark,
             // No test may reach the network. The one that exercises the check
             // starts it deliberately, by clicking the control that does.
             updates: false,
+            on_close,
         };
 
         // The app is built inside the closure because it needs the harness's
@@ -152,6 +203,8 @@ impl AppUi {
         let mut startup = Some(startup);
         let mut app: Option<SekioApp> = None;
         let mut frame = eframe::Frame::_new_kittest();
+        let commands = Arc::new(Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&commands);
 
         let harness = Harness::builder()
             .with_size(size)
@@ -167,12 +220,18 @@ impl AppUi {
                 let ctx = ui.ctx().clone();
                 app.logic(&ctx, &mut frame);
                 app.ui(ui, &mut frame);
+                // Still inside the pass, so this frame's commands are still
+                // on the viewport rather than already drained into the output.
+                let issued = ctx.viewport(|viewport| viewport.commands.clone());
+                recorder.lock().expect("no test panics here").extend(issued);
             });
 
         Self {
             harness,
             responses,
             requests,
+            _tray_events: tray_events,
+            commands,
         }
     }
 
@@ -326,6 +385,39 @@ impl AppUi {
     }
 
     #[track_caller]
+    /// What the window has been asked to do since this was last called.
+    /// `Close` and `Visible(false)` are the whole difference between quitting
+    /// and minimising, and neither one is visible in the painted frame.
+    fn commands(&self) -> Vec<egui::ViewportCommand> {
+        std::mem::take(&mut *self.commands.lock().expect("no test panics here"))
+    }
+
+    /// Throw away the startup commands (title, visibility) so the next
+    /// assertion is about the interaction and nothing else.
+    fn forget_commands(&self) {
+        let _ = self.commands();
+    }
+
+    fn assert_closed(&self, what: &str) {
+        let commands = self.commands();
+        assert!(
+            commands.contains(&egui::ViewportCommand::Close),
+            "{what}: expected the window to close, but this frame asked for {commands:?}"
+        );
+    }
+
+    fn assert_hidden(&self, what: &str) {
+        let commands = self.commands();
+        assert!(
+            commands.contains(&egui::ViewportCommand::Visible(false)),
+            "{what}: expected the window to hide, but this frame asked for {commands:?}"
+        );
+        assert!(
+            !commands.contains(&egui::ViewportCommand::Close),
+            "{what}: hiding must not also end the process: {commands:?}"
+        );
+    }
+
     fn assert_shows(&self, needle: &str, what: &str) {
         let text = self.text();
         assert!(
@@ -2669,4 +2761,176 @@ fn a_window_that_is_not_resized_never_re_requests_its_preview() {
             .all(|request| request.kind != Kind::Preview),
         "a window sitting still must not keep re-rendering its preview"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Closing: quit, or stay in the tray
+// ---------------------------------------------------------------------------
+
+/// Ctrl+Q and the title bar's ✕ are the same request; the keyboard one is what
+/// a headless harness can send, and both go through `SekioApp::quit`.
+fn ask_to_close(ui: &mut AppUi) {
+    ui.forget_commands();
+    ui.harness
+        .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Q);
+    ui.run();
+}
+
+/// The dialog exists at all, and says what each answer costs. "Quit or
+/// minimise?" with no explanation is a coin toss — nothing on screen would
+/// tell the user that minimising is what keeps the hotkey alive.
+#[test]
+fn closing_a_resident_window_asks_which_was_meant() {
+    let mut ui = AppUi::resident(OnClose::Ask);
+    ui.run();
+    ask_to_close(&mut ui);
+
+    ui.assert_shows("Close sekio?", "the close dialog");
+    ui.assert_shows(
+        "Ctrl+Shift+Space stays live",
+        "the combination minimising is what keeps",
+    );
+    assert!(
+        ui.harness.query_by_label("Minimize to tray").is_some(),
+        "the reversible answer must be a button"
+    );
+    assert!(
+        ui.harness.query_by_label("Quit").is_some(),
+        "the other answer must be a button too"
+    );
+    assert!(
+        ui.harness.query_by_label("Don't ask again").is_some(),
+        "a dialog on every close with no way off is the worse bug"
+    );
+}
+
+/// Asking has to actually *stop* the close. eframe ends the process unless
+/// `CancelClose` goes out on the very frame the request arrives, so a dialog
+/// that paints while the window is already on its way out would never be read.
+#[test]
+fn asking_does_not_close_anything_yet() {
+    let mut ui = AppUi::resident(OnClose::Ask);
+    ui.run();
+    ask_to_close(&mut ui);
+
+    let commands = ui.commands();
+    assert!(
+        !commands.contains(&egui::ViewportCommand::Close),
+        "the question must be asked before anything closes: {commands:?}"
+    );
+    assert!(
+        !commands.contains(&egui::ViewportCommand::Visible(false)),
+        "…and before anything hides, or the answer lands on a window nobody \
+         can see: {commands:?}"
+    );
+    // …and the question is genuinely on screen, so this is not passing
+    // because Ctrl+Q did nothing at all.
+    ui.assert_shows("Close sekio?", "the dialog the cancel was for");
+}
+
+#[test]
+fn minimizing_from_the_dialog_hides_the_window_and_keeps_the_process() {
+    let mut ui = AppUi::resident(OnClose::Ask);
+    ui.run();
+    ask_to_close(&mut ui);
+    ui.forget_commands();
+
+    ui.harness.get_by_label("Minimize to tray").click();
+    ui.run();
+
+    ui.assert_hidden("the minimise answer");
+    ui.assert_hides("Close sekio?", "the dialog after answering");
+}
+
+#[test]
+fn quitting_from_the_dialog_ends_the_process() {
+    let mut ui = AppUi::resident(OnClose::Ask);
+    ui.run();
+    ask_to_close(&mut ui);
+    ui.forget_commands();
+
+    ui.harness.get_by_label("Quit").click();
+    ui.run();
+
+    ui.assert_closed("the quit answer");
+}
+
+/// Escape means "never mind", and it has to reach the dialog rather than the
+/// window behind it — `handle_keys` runs in `logic`, before anything is
+/// painted, and would otherwise dismiss the very thing being asked about.
+#[test]
+fn escaping_the_dialog_leaves_the_window_exactly_as_it_was() {
+    let mut ui = AppUi::resident(OnClose::Ask);
+    ui.run();
+    ask_to_close(&mut ui);
+    ui.forget_commands();
+
+    ui.harness.key_press(egui::Key::Escape);
+    ui.run();
+
+    let commands = ui.commands();
+    assert!(
+        !commands.contains(&egui::ViewportCommand::Close),
+        "backing out of the question must not answer it: {commands:?}"
+    );
+    assert!(
+        !commands.contains(&egui::ViewportCommand::Visible(false)),
+        "…in either direction: {commands:?}"
+    );
+    ui.assert_hides("Close sekio?", "the dialog after Escape");
+}
+
+/// "Don't ask again" is not a separate decision: the box says *remember this*
+/// and the button says which. Ticking it and then minimising has to mean
+/// "keep doing that" — checked by closing a second time and getting no dialog.
+#[test]
+fn remembering_the_answer_stops_the_next_close_asking() {
+    let mut ui = AppUi::resident(OnClose::Ask);
+    ui.run();
+    ask_to_close(&mut ui);
+
+    ui.harness.get_by_label("Don't ask again").click();
+    ui.run();
+    ui.harness.get_by_label("Minimize to tray").click();
+    ui.run();
+
+    ask_to_close(&mut ui);
+    ui.assert_hidden("the second close, answered from memory");
+    ui.assert_hides("Close sekio?", "a question already answered");
+}
+
+/// An answer that came from the config file is acted on without a dialog,
+/// both ways round.
+#[test]
+fn a_stored_answer_is_acted_on_directly() {
+    let mut hides = AppUi::resident(OnClose::Tray);
+    hides.run();
+    ask_to_close(&mut hides);
+    hides.assert_hidden("on_close = \"tray\"");
+    hides.assert_hides("Close sekio?", "a question the file already answered");
+
+    let mut quits = AppUi::resident(OnClose::Quit);
+    quits.run();
+    ask_to_close(&mut quits);
+    quits.assert_closed("on_close = \"quit\"");
+    quits.assert_hides("Close sekio?", "a question the file already answered");
+}
+
+/// The dialog is only ever offered where both answers exist. A window the user
+/// launched has nothing to stay resident *for*, so asking would be asking
+/// about a choice it cannot honour — and a daemon with no tray icon has
+/// nowhere to minimise to, which is why that one still just hides.
+#[test]
+fn a_window_with_only_one_answer_never_asks() {
+    let mut app = AppUi::new(None, Mode::App);
+    app.run();
+    ask_to_close(&mut app);
+    app.assert_closed("Ctrl+Q on a plain window");
+    app.assert_hides("Close sekio?", "a dialog with nothing to offer");
+
+    let mut headless = AppUi::sized(None, Mode::Daemon, SIZE);
+    headless.run();
+    ask_to_close(&mut headless);
+    headless.assert_hidden("a daemon with no tray icon");
+    headless.assert_hides("Close sekio?", "a tray dialog with no tray");
 }

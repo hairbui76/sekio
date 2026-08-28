@@ -278,6 +278,8 @@ fn run_once(args: Args, settings: Settings, timing: Timing) -> Result<()> {
             config_path: None,
             theme: settings.theme,
             updates: settings.updates,
+            // Never consulted: only a daemon has a second answer to give.
+            on_close: settings.on_close,
         },
     )
 }
@@ -559,6 +561,7 @@ fn run_daemon(
             config_path: location.write_target().map(Path::to_path_buf),
             theme: settings.theme,
             updates: settings.updates,
+            on_close: settings.on_close,
         },
     );
     // Explicit, so the socket is gone before the process is.
@@ -814,6 +817,7 @@ fn doctor_config(location: &config::Location, settings: &Settings) {
     row("theme", settings.theme.as_str());
     row("lines", settings.lines);
     row("wrap", settings.wrap);
+    row("on_close", settings.on_close.as_str());
 }
 
 /// Where this report is going — a question only Windows can get wrong.
