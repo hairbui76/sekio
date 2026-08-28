@@ -3,6 +3,28 @@
 Notable changes per release. Versions are the workspace version; every entry
 corresponds to a `v*` tag and its published deb, rpm and msi.
 
+## 0.20.0 — 2026-08-28
+
+### Added
+
+- Closing a resident window asks whether you meant to quit or to stay in the
+  tray, with a "don't ask again" checkbox. Answering it writes `on_close` to
+  `gui.toml` (`"ask"`, `"tray"` or `"quit"`), so the question is asked once.
+  Escape or a click outside backs out and writes nothing — the checkbox is
+  only acted on together with the button you press.
+
+  The question is only put where both answers exist: a window started as
+  `sekio-gui` has nothing to stay resident for, and a daemon in a session with
+  no tray host has nowhere to minimise *to*. Both keep the behaviour they had,
+  and the tray menu's own Quit still never asks.
+
+### Fixed
+
+- Ctrl+Q did nothing on the home screen of a window started with no path. It
+  shared a code path with Escape, whose answer there is "there is nothing to
+  dismiss"; the close button and Ctrl+Q now go through one decision of their
+  own.
+
 ## 0.19.0 — 2026-08-27
 
 ### Fixed
