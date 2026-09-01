@@ -21,9 +21,8 @@ and a Quick Look-style popup — all sharing one engine.
 ## Why
 
 Opening a heavyweight application just to remember what a file *is* wastes more
-time than it should. sekio answers that in milliseconds — a spreadsheet as a
-real grid, a PDF as its page, a photo with its EXIF, an archive as a listing —
-and gets out of the way.
+time than it should. sekio answers that in milliseconds: a spreadsheet as a
+real grid, a PDF as its page, a photo with its EXIF, an archive as a listing.
 
 It is one detection-and-rendering core with three frontends over it, so a
 format added once appears in all of them at once.
@@ -42,9 +41,9 @@ three programs, adds them to `PATH`, and adds a Start Menu entry.
 
 Everything is on the [releases page](https://github.com/hairbui76/sekio/releases).
 
-All three installers set the preview daemon to start at login, so previews are
-instant and the global hotkey works from a cold desktop. It is one command, or
-one checkbox, to undo:
+All three installers set the preview daemon to start at login, so previews skip
+the startup cost and the global hotkey works from a cold desktop. It is one
+command, or one checkbox, to undo:
 
 ```sh
 sudo systemctl --global disable sekio   # Linux, for everyone
@@ -117,6 +116,12 @@ desktop's light or dark setting and switches with it while open — the gear in
 the top right pins it either way, and holds the version and the path to your
 settings.
 
+<img src="assets/screenshots/gui-browse.png" alt="The built-in file browser open on a folder, with its search box">
+
+`Ctrl+B` opens a file browser inside the window: your usual places down the
+side, the folder underneath them, and a box that fuzzy-matches as you type and
+puts the closest name first. It stays open while you look at a file.
+
 The installers leave one resident, so every preview is a handoff of about five
 milliseconds — a Unix socket on Linux, a named pipe on Windows — and there is a
 tray icon to show it is there. Its menu opens a file, reopens a recent one and
@@ -127,15 +132,17 @@ That resident instance answers a global hotkey — `Ctrl+Shift+Space` by default
 `sekio-gui --doctor` reports exactly why, line by line.
 
 Settings live in [`gui.toml`](crates/sekio-gui/gui.example.toml); flags beat the
-file, the file beats the defaults, and a bad value warns rather than refusing
-to start.
+file, the file beats the defaults, and a bad value warns and falls back to the
+default.
 
 ## What it previews
 
+<img src="assets/screenshots/gui-pdf.png" alt="A PDF previewed as a rendered page, with the file browser open beside it">
+
 | Kind | Shown as | Notes |
 |---|---|---|
-| Code and text | Syntax-highlighted text | bat's extended syntax set, ~30 themes; legacy encodings decoded, not mangled |
-| Markdown | Rendered for reading | headings, lists, quotes, tables — not highlighted as source |
+| Code and text | Syntax-highlighted text | bat's extended syntax set, ~30 themes; legacy encodings decoded correctly |
+| Markdown | Rendered for reading | headings, lists, quotes, tables |
 | PDF | The page | scans included; the installers ship pdfium |
 | Images | The image | PNG, JPEG, GIF, WebP, BMP, ICO, TIFF, with EXIF and auto-rotation |
 | SVG | The image | rasterised at the size actually needed |
@@ -148,8 +155,8 @@ to start.
 | Anything else | A hexdump | with the detected MIME type |
 
 Light and dark are two designs rather than one inverted: each mode highlights
-with the syntax theme drawn for its own background, so code never sits on a
-surface it was not coloured for.
+with the syntax theme drawn for its own background, so code always sits on a
+surface coloured for it.
 
 <img src="assets/screenshots/gui-text.png" alt="Syntax-highlighted source in the sekio window">
 
@@ -157,7 +164,7 @@ surface it was not coloured for.
 
 - **One representation, thin frontends.** The core turns a path into text, an
   image, a listing, a table, a set of facts, or a hexdump. Frontends only
-  paint. A format added once lights up everywhere.
+  paint.
 - **It reads the file, not the name.** Type comes from magic bytes, and for
   Office documents from the parts inside the container. A PNG named
   `notes.txt` still previews as an image.
@@ -170,7 +177,7 @@ surface it was not coloured for.
 - **No C toolchain.** The dependency tree carries no native `-sys` crates, so
   Windows and cross builds work without MSVC — enforced in CI.
 
-Unsupported or malformed files fall back to a hexdump rather than failing.
+Unsupported or malformed files fall back to a hexdump.
 
 ## Documentation
 
