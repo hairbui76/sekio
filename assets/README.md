@@ -57,14 +57,18 @@ survive.
 
 ## screenshots/
 
-`gui-home.png`, `gui-text.png` and `gui-table.png` are used by the top-level
-README. They are rendered headlessly rather than captured by hand, so they can
-be regenerated exactly and never drift from the real UI: a temporary test in
-`crates/sekio-gui/tests/render.rs` drives the real `SekioApp` through
-`egui_kittest` and calls `Harness::render()`, with the crate's `egui_kittest`
-dev-dependency temporarily switched to `features = ["wgpu", "snapshot"]`. The
-result is cropped to its content with the status bar spliced back beneath.
+`home.png`, `browse.png` and `preview.png` are used by the top-level README:
+the home screen, the built-in file browser with its search box, and a PDF
+previewed as its rendered page. All three are 1908x1141 captures of a running
+window, so they carry the real title bar, status bar and desktop chrome.
+Recapture them when the UI changes visibly.
 
-They are not a snapshot test: CI installs no graphics stack, and llvmpipe and
-WARP do not agree pixel for pixel, so comparing them automatically would be
-permanently flaky. Regenerate them by hand when the UI changes visibly.
+They can also be produced headlessly, which keeps them reproducible at the cost
+of that chrome: a temporary test in `crates/sekio-gui/tests/render.rs` drives
+the real `SekioApp` through `egui_kittest` and calls `Harness::render()`, with
+the crate's `egui_kittest` dev-dependency temporarily switched to
+`features = ["wgpu", "snapshot"]`.
+
+Either way they are not a snapshot test: CI installs no graphics stack, and
+llvmpipe and WARP do not agree pixel for pixel, so comparing them automatically
+would be permanently flaky.

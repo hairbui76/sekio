@@ -14,7 +14,7 @@ and a Quick Look-style popup — all sharing one engine.
 
 </div>
 
-<img src="assets/screenshots/gui-table.png" alt="A spreadsheet previewed as a real table">
+<img src="assets/screenshots/preview.png" alt="A PDF previewed as its rendered page, with the built-in file browser beside it">
 
 ---
 
@@ -109,14 +109,14 @@ them, half-blocks everywhere else. Themes and limits come from
 
 ### `sekio-gui` — a window
 
-<img src="assets/screenshots/gui-home.png" alt="The sekio home screen">
+<img src="assets/screenshots/home.png" alt="The sekio home screen">
 
 Open a file, drop one on the window, or browse from inside it. It follows your
 desktop's light or dark setting and switches with it while open — the gear in
 the top right pins it either way, and holds the version and the path to your
 settings.
 
-<img src="assets/screenshots/gui-browse.png" alt="The built-in file browser open on a folder, with its search box">
+<img src="assets/screenshots/browse.png" alt="The built-in file browser open on a folder, with its search box">
 
 `Ctrl+B` opens a file browser inside the window: your usual places down the
 side, the folder underneath them, and a box that fuzzy-matches as you type and
@@ -137,8 +137,6 @@ default.
 
 ## What it previews
 
-<img src="assets/screenshots/gui-pdf.png" alt="A PDF previewed as a rendered page, with the file browser open beside it">
-
 | Kind | Shown as | Notes |
 |---|---|---|
 | Code and text | Syntax-highlighted text | bat's extended syntax set, ~30 themes; legacy encodings decoded correctly |
@@ -157,8 +155,6 @@ default.
 Light and dark are two designs rather than one inverted: each mode highlights
 with the syntax theme drawn for its own background, so code always sits on a
 surface coloured for it.
-
-<img src="assets/screenshots/gui-text.png" alt="Syntax-highlighted source in the sekio window">
 
 ## How it works
 
