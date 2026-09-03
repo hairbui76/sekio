@@ -337,6 +337,23 @@ pub fn close_intent(mode: Mode, tray: bool, pref: OnClose) -> Intent {
     }
 }
 
+/// Is decoding this picture again, at `wanted` pixels, worth what it costs?
+///
+/// Two things have to hold, and both are about not paying for a decode and a
+/// GPU upload that change nothing on screen.
+///
+/// `wanted > have` — the surface can show more pixels than the texture has.
+/// Shrinking a window is free to paint, because the texture just scales down,
+/// so a smaller window never triggers a re-decode.
+///
+/// `have >= asked` — the last request came back at the full size it asked for,
+/// which is the only evidence available that the file has more to give. A
+/// 200 px icon asked for at 1024 comes back 200 px wide, and it will still be
+/// 200 px wide in a window the size of a wall.
+pub fn worth_rescaling(wanted: u32, have: u32, asked: u32) -> bool {
+    wanted > have && have >= asked
+}
+
 /// Human-readable byte count, matching the CLI's formatting.
 pub fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
@@ -399,6 +416,31 @@ mod tests {
             assert_eq!(posture(Mode::Popup, summoned), Mode::Popup);
             assert_eq!(posture(Mode::App, summoned), Mode::App);
         }
+    }
+
+    /// A window with room for more pixels than the picture has, on a file that
+    /// proved it has them, is the one case worth a second decode.
+    #[test]
+    fn a_window_with_room_to_spare_asks_for_a_sharper_picture() {
+        // Asked for 1024, got 1024: the file had at least that much.
+        assert!(worth_rescaling(1800, 1024, 1024));
+    }
+
+    /// The cost of getting this wrong is a full decode and a GPU upload on
+    /// every window drag, for a picture that cannot change.
+    #[test]
+    fn a_file_with_nothing_more_to_give_is_not_decoded_again() {
+        // Asked for 1024, got 200: that is the whole file.
+        assert!(!worth_rescaling(1800, 200, 1024));
+        assert!(!worth_rescaling(4096, 200, 1024));
+    }
+
+    /// Shrinking a window is free — the texture scales down — so it must not
+    /// cost a decode. Nor may sitting still at the size we already asked for.
+    #[test]
+    fn a_smaller_window_costs_nothing() {
+        assert!(!worth_rescaling(800, 1800, 1800));
+        assert!(!worth_rescaling(1800, 1800, 1800));
     }
 
     /// The whole point of the dialog: it is offered only where both answers

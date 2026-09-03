@@ -337,6 +337,10 @@ fn start_preview(
             // yet: core lays out for `DEFAULT_TEXT_WIDTH`, and the first frame
             // re-requests if the real text area turns out to differ.
             text_width: None,
+            // Nor is there a window to measure pixels against yet: core's own
+            // default is what this first picture is decoded at, and the first
+            // frame asks again if the window turns out to be bigger.
+            image_max_dim: None,
             sheet: 0,
             page: 0,
         });
@@ -639,6 +643,7 @@ fn probe_daemon(
                     kind: worker::Kind::Preview,
                     // `--daemon` with no window attached: nothing to measure.
                     text_width: None,
+                    image_max_dim: None,
                     sheet: 0,
                     page: 0,
                 });

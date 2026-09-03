@@ -1452,6 +1452,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c6e8948ce679d00a02a94739ea185595dca7118ed04feb991127e443bd3d761f"
 
 [[package]]
+name = "fast_image_resize"
+version = "6.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9c50201dc184ba6553da1695aac20a042efffbe2d84542cee31917c86c3ab1e"
+dependencies = [
+ "bytemuck",
+ "cfg-if",
+ "document-features",
+ "image",
+ "num-traits",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4137,7 +4151,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "sekio-cli"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4149,12 +4163,13 @@ dependencies = [
 
 [[package]]
 name = "sekio-core"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "calamine",
  "chardetng",
  "comrak",
  "encoding_rs",
+ "fast_image_resize",
  "flate2",
  "image",
  "infer",
@@ -4173,7 +4188,7 @@ dependencies = [
 
 [[package]]
 name = "sekio-gui"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4195,7 +4210,7 @@ dependencies = [
 
 [[package]]
 name = "sekio-tui"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "anyhow",
  "clap",

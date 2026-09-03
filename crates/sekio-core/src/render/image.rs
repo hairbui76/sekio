@@ -1,6 +1,5 @@
 use std::path::Path;
 
-use image::imageops::FilterType;
 use image::GenericImageView;
 
 use crate::{CancelToken, MetaField, Preview, PreviewContent, PreviewError, PreviewOptions};
@@ -31,11 +30,7 @@ pub fn render(
     let (ow, oh) = img.dimensions();
     let max = opts.image_max_dim;
     let truncated = ow > max || oh > max;
-    let img = if truncated {
-        img.resize(max, max, FilterType::Triangle)
-    } else {
-        img
-    };
+    let img = super::resample::downscale(img, max);
     cancel.check()?;
 
     Ok(Preview {

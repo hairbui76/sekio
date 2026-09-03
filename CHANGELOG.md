@@ -3,6 +3,34 @@
 Notable changes per release. Versions are the workspace version; every entry
 corresponds to a `v*` tag and its published deb, rpm and msi.
 
+## 0.22.0 — 2026-09-04
+
+### Fixed
+
+- Previews of pictures were soft rather than sharp, from two causes that
+  compounded. A decoded image is measured in screen pixels but painted in
+  points, and the window treated the two as the same unit — so on a display at
+  125%, 150% or 200% (every HiDPI laptop, and most Windows desktops) every
+  preview was magnified by the scale factor and resampled by the GPU. And core
+  capped every image at 1024 px on its longest edge however big the window
+  was, so a maximised window stretched a 1024 px picture across its pane.
+
+  The window now asks for as many pixels as its preview surface really has, up
+  to a 4K screen's worth, and paints the result on the display's own pixel
+  grid. Growing the window re-decodes the picture once the drag settles;
+  shrinking it costs nothing, and a file with no more detail to give is never
+  decoded a second time.
+
+### Changed
+
+- Downscaling moved from `image`'s bilinear filter to `fast_image_resize`'s
+  Lanczos3: sharper, and enough faster that a preview at a window's full
+  resolution now costs less than a 1024 px one did. End to end on a 24 MP
+  JPEG, 413 ms → 261 ms at 1024 px and 1361 ms → 338 ms at 3840 px. Still
+  pure Rust, so the no-C-toolchain rule the Windows build depends on holds.
+  PDF pages, SVGs, video frames and audio cover art all render at the new size
+  too.
+
 ## 0.21.0 — 2026-08-28
 
 ### Fixed

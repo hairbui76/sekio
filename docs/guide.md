@@ -157,6 +157,19 @@ built-in browser, which needs nothing installed and therefore always works.
 | `Esc` | Back to the home screen |
 | `Ctrl+Q` | Close the window |
 
+### Pictures
+
+A picture is decoded at the resolution the window can actually show it at, so a
+maximised window gets a full-resolution preview and a small one does not pay
+for pixels it cannot paint. Displays running at 125%, 150% or 200% are counted
+in real pixels, not in points, which is what keeps a preview sharp on a HiDPI
+laptop. Growing the window re-decodes the picture once you let go of the edge;
+shrinking it costs nothing, and a file with no more detail in it is never
+decoded twice.
+
+The ceiling is one 4K screen's worth on the longest edge. `Ctrl+ +` past that
+magnifies what is on screen, as any viewer does.
+
 ### Staying resident
 
 Opening a window costs a fresh process every time. Keep one alive instead and

@@ -62,3 +62,4 @@ pdfium-render = { workspace = true, optional = true }
 # crate that touches it.
 pdf-extract = { version = "0.12", optional = true }
 two-face = { version = "0.5.2", default-features = false, features = ["syntect-default-fancy"] }
+fast_image_resize = { version = "6", default-features = false, features = ["image"] }

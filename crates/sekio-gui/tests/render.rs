@@ -147,6 +147,10 @@ struct Setup {
     /// Start with the window on screen. False is the autostart daemon, which
     /// is the only shape in which `reveal` has anything to do.
     visible: bool,
+    /// The display's scale factor. 1.0 is a plain screen; Windows at 125% or
+    /// 150%, and every HiDPI laptop, are not, and the difference is what
+    /// decides how many real pixels a preview is painted across.
+    scale: f32,
 }
 
 impl Default for Setup {
@@ -158,6 +162,7 @@ impl Default for Setup {
             resident: false,
             on_close: OnClose::default(),
             visible: true,
+            scale: 1.0,
         }
     }
 }
@@ -205,6 +210,7 @@ impl AppUi {
             resident: tray,
             on_close,
             visible,
+            scale,
         } = setup;
         isolate_state_dir();
 
@@ -268,6 +274,7 @@ impl AppUi {
 
         let harness = Harness::builder()
             .with_size(size)
+            .with_pixels_per_point(scale)
             // Nothing here loads images through egui's async loaders, and
             // waiting for them would sleep a quarter-second per frame.
             .with_wait_for_pending_images(false)
@@ -2843,6 +2850,171 @@ fn a_window_that_is_not_resized_never_re_requests_its_preview() {
             .try_iter()
             .all(|request| request.kind != Kind::Preview),
         "a window sitting still must not keep re-rendering its preview"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Sharpness: asking core for the pixels this window can actually paint
+// ---------------------------------------------------------------------------
+
+/// A picture big enough that the window has room to ask for more of it. The
+/// texture is what core came back with; `original_*` is what the file holds.
+fn photo(px: u32) -> PreviewContent {
+    let image = image::RgbaImage::from_fn(px, px / 2, |x, y| {
+        image::Rgba([(x % 256) as u8, (y % 256) as u8, 200, 255])
+    });
+    PreviewContent::Image {
+        image,
+        original_width: 6000,
+        original_height: 3000,
+        format: "JPEG".to_owned(),
+        fields: Vec::new(),
+    }
+}
+
+/// The `image_max_dim` of the newest preview asked for, draining the channel.
+/// `None` means the window did not ask for anything at all.
+fn requested_pixels(ui: &AppUi) -> Option<u32> {
+    ui.requests
+        .try_iter()
+        .filter(|request| request.kind == Kind::Preview)
+        .last()
+        .and_then(|request| request.image_max_dim)
+}
+
+/// A window that has a picture on screen and has settled at its real size.
+/// The settle timer is what stops a drag queueing one decode per frame, so a
+/// test that wants the request has to wait it out.
+fn showing_photo(size: [f32; 2], scale: f32) -> AppUi {
+    let path = PathBuf::from("/tmp/photo.jpg");
+    let mut ui = AppUi::build(Setup {
+        path: Some(path.clone()),
+        mode: Mode::Popup,
+        size,
+        scale,
+        ..Setup::default()
+    });
+    ui.run();
+    // Core came back at exactly the 1024 it was asked for before this window
+    // existed, so the file has at least that much: it can still get sharper.
+    ui.deliver(FIRST, &path, photo(1024));
+    ui.run();
+    std::thread::sleep(Duration::from_millis(200));
+    ui.run();
+    ui
+}
+
+/// A window wider than core's default has to say so, or every picture in it is
+/// a 1024 px one stretched across the pane.
+#[test]
+fn a_big_window_asks_for_a_picture_that_fills_it() {
+    let ui = showing_photo([1600.0, 1000.0], 1.0);
+    let asked = requested_pixels(&ui).expect("a window with room to spare asks again");
+    assert!(
+        (1200..=1600).contains(&asked),
+        "a 1600 pt window should ask for about its own width, got {asked}"
+    );
+}
+
+/// The bug this whole change started from. On a scaled display the window is
+/// the same number of *points* but far more pixels, and asking for points is
+/// what left every preview soft on a 150% Windows desktop.
+#[test]
+fn a_scaled_display_asks_for_the_pixels_it_really_has() {
+    let plain = requested_pixels(&showing_photo([1400.0, 900.0], 1.0))
+        .expect("a window with room to spare asks again");
+    let scaled = requested_pixels(&showing_photo([1400.0, 900.0], 1.5))
+        .expect("a window with room to spare asks again");
+    // The same window, half again as many real pixels to fill.
+    assert!(
+        scaled > plain,
+        "a 150% display needs more pixels than a 100% one: {scaled} vs {plain}"
+    );
+    let ratio = f64::from(scaled) / f64::from(plain);
+    assert!(
+        (1.4..=1.6).contains(&ratio),
+        "the extra pixels should track the scale factor, got {ratio:.2}x"
+    );
+}
+
+/// Growing the window past what the picture on screen has to offer is the one
+/// case worth decoding again for.
+#[test]
+fn growing_the_window_asks_for_a_sharper_picture() {
+    // A default-sized window has no more room than the 1024 px it was given,
+    // so it starts out with nothing to ask for.
+    let mut ui = showing_photo(SIZE, 1.0);
+    assert_eq!(
+        requested_pixels(&ui),
+        None,
+        "a window that already fits its picture must not re-decode it"
+    );
+
+    grow(&mut ui, [1800.0, 1200.0]);
+
+    let after = requested_pixels(&ui).expect("the grown window asked again");
+    assert!(
+        after > 1024,
+        "an 1800 pt window should ask for more than the 1024 px it has, got {after}"
+    );
+}
+
+/// Resize, then give the settle timer its two frames: one to notice the new
+/// size and start the clock, one after it expires to act on it.
+fn grow(ui: &mut AppUi, size: [f32; 2]) {
+    ui.harness.set_size(egui::Vec2::from(size));
+    // Twice: the harness takes a frame to apply the new rect, and the clock
+    // only starts on a frame that has actually been laid out at it.
+    ui.run();
+    ui.run();
+    std::thread::sleep(Duration::from_millis(200));
+    ui.run();
+}
+
+/// The other half of the rule, and the expensive one to get wrong: a file with
+/// no more pixels in it must not be decoded again on every window drag.
+#[test]
+fn a_picture_that_cannot_get_sharper_is_left_alone() {
+    let path = PathBuf::from("/tmp/small.png");
+    let mut ui = ui_with_path("/tmp/small.png");
+    // Asked for 1024, came back 64 px wide: that is the whole file.
+    ui.deliver(FIRST, &path, image_content());
+    ui.run();
+    let _ = ui.requests.try_iter().count();
+
+    // The same resize that makes `growing_the_window_asks_for_a_sharper_picture`
+    // ask again. This one must not.
+    grow(&mut ui, [1800.0, 1200.0]);
+
+    assert!(
+        ui.requests
+            .try_iter()
+            .all(|request| request.kind != Kind::Preview),
+        "a picture with nothing more to give must not be decoded again"
+    );
+}
+
+/// A window with a little spare room it will never use must be allowed to go
+/// to sleep. The gain here is under the threshold, so nothing is ever decoded
+/// — and if the settle timer keeps being rearmed anyway, the process repaints
+/// eight times a second for as long as it is open, which on a laptop is a
+/// battery bug rather than a visible one.
+#[test]
+fn a_window_with_a_little_spare_room_stops_asking_for_frames() {
+    let mut ui = showing_photo([1200.0, 800.0], 1.0);
+    assert_eq!(
+        requested_pixels(&ui),
+        None,
+        "a gain under the threshold is not worth a decode"
+    );
+
+    // Two settled frames with nothing happening: by the second, the app must
+    // have stopped asking to be woken up again.
+    std::thread::sleep(Duration::from_millis(200));
+    ui.run();
+    assert!(
+        !ui.harness.ctx.has_requested_repaint(),
+        "the window kept rearming its own timer with nothing to do"
     );
 }
 

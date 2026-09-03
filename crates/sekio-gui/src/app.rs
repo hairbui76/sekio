@@ -23,8 +23,8 @@ use crate::icon;
 use crate::recent::{self, Recent};
 use crate::selection;
 use crate::state::{
-    close_action, close_intent, human_size, posture, Close, Intent, Mode, OnClose, RequestTracker,
-    Siblings,
+    close_action, close_intent, human_size, posture, worth_rescaling, Close, Intent, Mode, OnClose,
+    RequestTracker, Siblings,
 };
 use crate::style::{self, Palette, MONO_SIZE};
 use crate::table;
@@ -56,6 +56,17 @@ const REFLOW_THRESHOLD: usize = 4;
 /// than one per frame, short enough that letting go of the mouse feels
 /// immediate.
 const REFLOW_SETTLE: Duration = Duration::from_millis(120);
+
+/// How much the preview surface has to grow, in screen pixels, before a
+/// picture is worth decoding again at the larger size. Coarser than
+/// [`REFLOW_THRESHOLD`] because the cost is a decode rather than a re-layout,
+/// and because a few pixels of extra resolution are not visible anyway.
+const RESCALE_THRESHOLD: usize = 256;
+
+/// As much texture as one preview may hold: a 4K screen's worth. Past this the
+/// picture is bigger than any display can show it and the memory is real
+/// (4096x2731 RGBA is 45 MB), so the cap is the ceiling on both.
+const MAX_IMAGE_DIM: u32 = 4096;
 
 /// What the central panel is currently showing.
 enum View {
@@ -272,8 +283,15 @@ pub struct SekioApp {
     /// shown: they belong to the document, not to the window.
     sheet: usize,
     page: usize,
+    /// Screen pixels the central panel could paint an image across on the last
+    /// frame (see [`image_pixels`]).
+    image_pixels: Option<u32>,
     /// Decides when a resize is worth re-requesting the preview for.
     reflow: Reflow,
+    /// The same decision for pictures, measured in screen pixels rather than
+    /// characters. Separate from `reflow` because the two never apply to the
+    /// same file and the thresholds are in different units.
+    rescale: Reflow,
     /// The in-flight preview is a re-layout of the file already on screen, so
     /// keep painting what we have rather than flashing "loading…".
     reflowing: bool,
@@ -392,7 +410,9 @@ impl SekioApp {
             update_at_start: updates && mode.checks_updates(),
             sheet: 0,
             page: 0,
+            image_pixels: None,
             reflow: Reflow::new(REFLOW_THRESHOLD, REFLOW_SETTLE),
+            rescale: rescale_tracker(),
             reflowing: false,
         }
     }
@@ -1094,12 +1114,20 @@ impl SekioApp {
         if let Some(width) = self.text_columns {
             self.reflow.issued(width);
         }
+        // Same for pixels, and unconditionally: a request with no measurement
+        // yet is rendered at core's default, and recording that is what lets
+        // `sharper_is_available` tell "the file had no more to give" from "we
+        // never asked for more".
+        let pixels = self.image_pixels;
+        self.rescale
+            .issued(pixels.unwrap_or_else(min_image_dim) as usize);
         self.worker.request(Request {
             id,
             path: self.path.clone(),
             cancel,
             kind: Kind::Preview,
             text_width: self.text_columns,
+            image_max_dim: pixels,
             sheet: self.sheet,
             page: self.page,
         });
@@ -1114,8 +1142,10 @@ impl SekioApp {
             path: self.browser.dir().to_path_buf(),
             cancel,
             kind: Kind::Browse,
-            // A listing has no columns to lay out, and no parts to choose.
+            // A listing has no columns to lay out, no picture to decode, and
+            // no parts to choose.
             text_width: None,
+            image_max_dim: None,
             sheet: 0,
             page: 0,
         });
@@ -1149,6 +1179,58 @@ impl SekioApp {
             ctx.request_repaint_after(REFLOW_SETTLE);
         }
         false
+    }
+
+    /// Re-decode the picture on screen once the window has settled at a size
+    /// that could show more of it.
+    ///
+    /// The `reflow` rule for text, in pixels instead of characters, and with
+    /// the same clock parameter for the same reason.
+    fn poll_rescale(&mut self, ctx: &egui::Context, now: std::time::Instant) -> bool {
+        let Some(pixels) = self.image_pixels else {
+            return false;
+        };
+        if !self.sharper_is_available(pixels) {
+            return false;
+        }
+        if self.rescale.observe(pixels as usize, now).is_some() {
+            self.request_reflow();
+            return true;
+        }
+        // Same reason as above: the last frame of a drag is when the settle
+        // timer starts, so ask for one more frame or nothing wakes us up. Only
+        // when the gain is big enough to act on, though — a window with a
+        // little spare room it will never use must be allowed to go to sleep,
+        // not repaint eight times a second for the life of the process.
+        if (pixels as usize).abs_diff(self.rescale.current()) >= RESCALE_THRESHOLD {
+            ctx.request_repaint_after(REFLOW_SETTLE);
+        }
+        false
+    }
+
+    /// Would asking core for `pixels` actually produce a sharper picture?
+    ///
+    /// Two things have to hold. The texture on screen must be smaller than the
+    /// surface — shrinking a window costs nothing to paint, so re-decoding a
+    /// photo to make it *smaller* would be a decode and a GPU upload for no
+    /// visible change. And the last request must have come back at full size:
+    /// a 200 px icon asked for at 1024 came back at 200 because that is all the
+    /// file has, and it will still be 200 px however big the window gets.
+    fn sharper_is_available(&self, pixels: u32) -> bool {
+        let View::Ready(shown) = &self.view else {
+            return false;
+        };
+        // Only a picture. A metadata thumbnail is painted at a fixed size
+        // whatever the window does, so more pixels would go nowhere.
+        if !matches!(&shown.loaded.preview.content, PreviewContent::Image { .. }) {
+            return false;
+        }
+        let Some(texture) = &shown.texture else {
+            return false;
+        };
+        let size = texture.size();
+        let have = size[0].max(size[1]) as u32;
+        worth_rescaling(pixels, have, self.rescale.current() as u32)
     }
 
     fn browse(&mut self, dir: PathBuf) {
@@ -1957,6 +2039,7 @@ impl SekioApp {
         // rather than from the window, because the browser pane and the
         // scrollbar both eat into it.
         let mut columns = None;
+        let mut pixels = None;
         let panel = egui::CentralPanel::default()
             // The one surface that is not chrome: the preview sits on a card
             // raised off the panels around it, which is the whole of the
@@ -1970,6 +2053,7 @@ impl SekioApp {
             )
             .show(ui, |ui| {
                 columns = Some(text_columns(ui));
+                pixels = Some(image_pixels(ui));
                 match view {
                     View::Home => paint_home(ui, &home, &palette, logo.as_ref()),
                     View::Loading => {
@@ -1994,6 +2078,7 @@ impl SekioApp {
             });
         self.content_rect = Some(panel.response.rect);
         self.text_columns = columns;
+        self.image_pixels = pixels;
         panel.inner
     }
 }
@@ -2040,6 +2125,37 @@ fn text_columns(ui: &egui::Ui) -> usize {
     // does not also raise a horizontal one.
     let usable = ui.available_width() - ui.spacing().scroll.bar_width - 2.0;
     (usable / advance).floor().clamp(1.0, 4096.0) as usize
+}
+
+/// The longest edge, in real screen pixels, that the preview surface could
+/// paint a picture across.
+///
+/// Screen pixels, not points: this is the number core has to be given for a
+/// picture to land on the display's own grid instead of being stretched across
+/// it. The floor is core's own default, so no window ever asks for a *worse*
+/// preview than a frontend that says nothing gets.
+fn image_pixels(ui: &egui::Ui) -> u32 {
+    let avail = ui.available_size();
+    let longest = avail.x.max(avail.y) * ui.pixels_per_point();
+    if !longest.is_finite() || longest <= 0.0 {
+        return min_image_dim();
+    }
+    (longest.ceil() as u32).clamp(min_image_dim(), MAX_IMAGE_DIM)
+}
+
+/// What a request carrying no measurement is rendered at. Read from core
+/// rather than repeated here, because `sharper_is_available` compares against
+/// it and a copy that drifted would make it answer wrongly.
+fn min_image_dim() -> u32 {
+    sekio_core::PreviewOptions::default().image_max_dim
+}
+
+/// The picture on screen was decoded before this window could be measured, so
+/// the tracker starts where that preview did.
+fn rescale_tracker() -> Reflow {
+    let mut rescale = Reflow::new(RESCALE_THRESHOLD, REFLOW_SETTLE);
+    rescale.issued(min_image_dim() as usize);
+    rescale
 }
 
 struct Keys {
@@ -2095,7 +2211,12 @@ impl eframe::App for SekioApp {
         self.handle_wheel_zoom(ctx);
         // Last, and against the width the previous frame measured: a window
         // that has settled at a new size needs the preview laid out for it.
-        self.poll_reflow(ctx, std::time::Instant::now());
+        // Disjoint by content type — text reflows, pictures rescale — so the
+        // `if` only ever spares one wasted request if that stops being true.
+        let now = std::time::Instant::now();
+        if !self.poll_reflow(ctx, now) {
+            self.poll_rescale(ctx, now);
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -2939,7 +3060,12 @@ fn paint_content(
                 .show(ui, |ui| {
                     if let Some(texture) = &texture {
                         ui.vertical_centered(|ui| {
-                            let size = fit(texture.size_vec2(), Vec2::new(240.0, 240.0), 1.0);
+                            let size = fit(
+                                texture.size_vec2(),
+                                Vec2::new(240.0, 240.0),
+                                1.0,
+                                ui.pixels_per_point(),
+                            );
                             ui.image((texture.id(), size));
                         });
                         ui.add_space(8.0);
@@ -2956,7 +3082,12 @@ fn paint_image(ui: &mut egui::Ui, texture: &TextureHandle, zoom: f32) {
     egui::ScrollArea::both()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            let size = fit(texture.size_vec2(), ui.available_size(), zoom);
+            let size = fit(
+                texture.size_vec2(),
+                ui.available_size(),
+                zoom,
+                ui.pixels_per_point(),
+            );
             ui.vertical_centered(|ui| {
                 ui.add_space(((ui.available_height() - size.y) / 2.0).max(0.0));
                 ui.image((texture.id(), size));
@@ -2964,13 +3095,29 @@ fn paint_image(ui: &mut egui::Ui, texture: &TextureHandle, zoom: f32) {
         });
 }
 
-/// Scale `image` down to fit `avail` (never up, unless the user zoomed in).
-fn fit(image: Vec2, avail: Vec2, zoom: f32) -> Vec2 {
-    if image.x <= 0.0 || image.y <= 0.0 {
-        return image;
+/// How big, in points, to paint a texture: scaled down to fit `avail`, never
+/// blown up past its own pixels unless the user zoomed in.
+///
+/// `texels` is in screen pixels and `avail` is in points, and conflating the
+/// two is the reason previews looked soft on any display that is not at 100%.
+/// Painting a 1024-pixel texture across "1024 points" of a 150% display
+/// stretches it over 1536 real pixels — a magnification nobody asked for, on
+/// every picture, at the size the picture looked *correct* at. Converting to
+/// points first is what puts a preview on the display's own pixel grid.
+fn fit(texels: Vec2, avail: Vec2, zoom: f32, pixels_per_point: f32) -> Vec2 {
+    if texels.x <= 0.0 || texels.y <= 0.0 {
+        return texels;
     }
-    let scale = (avail.x / image.x).min(avail.y / image.y).clamp(0.01, 1.0);
-    image * scale * zoom
+    let ppp = if pixels_per_point.is_finite() && pixels_per_point > 0.0 {
+        pixels_per_point
+    } else {
+        1.0
+    };
+    let native = texels / ppp;
+    let scale = (avail.x / native.x)
+        .min(avail.y / native.y)
+        .clamp(0.01, 1.0);
+    native * scale * zoom
 }
 
 fn paint_listing(ui: &mut egui::Ui, entries: &[ListEntry], palette: &Palette) {
@@ -3166,12 +3313,42 @@ mod tests {
 
     #[test]
     fn fit_scales_down_but_not_up() {
-        let big = fit(Vec2::new(2000.0, 1000.0), Vec2::new(500.0, 500.0), 1.0);
+        let big = fit(Vec2::new(2000.0, 1000.0), Vec2::new(500.0, 500.0), 1.0, 1.0);
         assert!((big.x - 500.0).abs() < 0.1 && (big.y - 250.0).abs() < 0.1);
-        let small = fit(Vec2::new(100.0, 50.0), Vec2::new(500.0, 500.0), 1.0);
+        let small = fit(Vec2::new(100.0, 50.0), Vec2::new(500.0, 500.0), 1.0, 1.0);
         assert_eq!(small, Vec2::new(100.0, 50.0));
-        let zoomed = fit(Vec2::new(100.0, 50.0), Vec2::new(500.0, 500.0), 2.0);
+        let zoomed = fit(Vec2::new(100.0, 50.0), Vec2::new(500.0, 500.0), 2.0, 1.0);
         assert_eq!(zoomed, Vec2::new(200.0, 100.0));
+    }
+
+    /// The blur this whole change is about. A texture is measured in screen
+    /// pixels and painted in points, so on a scaled display it has to be
+    /// divided down — otherwise every picture is silently magnified by the
+    /// display scale, which is exactly what "the preview looks soft" was.
+    #[test]
+    fn a_texture_lands_on_the_screens_own_pixel_grid() {
+        // 1200 pixels on a 150% display is 800 points. Painting it at 1200
+        // points would stretch it across 1800 real pixels.
+        let native = fit(
+            Vec2::new(1200.0, 600.0),
+            Vec2::new(2000.0, 2000.0),
+            1.0,
+            1.5,
+        );
+        assert_eq!(native, Vec2::new(800.0, 400.0));
+        assert_eq!(
+            native * 1.5,
+            Vec2::new(1200.0, 600.0),
+            "the painted size must come back to the pixels we have"
+        );
+
+        // Too big for the pane: still scaled down, still in points.
+        let shrunk = fit(Vec2::new(3000.0, 3000.0), Vec2::new(500.0, 500.0), 1.0, 2.0);
+        assert_eq!(shrunk, Vec2::new(500.0, 500.0));
+
+        // A nonsense scale factor must not produce a nonsense size.
+        let broken = fit(Vec2::new(100.0, 100.0), Vec2::new(500.0, 500.0), 1.0, 0.0);
+        assert_eq!(broken, Vec2::new(100.0, 100.0));
     }
 
     #[test]

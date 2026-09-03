@@ -23,7 +23,6 @@ mod imp {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
 
-    use image::imageops::FilterType;
     use image::GenericImageView;
 
     use crate::{CancelToken, MetaField, Preview, PreviewContent, PreviewError, PreviewOptions};
@@ -91,11 +90,7 @@ mod imp {
         // The tool was already asked to cap the long edge, so this normally
         // does nothing; it is here so a tool that ignores the request (or
         // upscales) still cannot hand a frontend an oversized buffer.
-        let frame = if fw > max || fh > max {
-            frame.resize(max, max, FilterType::Triangle)
-        } else {
-            frame
-        };
+        let frame = crate::render::resample::downscale(frame, max);
 
         // Prefer the probe's dimensions: the frame we hold has already been
         // scaled down by the tool, so it is not the original size. Without

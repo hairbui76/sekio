@@ -48,6 +48,11 @@ pub struct Request {
     /// Per-request rather than per-worker because the window can be resized at
     /// any moment; `None` means "no hint", and core falls back to its default.
     pub text_width: Option<usize>,
+    /// Longest edge, in real screen pixels, that a picture may be decoded to.
+    /// Per-request for the same reason as `text_width`: it is a property of the
+    /// window, which moves and is rescaled while the process runs. `None` means
+    /// "no hint", and core keeps its own default.
+    pub image_max_dim: Option<u32>,
     /// Which sheet of a workbook, and which page of a paged document, to
     /// render. Per-request for the same reason as `text_width`: the user can
     /// move to another one without opening a different file. Core clamps both,
@@ -252,6 +257,7 @@ fn serve(
     // the process; those are whatever the request carried.
     let opts = PreviewOptions {
         text_width: req.text_width,
+        image_max_dim: req.image_max_dim.unwrap_or(opts.image_max_dim),
         sheet: req.sheet,
         page: req.page,
         ..opts.clone()

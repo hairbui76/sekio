@@ -17,6 +17,7 @@ pub mod image;
 pub mod legacy_office;
 pub mod markdown;
 pub mod pdf;
+pub mod resample;
 pub mod spreadsheet;
 pub mod svg;
 pub mod text;

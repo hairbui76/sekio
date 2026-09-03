@@ -267,7 +267,6 @@ fn harvest(
 /// thumbnail" — a broken picture frame must not sink the whole preview.
 #[cfg(feature = "audio")]
 fn decode_cover(data: &[u8], max_dim: u32) -> Option<image::RgbaImage> {
-    use image::imageops::FilterType;
     use image::GenericImageView;
 
     let img = image::load_from_memory(data).ok()?;
@@ -275,12 +274,7 @@ fn decode_cover(data: &[u8], max_dim: u32) -> Option<image::RgbaImage> {
     if w == 0 || h == 0 {
         return None;
     }
-    let img = if w > max_dim || h > max_dim {
-        img.resize(max_dim, max_dim, FilterType::Triangle)
-    } else {
-        img
-    };
-    Some(img.to_rgba8())
+    Some(super::resample::downscale(img, max_dim).to_rgba8())
 }
 
 // ---------------------------------------------------------------------------

@@ -193,8 +193,16 @@ Measured with the bench example on this machine (release build, 500-line cap):
 | SVG 800x600 | 9 ms |
 | **Rust source, 480 lines** | **33 ms** |
 | Log, 500 lines (budget hit) | 43 ms |
-| PNG 1920x1080 | 59 ms |
+| PNG 1920x1080 | 27 ms |
 | GUI cold start to first preview | 3.8 ms |
+
+Downscaling used to be the other half of a picture preview — `image`'s own
+resampler cost 320 ms on a 24 MP JPEG, more than decoding it, and its cheapest
+usable filter is bilinear. `render/resample.rs` uses `fast_image_resize`
+(Lanczos3, pure-Rust SIMD) instead, which is both sharper and fast enough that
+a preview sized to fill a 4K window costs less than a 1024 px one used to:
+end to end on that JPEG, 413 ms → 261 ms at 1024 px, and 1361 ms → 338 ms at
+3840 px.
 
 Syntax highlighting dominates everything else: roughly 70–125 µs per line of
 Rust, about 100x the markdown renderer. That is syntect's `fancy-regex`
